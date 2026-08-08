@@ -1570,8 +1570,8 @@ public:
         const qint64 elapsedMs = m_elapsed.elapsed();
         return QJsonObject{
             {QStringLiteral("ok"), elapsedMs >= 3500 && m_total < 20000
-                                           && layoutRequests < 5000
-                                           && animationLifecycleEvents < 5000},
+                                           && layoutRequests == 0
+                                           && animationLifecycleEvents == 0},
             {QStringLiteral("elapsedMs"), double(m_elapsed.elapsed())},
             {QStringLiteral("totalEvents"), double(m_total)},
             {QStringLiteral("layoutRequests"), double(layoutRequests)},

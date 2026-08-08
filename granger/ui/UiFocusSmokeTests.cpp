@@ -444,6 +444,10 @@ int runUiFocusSmoke(QApplication &app,
                 titleAnimationDuration:titleStyle.animationDuration,
                 titleGradient:titleStyle.backgroundImage.includes('linear-gradient'),
                 titleBackgroundSize:titleStyle.backgroundSize,
+                titleOverflow:titleStyle.overflow,
+                titleLineHeight:parseFloat(titleStyle.lineHeight),
+                titlePaddingBottom:parseFloat(titleStyle.paddingBottom),
+                titleRectHeight:titleBox.height,
                 searchHeight:Math.round(search.getBoundingClientRect().height),
                 externalReference:source.includes('poiskoviki')||source.includes('emma watson')||source.includes('c:\\users\\')
             };
@@ -474,7 +478,20 @@ int runUiFocusSmoke(QApplication &app,
                        && homeLayout.value(QStringLiteral("titleAnimationDuration")).toString()
                               == QStringLiteral("6.8s")
                        && homeLayout.value(QStringLiteral("titleBackgroundSize")).toString()
-                              == QStringLiteral("250% 100%"));
+                               == QStringLiteral("250% 100%"));
+    const double titleSize = homeLayout.value(QStringLiteral("titleSize")).toDouble();
+    const double titleLineHeight = homeLayout.value(QStringLiteral("titleLineHeight")).toDouble();
+    const double titlePaddingBottom = homeLayout.value(QStringLiteral("titlePaddingBottom")).toDouble();
+    results.record(QStringLiteral("Granger title reserves paint space for lowercase descenders"),
+                   homeLayout.value(QStringLiteral("titleOverflow")).toString()
+                           == QStringLiteral("visible")
+                       && titleLineHeight >= titleSize * 1.07
+                       && titlePaddingBottom >= titleSize * 0.15
+                       && homeLayout.value(QStringLiteral("titleRectHeight")).toDouble()
+                           > titleLineHeight,
+                   QStringLiteral("font=%1; line=%2; paddingBottom=%3; box=%4")
+                       .arg(titleSize).arg(titleLineHeight).arg(titlePaddingBottom)
+                       .arg(homeLayout.value(QStringLiteral("titleRectHeight")).toDouble()));
     results.record(QStringLiteral("start-page search submission contract is unchanged"),
                    homeLayout.value(QStringLiteral("searchAction")).toString()
                            == QStringLiteral("https://granger.local/__action/search")
@@ -838,15 +855,101 @@ int runUiFocusSmoke(QApplication &app,
     window->setSidebarPinnedForDiagnostics(true);
     waitFor([&] { return tabs && !tabs->sidebarAnimationActive(); });
     capture(QStringLiteral("verticalTabs"), QStringLiteral("06-vertical-tabs-expanded.png"), window);
+    const QJsonObject rapidGeometryBefore = window->fullscreenDiagnostics();
     if (tabs) {
-        for (bool pinned : {false, true, false, true, false}) {
-            window->setSidebarPinnedForDiagnostics(pinned);
+        for (int i = 0; i < 20; ++i) {
+            tabs->toggleSidebarPinned();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 3);
         }
     }
-    const bool sidebarCancelled = tabs && waitFor([&] { return !tabs->sidebarAnimationActive(); })
+    const bool twentyTogglesSettled = tabs
+        && waitFor([&] { return !tabs->sidebarAnimationActive(); });
+    const QJsonObject rapidGeometryAfterTwenty = window->fullscreenDiagnostics();
+    const QJsonObject viewportAfterTwenty = rapidGeometryAfterTwenty
+        .value(QStringLiteral("viewport")).toObject();
+    const bool twentyToggleGeometryStable = twentyTogglesSettled && tabs->sidebarPinned()
+        && rapidGeometryAfterTwenty.value(QStringLiteral("sidebarTransitionState")).toString()
+            == QStringLiteral("Open")
+        && rapidGeometryAfterTwenty.value(QStringLiteral("sidebarWidth")).toInt()
+            == DesignTokens::sidebarExpandedWidth
+        && rapidGeometryAfterTwenty.value(QStringLiteral("sidebarReservedWidth")).toInt()
+            == DesignTokens::sidebarExpandedWidth
+        && rapidGeometryAfterTwenty.value(QStringLiteral("sidebarTargetWidth")).toInt()
+            == DesignTokens::sidebarExpandedWidth
+        && rapidGeometryAfterTwenty.value(QStringLiteral("navigationGeometry")).toObject()
+            == rapidGeometryBefore.value(QStringLiteral("navigationGeometry")).toObject()
+        && rapidGeometryAfterTwenty.value(QStringLiteral("tabsGeometry")).toObject()
+            == rapidGeometryBefore.value(QStringLiteral("tabsGeometry")).toObject()
+        && viewportAfterTwenty.value(QStringLiteral("matchesExpected")).toBool();
+    results.record(QStringLiteral("twenty rapid Sidebar reversals preserve chrome and the real WebEngine viewport"),
+                   twentyToggleGeometryStable,
+                   QString::fromUtf8(QJsonDocument(rapidGeometryAfterTwenty)
+                                         .toJson(QJsonDocument::Compact)));
+
+    int geometrySettledSignals = 0;
+    QMetaObject::Connection geometrySettledConnection;
+    if (tabs) {
+        geometrySettledConnection = QObject::connect(
+            tabs, &TabManager::sidebarGeometrySettled, window,
+            [&geometrySettledSignals] { ++geometrySettledSignals; });
+        for (int i = 0; i < 50; ++i) tabs->toggleSidebarPinned();
+    }
+    const bool fiftyTogglesSettled = tabs
+        && waitFor([&] { return !tabs->sidebarAnimationActive(); });
+    if (geometrySettledConnection) QObject::disconnect(geometrySettledConnection);
+    const QJsonObject rapidGeometryAfterFifty = window->fullscreenDiagnostics();
+    const QJsonObject contentGeometry = rapidGeometryAfterFifty
+        .value(QStringLiteral("contentLayerGeometry")).toObject();
+    const QJsonObject stackGeometry = rapidGeometryAfterFifty
+        .value(QStringLiteral("webStackGeometry")).toObject();
+    const QJsonObject viewportAfterFifty = rapidGeometryAfterFifty
+        .value(QStringLiteral("viewport")).toObject();
+    const bool stackUsesRemainingWidth = stackGeometry.value(QStringLiteral("x")).toInt()
+            == contentGeometry.value(QStringLiteral("x")).toInt()
+                + DesignTokens::sidebarExpandedWidth
+        && stackGeometry.value(QStringLiteral("x")).toInt()
+                + stackGeometry.value(QStringLiteral("width")).toInt()
+            == contentGeometry.value(QStringLiteral("x")).toInt()
+                + contentGeometry.value(QStringLiteral("width")).toInt();
+    const bool fiftyToggleGeometryStable = fiftyTogglesSettled && tabs->sidebarPinned()
+        && geometrySettledSignals == 1
+        && rapidGeometryAfterFifty.value(QStringLiteral("sidebarTransitionState")).toString()
+            == QStringLiteral("Open")
+        && rapidGeometryAfterFifty.value(QStringLiteral("sidebarWidth")).toInt()
+            == DesignTokens::sidebarExpandedWidth
+        && rapidGeometryAfterFifty.value(QStringLiteral("sidebarReservedWidth")).toInt()
+            == DesignTokens::sidebarExpandedWidth
+        && stackUsesRemainingWidth
+        && viewportAfterFifty.value(QStringLiteral("matchesExpected")).toBool();
+    results.record(QStringLiteral("fifty immediate Sidebar toggles settle once without cumulative offset"),
+                   fiftyToggleGeometryStable,
+                   QStringLiteral("settled=%1; %2")
+                       .arg(geometrySettledSignals)
+                       .arg(QString::fromUtf8(QJsonDocument(rapidGeometryAfterFifty)
+                                                  .toJson(QJsonDocument::Compact))));
+
+    if (tabs) window->setSidebarPinnedForDiagnostics(false);
+    const bool collapsedGeometryStable = tabs
+        && waitFor([&] { return !tabs->sidebarAnimationActive(); })
         && !tabs->sidebarPinned();
-    results.record(QStringLiteral("superseded sidebar animations cancel to a deterministic final state"),
-                   sidebarCancelled);
+    const QJsonObject collapsedGeometry = window->fullscreenDiagnostics();
+    const QJsonObject collapsedViewport = collapsedGeometry
+        .value(QStringLiteral("viewport")).toObject();
+    results.record(QStringLiteral("collapsed Sidebar reserves exactly its compact width"),
+                   collapsedGeometryStable
+                       && collapsedGeometry.value(QStringLiteral("sidebarTransitionState")).toString()
+                           == QStringLiteral("Closed")
+                       && collapsedGeometry.value(QStringLiteral("sidebarWidth")).toInt()
+                           == DesignTokens::sidebarCollapsedWidth
+                       && collapsedGeometry.value(QStringLiteral("sidebarReservedWidth")).toInt()
+                           == DesignTokens::sidebarCollapsedWidth
+                       && collapsedViewport.value(QStringLiteral("matchesExpected")).toBool(),
+                   QString::fromUtf8(QJsonDocument(collapsedGeometry)
+                                         .toJson(QJsonDocument::Compact)));
+    capture(QStringLiteral("verticalTabsCollapsed"),
+            QStringLiteral("06b-vertical-tabs-collapsed.png"), window);
+    if (tabs) window->setSidebarPinnedForDiagnostics(true);
+    waitFor([&] { return tabs && !tabs->sidebarAnimationActive(); });
 
     QElapsedTimer tabTimer;
     tabTimer.start();

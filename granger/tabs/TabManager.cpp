@@ -747,6 +747,7 @@ TabManager::TabManager(QWidget *parent)
     m_sidebar->raise();
 
     m_widthAnimation = new QVariantAnimation(this);
+    m_widthAnimation->setObjectName(QStringLiteral("SidebarWidthAnimation"));
     AnimationPolicy::configure(m_widthAnimation, AnimationKind::Sidebar);
     m_widthAnimation->setStartValue(0.0);
     m_widthAnimation->setEndValue(1.0);
@@ -777,6 +778,7 @@ TabManager::TabManager(QWidget *parent)
             this, &TabManager::clearSpaceSwitchTransition);
 
     m_tabSectionAnimation = new QVariantAnimation(this);
+    m_tabSectionAnimation->setObjectName(QStringLiteral("TabSectionAnimation"));
     AnimationPolicy::configure(m_tabSectionAnimation, AnimationKind::Sidebar);
     connect(m_tabSectionAnimation, &QVariantAnimation::valueChanged,
             this, [this](const QVariant &value) {

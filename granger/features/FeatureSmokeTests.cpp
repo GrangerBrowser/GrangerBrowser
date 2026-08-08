@@ -12,6 +12,7 @@
 #include "granger/tabs/TabManager.h"
 #include "granger/ui/AnimationPolicy.h"
 #include "granger/ui/ContainerEditorDialog.h"
+#include "granger/ui/DesignTokens.h"
 #include "granger/ui/DownloadUi.h"
 #include "granger/ui/MainWindow.h"
 #include "granger/ui/ThemeManager.h"
@@ -63,6 +64,7 @@
 #include <QLineEdit>
 #include <QLockFile>
 #include <QUrlQuery>
+#include <QVariantAnimation>
 #include <QVariantMap>
 #include <QWebEnginePage>
 #include <QWebEngineProfile>
@@ -1562,6 +1564,13 @@ int runFeatureSmokeTests(QApplication &app,
             QStringLiteral("TabsHeaderButton"));
         auto *tabScroll = sidebarStress.findChild<QScrollArea *>(
             QStringLiteral("TabScrollArea"));
+        auto *sidebarTopArea = sidebarStress.findChild<QWidget *>(
+            QStringLiteral("SidebarTopArea"));
+        auto *bottomNavigation = sidebarStress.findChild<QWidget *>(
+            QStringLiteral("BottomNavigation"));
+        auto *reservedSpace = sidebarStress.findChild<QWidget *>(
+            QStringLiteral("SidebarReservedSpace"));
+        QWidget *sidebarWidget = sidebarStress.sidebarWidget();
         const QList<QToolButton *> spaceButtons = sidebarStress.findChildren<QToolButton *>(
             QStringLiteral("SpaceButton"));
         const QString defaultDisplayName = Localization::text(
@@ -1584,7 +1593,81 @@ int runFeatureSmokeTests(QApplication &app,
                            ? QStringLiteral("label=%1; count=%2")
                                  .arg(tabsHeader->text(),
                                       tabsHeader->property("sidebarCount").toString())
-                           : QStringLiteral("missing header"));
+                            : QStringLiteral("missing header"));
+
+        QList<QToolButton *> bottomActions;
+        if (bottomNavigation) {
+            for (QToolButton *button : bottomNavigation->findChildren<QToolButton *>()) {
+                if (button->property("sidebarAction").toBool()) bottomActions.append(button);
+            }
+        }
+        std::sort(bottomActions.begin(), bottomActions.end(), [](const auto *left,
+                                                                  const auto *right) {
+            return left->geometry().top() < right->geometry().top();
+        });
+        bool compactBottomRows = bottomActions.size() == 4;
+        for (int i = 0; compactBottomRows && i < bottomActions.size(); ++i) {
+            compactBottomRows = bottomActions.at(i)->height() == 34;
+            if (i > 0) {
+                const int gap = bottomActions.at(i)->geometry().top()
+                    - bottomActions.at(i - 1)->geometry().bottom() - 1;
+                compactBottomRows = compactBottomRows && gap >= 0 && gap <= 4;
+            }
+        }
+        const QRect bottomGeometryExpanded = bottomNavigation
+            ? bottomNavigation->geometry() : QRect();
+        const int bottomInset = sidebarWidget && bottomNavigation
+            ? sidebarWidget->contentsRect().bottom() - bottomNavigation->geometry().bottom()
+            : -1;
+        const bool bottomHierarchyValid = sidebarWidget && sidebarTopArea && bottomNavigation
+            && tabScroll && bottomNavigation->parentWidget() == sidebarWidget
+            && !tabScroll->isAncestorOf(bottomNavigation)
+            && sidebarTopArea->geometry().bottom() < bottomNavigation->geometry().top()
+            && bottomInset >= 0 && bottomInset <= 8 && compactBottomRows;
+        results.record(QStringLiteral("BottomNavigation is a compact non-scrollable sibling anchored at the bottom"),
+                       bottomHierarchyValid,
+                       QStringLiteral("parent=%1; inset=%2; rows=%3")
+                           .arg(bottomNavigation && bottomNavigation->parentWidget()
+                                    ? bottomNavigation->parentWidget()->objectName()
+                                    : QStringLiteral("missing"))
+                           .arg(bottomInset)
+                           .arg(bottomActions.size()));
+
+        if (tabsHeader) tabsHeader->click();
+        settleEvents(AnimationPolicy::duration(AnimationKind::Sidebar) + 80);
+        const QRect bottomGeometryCollapsed = bottomNavigation
+            ? bottomNavigation->geometry() : QRect();
+        const bool bottomStableDuringCollapse = tabsHeader && tabScroll && bottomNavigation
+            && !tabScroll->isVisible()
+            && bottomGeometryCollapsed == bottomGeometryExpanded;
+        results.record(QStringLiteral("collapsing Tabs does not redistribute BottomNavigation"),
+                       bottomStableDuringCollapse,
+                       QStringLiteral("expanded=%1,%2 %3x%4; collapsed=%5,%6 %7x%8")
+                           .arg(bottomGeometryExpanded.x()).arg(bottomGeometryExpanded.y())
+                           .arg(bottomGeometryExpanded.width()).arg(bottomGeometryExpanded.height())
+                           .arg(bottomGeometryCollapsed.x()).arg(bottomGeometryCollapsed.y())
+                           .arg(bottomGeometryCollapsed.width()).arg(bottomGeometryCollapsed.height()));
+        if (tabsHeader) tabsHeader->click();
+        settleEvents(AnimationPolicy::duration(AnimationKind::Sidebar) + 80);
+
+        auto *downloadsAction = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SidebarDownloadsButton"));
+        auto *historyAction = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SidebarHistoryButton"));
+        auto *settingsAction = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SidebarSettingsButton"));
+        auto *spacesAction = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SidebarManageSpacesButton"));
+        sidebarStress.setActiveSidebarDestination(QStringLiteral("about:history"));
+        const bool destinationStateExclusive = downloadsAction && historyAction
+            && settingsAction && spacesAction
+            && !downloadsAction->property("active").toBool()
+            && historyAction->property("active").toBool()
+            && !settingsAction->property("active").toBool()
+            && !spacesAction->property("active").toBool();
+        results.record(QStringLiteral("BottomNavigation exposes one truthful active destination"),
+                       destinationStateExclusive);
+        sidebarStress.setActiveSidebarDestination(QStringLiteral("about:granger"));
 
         sidebarStress.setAnimationsEnabled(true);
         if (tabScroll) {
@@ -1640,6 +1723,72 @@ int runFeatureSmokeTests(QApplication &app,
                            .arg(sidebarStress.visibleTabCount())
                            .arg(headerGeometry.bottom())
                            .arg(scrollGeometry.top()));
+
+        for (int i = defaultStressPages.size(); i < 50; ++i) {
+            auto *page = new QWidget;
+            page->setProperty("granger.spaceId", ContainerManager::defaultSpaceId());
+            sidebarStress.addTab(page, QStringLiteral("Sidebar tab %1").arg(i + 1));
+            defaultStressPages.append(page);
+        }
+        sidebarStress.setActiveSpace(ContainerManager::defaultSpaceId(), false);
+        if (tabScroll) tabScroll->verticalScrollBar()->setValue(
+            tabScroll->verticalScrollBar()->maximum());
+        settleEvents(30);
+
+        const int widthAnimationCount = sidebarStress.findChildren<QVariantAnimation *>(
+            QStringLiteral("SidebarWidthAnimation"), Qt::FindDirectChildrenOnly).size();
+        int settledSignals = 0;
+        const QMetaObject::Connection settledConnection = QObject::connect(
+            &sidebarStress, &TabManager::sidebarGeometrySettled,
+            &sidebarStress, [&settledSignals] { ++settledSignals; });
+        for (int i = 0; i < 50; ++i) sidebarStress.toggleSidebarPinned();
+        settleEvents(AnimationPolicy::duration(AnimationKind::Sidebar) + 80);
+        const int fiftyToggleSettles = settledSignals;
+        const bool fiftyToggleStable = sidebarStress.sidebarPinned()
+            && !sidebarStress.sidebarAnimationActive()
+            && sidebarStress.sidebarTransitionStateName() == QStringLiteral("Open")
+            && sidebarWidget && sidebarWidget->width() == DesignTokens::sidebarExpandedWidth
+            && reservedSpace && reservedSpace->width() == DesignTokens::sidebarExpandedWidth
+            && sidebarStress.sidebarTargetWidth() == DesignTokens::sidebarExpandedWidth
+            && widthAnimationCount == 1 && fiftyToggleSettles == 1;
+        results.record(QStringLiteral("fifty immediate Sidebar toggles reuse one animation and one final callback"),
+                       fiftyToggleStable,
+                       QStringLiteral("state=%1; sidebar=%2; reserved=%3; target=%4; animations=%5; settled=%6")
+                           .arg(sidebarStress.sidebarTransitionStateName())
+                           .arg(sidebarWidget ? sidebarWidget->width() : -1)
+                           .arg(reservedSpace ? reservedSpace->width() : -1)
+                           .arg(sidebarStress.sidebarTargetWidth())
+                           .arg(widthAnimationCount)
+                           .arg(fiftyToggleSettles));
+        QObject::disconnect(settledConnection);
+
+        for (int i = 0; i < 20; ++i) {
+            sidebarStress.resize(880 + (i % 4) * 24, 640 + (i % 3) * 16);
+            sidebarStress.activateIndex(i % defaultStressPages.size());
+            sidebarStress.toggleSidebarPinned();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 3);
+        }
+        settleEvents(AnimationPolicy::duration(AnimationKind::Sidebar) + 80);
+        const int finalBottomInset = sidebarWidget && bottomNavigation
+            ? sidebarWidget->contentsRect().bottom() - bottomNavigation->geometry().bottom()
+            : -1;
+        const bool resizeToggleStable = sidebarStress.sidebarPinned()
+            && !sidebarStress.sidebarAnimationActive()
+            && sidebarStress.sidebarTransitionStateName() == QStringLiteral("Open")
+            && sidebarStress.activeSpaceId() == ContainerManager::defaultSpaceId()
+            && sidebarStress.visibleTabCount() == 50
+            && sidebarStress.currentWidget()
+            && sidebarWidget && sidebarWidget->width() == DesignTokens::sidebarExpandedWidth
+            && reservedSpace && reservedSpace->width() == DesignTokens::sidebarExpandedWidth
+            && finalBottomInset >= 0 && finalBottomInset <= 8;
+        results.record(QStringLiteral("twenty Sidebar reversals during resize and tab switching preserve fifty-tab geometry"),
+                       resizeToggleStable,
+                       QStringLiteral("state=%1; visible=%2; sidebar=%3; reserved=%4; bottomInset=%5")
+                           .arg(sidebarStress.sidebarTransitionStateName())
+                           .arg(sidebarStress.visibleTabCount())
+                           .arg(sidebarWidget ? sidebarWidget->width() : -1)
+                           .arg(reservedSpace ? reservedSpace->width() : -1)
+                           .arg(finalBottomInset));
         sidebarStress.hide();
 
         TabManager closeFallbackTabs;
