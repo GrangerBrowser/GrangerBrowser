@@ -68,8 +68,10 @@ if (Test-Path -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/conj
 
 $licenses = Join-Path $resolvedPackage "licenses"
 $releaseDocs = Join-Path $resolvedPackage "docs"
+$releaseSidebarScreenshots = Join-Path $releaseDocs "screenshots/sidebar-layout-stability"
 New-Item -ItemType Directory -Path $licenses -Force | Out-Null
 New-Item -ItemType Directory -Path $releaseDocs -Force | Out-Null
+New-Item -ItemType Directory -Path $releaseSidebarScreenshots -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot "granger/resources/qr-fixtures/release-bridge.png") -Destination (Join-Path $resolvedPackage "bridge.png")
 Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "BUILDING.md") -Destination $resolvedPackage
@@ -77,6 +79,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "SECURITY.md") -Destination $reso
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GRANGER_BROWSER_RELEASE_REPORT.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GIT_WORKFLOW.md") -Destination $releaseDocs
+Copy-Item -Path (Join-Path $projectRoot "docs/screenshots/sidebar-layout-stability/*.png") `
+    -Destination $releaseSidebarScreenshots
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $licenses
 Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/quirc/LICENSE") -Destination (Join-Path $licenses "quirc-LICENSE.txt")
 Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/lucide-LICENSE.txt") -Destination (Join-Path $licenses "lucide-LICENSE.txt")
@@ -96,7 +100,7 @@ $required = @(
     "GrangerBrowser.exe", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
     "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
-    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/GIT_WORKFLOW.md", "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "bridge.png", "runtime/tor/tor.exe",
+    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/GIT_WORKFLOW.md", "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-collapsed.png", "docs/screenshots/sidebar-layout-stability/sidebar-150.png", "docs/screenshots/sidebar-layout-stability/sidebar-200.png", "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "bridge.png", "runtime/tor/tor.exe",
     "runtime/tor/data/geoip", "runtime/tor/data/geoip6", "runtime/tor/pluggable_transports/lyrebird.exe"
 )
 foreach ($relative in $required) {
