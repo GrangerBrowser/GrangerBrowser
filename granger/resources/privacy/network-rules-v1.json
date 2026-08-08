@@ -1,0 +1,29 @@
+{
+  "version": "2026.07.13-v1",
+  "updated": "2026-07-13",
+  "trackerHosts": [
+    "amplitude.com",
+    "app-measurement.com",
+    "branch.io",
+    "connect.facebook.net",
+    "doubleclick.net",
+    "facebook.net",
+    "google-analytics.com",
+    "googlesyndication.com",
+    "googletagmanager.com",
+    "hotjar.com",
+    "mixpanel.com",
+    "quantserve.com",
+    "scorecardresearch.com",
+    "segment.com",
+    "segment.io"
+  ],
+  "cryptominingHosts": [
+    "authedmine.com",
+    "coin-hive.com",
+    "coinhive.com",
+    "crypto-loot.com",
+    "minero.cc",
+    "webminepool.com"
+  ]
+}

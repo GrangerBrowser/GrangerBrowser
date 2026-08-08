@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "duckduckgo",
+      "source": "DuckDuck.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [2000, 2000],
+      "sourceSha256": "09A17822524B5917C0307FF96153FB06712E9C56E2D36092BE6928110403985B",
+      "resource": ":/search-engines/duckduckgo.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "BBB1047D64B4105DC8420ED15A5E97811A19EEFB44404062A8097990C85C397E"
+    },
+    {
+      "id": "google",
+      "source": "Google.png",
+      "sourceFormat": "WEBP",
+      "sourceSize": [3840, 3840],
+      "sourceSha256": "D008D5900184B2E497BD5DE0337A52E2A8068E85AD555849A76C4C2EAE15A4DA",
+      "resource": ":/search-engines/google.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "CA7C17BE63C74B40E8CD9193E3D195118ADB69F821CF3172F527E832399C422F"
+    },
+    {
+      "id": "bing",
+      "source": "bing.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [3840, 2160],
+      "sourceSha256": "76E6A13AEBA6097174C1C7E79885E1B4E7F8591CD4BCB0DC3E338487BD1A49BA",
+      "resource": ":/search-engines/bing.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "7A01C5F5D12C0C6240D6A7382C3CF72263764A235648A96AA6EBD186EDF42A6A"
+    },
+    {
+      "id": "brave",
+      "source": "brave.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [512, 512],
+      "sourceSha256": "B497ECF5D18354413B7262B3879B14A6CCE3F7A83B834FF9C22848A7302D6A31",
+      "resource": ":/search-engines/brave.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "42490C4E11E6689C5DBF618A8922FD2581386358D8AB9707DBBECFA694C005F9"
+    },
+    {
+      "id": "startpage",
+      "source": "startpage.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [1000, 1119],
+      "sourceSha256": "B4CA5705E2548A4712697FB8A85BA4AA84CA5B2FEC4D5626ACA5ADE56545D1C7",
+      "resource": ":/search-engines/startpage.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "78F313400F5C4E8E1D32106A801B81A629A27FAC5CE75B0707663220515A1D6A"
+    },
+    {
+      "id": "mojeek",
+      "source": "mojeek.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [156, 96],
+      "sourceSha256": "7A28038BBC9FCC3DAEB4ECF0094921292CB63E0E3F5792393C5AC5E0C2D45A22",
+      "resource": ":/search-engines/mojeek.png",
+      "embeddedSize": [178, 178],
+      "embeddedSha256": "B714A3213FBF38B61A69AC4DE5061A9022BE2AA45419FFDBEEF0781EBD75551E"
+    },
+    {
+      "id": "yandex",
+      "source": "yandex.png",
+      "sourceFormat": "WEBP",
+      "sourceSize": [1280, 1280],
+      "sourceSha256": "4A0423E6F6F534EE6267D576B94C757DEE782BD5C22A1692E00F1B72027CB19F",
+      "resource": ":/search-engines/yandex.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "8BCD62037BBF86226CD30674F0D44074B64A6C883FAB0506DFA463B24768005C"
+    },
+    {
+      "id": "onion",
+      "source": "onion.png",
+      "sourceFormat": "WEBP",
+      "sourceSize": [3840, 3840],
+      "sourceSha256": "5B65EED19D8796E1404D59F397E5E5710273743D8AF29E34DB35A7BF8DA782EC",
+      "resource": ":/search-engines/onion.png",
+      "embeddedSize": [512, 512],
+      "embeddedSha256": "971AA3080CB79F077043A9E5DD41D2E4166348FD6CBE80E256FF85BC1D6378E7"
+    }
+  ],
+  "wallpaper": {
+    "source": "emma watson.jpg",
+    "sourceFormat": "JPEG",
+    "sourceSize": [735, 443],
+    "sourceSha256": "C853A1A4E05B9217116753A3E91EDF675FE8010CA0D9C3B95456EAE6DE8464B2",
+    "resource": ":/start-page/surface-9c42",
+    "embeddedSha256": "C853A1A4E05B9217116753A3E91EDF675FE8010CA0D9C3B95456EAE6DE8464B2"
+  },
+  "applicationIcon": {
+    "source": "icon.jpg",
+    "canonicalSource": "icon-source.jpg",
+    "sourceFormat": "JPEG",
+    "sourceSize": [736, 982],
+    "sourceMode": "RGB",
+    "sourceSha256": "23AF18443B242598744DDC1B7FA31BB4E20A61D85BD7CC881CB97BE9453E83E7",
+    "crop": [60, 95, 676, 711],
+    "resource": ":/icons/app-icon.png",
+    "embeddedSize": [512, 512],
+    "embeddedSha256": "8F528E484DAB43E5A98C1D66AC74AAA01A1950C1568BA330DF9EF287A0817C5F",
+    "icoSizes": [16, 20, 24, 32, 48, 64, 128, 256],
+    "icoSha256": "F5CB56E53EC469685805316DA48800CB9E5EBADAD4120E8341C5557E5CED8B93"
+  },
+  "aiChatIcon": {
+    "source": "ai.png",
+    "sourceFormat": "PNG",
+    "sourceSize": [1536, 1024],
+    "sourceMode": "RGBA",
+    "sourceSha256": "77DDD1B25A5A20220B64533381B98FCA312538BCD24B2C80A12346742289B8A7",
+    "crop": [544, 267, 992, 715],
+    "resource": ":/icons/ai.png",
+    "embeddedSize": [512, 512],
+    "embeddedSha256": "0EA35D0A60B848C0C50E7F84FA229C930F6BCB99A4EB9501004F9AC266AC28AD",
+    "displaySizes": [16, 20, 24, 32]
+  }
+}

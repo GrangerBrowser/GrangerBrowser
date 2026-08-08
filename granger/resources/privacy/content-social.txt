@@ -1,0 +1,7 @@
+! Granger Browser social-widget rules. Enabled by Strict mode or Custom settings.
+||connect.facebook.net^$third-party
+||platform.twitter.com^$third-party
+||platform.linkedin.com^$third-party
+||assets.pinterest.com^$third-party
+||embed.redditmedia.com^$third-party
+||platform.instagram.com^$third-party

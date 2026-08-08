@@ -1,0 +1,14 @@
+! Granger Browser compact tracker rules. Original project-maintained list.
+||google-analytics.com^$third-party
+||googletagmanager.com^$third-party
+||scorecardresearch.com^$third-party
+||quantserve.com^$third-party
+||hotjar.com^$third-party
+||segment.com^$third-party
+||segment.io^$third-party
+||mixpanel.com^$third-party
+||amplitude.com^$third-party
+||app-measurement.com^$third-party
+||branch.io^$third-party
+||clarity.ms^$third-party
+||fullstory.com^$third-party

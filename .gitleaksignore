@@ -1,0 +1,6 @@
+# Bundled EasyList comment metadata. These exact comment lines match the
+# Sourcegraph token shape but contain no application credential.
+granger/resources/privacy/easylist.txt:sourcegraph-access-token:6
+granger/resources/privacy/easylist.txt:sourcegraph-access-token:833
+granger/resources/privacy/easylist.txt:sourcegraph-access-token:14630
+

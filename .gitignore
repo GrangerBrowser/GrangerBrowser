@@ -1,0 +1,97 @@
+# Build systems and generated output
+/build/
+/out/
+/output/
+/release/
+/dist/
+/cmake-build-*/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+*_autogen/
+*._autogen/
+
+# Compiled and deployed binaries
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.dll
+*.exe
+*.so
+*.dylib
+*.pak
+*.qm
+*.bin
+*.zip
+*.7z
+
+# Runtime browser data
+/runtime/
+/profile/
+/profiles/
+/cache/
+/state/
+/logs/
+/downloads/
+/browser-data/
+/user-data/
+/containers/
+/spaces/
+**/QtWebEngine/
+**/GPUCache/
+**/Code Cache/
+**/Service Worker/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.log
+*.dmp
+*.crash
+*.lock
+SingletonCookie
+SingletonLock
+SingletonSocket
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+secrets.json
+credentials.json
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Python tooling caches; Python is not a browser runtime dependency
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and operating-system state
+/.vs/
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.user
+*.suo
+
+# Separate local Pamp repository reviewed during the clean-room integration.
+# It has its own Git history and contains runtime reports/case data.
+/pentest/
+

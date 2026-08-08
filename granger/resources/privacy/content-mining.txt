@@ -1,0 +1,9 @@
+! Granger Browser compact cryptomining rules. Original project-maintained list.
+||coin-hive.com^
+||coinhive.com^
+||authedmine.com^
+||crypto-loot.com^
+||cryptoloot.pro^
+||webminepool.com^
+||minero.cc^
+||coinimp.com^

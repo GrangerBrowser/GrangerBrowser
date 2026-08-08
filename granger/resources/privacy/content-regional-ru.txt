@@ -1,0 +1,8 @@
+! Granger Browser optional compact Russian regional rules. Original project-maintained list.
+||adriver.ru^$third-party
+||adfox.ru^$third-party
+||an.yandex.ru^$third-party
+||top-fwz1.mail.ru^$third-party
+||mc.yandex.ru^$third-party
+||tns-counter.ru^$third-party
+||livetex.ru^$third-party

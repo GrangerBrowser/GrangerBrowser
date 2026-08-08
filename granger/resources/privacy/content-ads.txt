@@ -1,0 +1,16 @@
+! Granger Browser compact built-in rules. Original project-maintained list.
+! This is not EasyList and is reloaded locally; no browsing data leaves the device.
+||doubleclick.net^$third-party
+||googlesyndication.com^$third-party
+||googleadservices.com^$third-party
+||amazon-adsystem.com^$third-party
+||adnxs.com^$third-party
+||adsrvr.org^$third-party
+||taboola.com^$third-party
+||outbrain.com^$third-party
+||criteo.com^$third-party
+||criteo.net^$third-party
+##[data-ad-client]
+##[data-ad-slot]
+google.com##.adsbygoogle
+youtube.com##ytd-display-ad-renderer

@@ -1,0 +1,98 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="back.svg">icons/back.svg</file>
+        <file alias="app-icon.png">app-icon.png</file>
+        <file alias="ai.png">icons/ai.png</file>
+        <file alias="audio.svg">icons/audio.svg</file>
+        <file alias="bookmarks.svg">icons/bookmarks.svg</file>
+        <file alias="bridges.svg">icons/bridges.svg</file>
+        <file alias="browser.svg">icons/browser.svg</file>
+        <file alias="downloads.svg">icons/downloads.svg</file>
+        <file alias="download-file.svg">icons/download-file.svg</file>
+        <file alias="download-executable.svg">icons/download-executable.svg</file>
+        <file alias="download-archive.svg">icons/download-archive.svg</file>
+        <file alias="download-document.svg">icons/download-document.svg</file>
+        <file alias="download-image.svg">icons/download-image.svg</file>
+        <file alias="download-audio.svg">icons/download-audio.svg</file>
+        <file alias="download-video.svg">icons/download-video.svg</file>
+        <file alias="forward.svg">icons/forward.svg</file>
+        <file alias="history.svg">icons/history.svg</file>
+        <file alias="home.svg">icons/home.svg</file>
+        <file alias="lock.svg">icons/lock.svg</file>
+        <file alias="network.svg">icons/network.svg</file>
+        <file alias="plus.svg">icons/plus.svg</file>
+        <file alias="pause.svg">icons/pause.svg</file>
+        <file alias="play.svg">icons/play.svg</file>
+        <file alias="privacy.svg">icons/privacy.svg</file>
+        <file alias="refresh.svg">icons/refresh.svg</file>
+        <file alias="reports.svg">icons/reports.svg</file>
+        <file alias="search.svg">icons/search.svg</file>
+        <file alias="settings.svg">icons/settings.svg</file>
+        <file alias="shield.svg">icons/shield.svg</file>
+        <file alias="sidebar-toggle.svg">icons/sidebar-toggle.svg</file>
+        <file alias="site-controls.svg">icons/site-controls.svg</file>
+        <file alias="tor.svg">icons/tor.svg</file>
+        <file alias="stop.svg">icons/stop.svg</file>
+        <file alias="close.svg">icons/close.svg</file>
+        <file alias="copy.svg">icons/copy.svg</file>
+        <file alias="check.svg">icons/check.svg</file>
+        <file alias="chevron-down.svg">icons/chevron-down.svg</file>
+        <file alias="chevron-right.svg">icons/chevron-right.svg</file>
+        <file alias="site-onion.svg">icons/site-onion.svg</file>
+        <file alias="container-circle.svg">icons/container-circle.svg</file>
+        <file alias="container-person.svg">icons/container-person.svg</file>
+        <file alias="container-briefcase.svg">icons/container-briefcase.svg</file>
+        <file alias="container-clock.svg">icons/container-clock.svg</file>
+        <file alias="container-bank.svg">icons/container-bank.svg</file>
+        <file alias="container-star.svg">icons/container-star.svg</file>
+        <file alias="container-globe.svg">icons/container-globe.svg</file>
+        <file alias="container-code.svg">icons/container-code.svg</file>
+        <file alias="container-mail.svg">icons/container-mail.svg</file>
+        <file alias="container-folder.svg">icons/container-folder.svg</file>
+        <file alias="container-chat.svg">icons/container-chat.svg</file>
+        <file alias="container-key.svg">icons/container-key.svg</file>
+        <file alias="container-search.svg">icons/container-search.svg</file>
+        <file alias="container-shield.svg">icons/container-shield.svg</file>
+    </qresource>
+    <qresource prefix="/search-engines">
+        <file alias="duckduckgo.png">search-engines/duckduckgo.png</file>
+        <file alias="google.png">search-engines/google.png</file>
+        <file alias="bing.png">search-engines/bing.png</file>
+        <file alias="brave.png">search-engines/brave.png</file>
+        <file alias="startpage.png">search-engines/startpage.png</file>
+        <file alias="mojeek.png">search-engines/mojeek.png</file>
+        <file alias="yandex.png">search-engines/yandex.png</file>
+        <file alias="onion.png">search-engines/onion.png</file>
+    </qresource>
+    <qresource prefix="/start-page">
+        <file alias="surface-9c42">start-page/surface-9c42.jpg</file>
+    </qresource>
+    <qresource prefix="/ui-assets">
+        <file alias="manifest-v1.json">ui-assets-manifest.json</file>
+    </qresource>
+    <qresource prefix="/qr-fixtures">
+        <file alias="bridge1.png">qr-fixtures/bridge1.png</file>
+        <file alias="bridge2.png">qr-fixtures/bridge2.png</file>
+        <file alias="bridges-multi.png">qr-fixtures/bridges-multi.png</file>
+        <file alias="not-a-bridge.png">qr-fixtures/not-a-bridge.png</file>
+    </qresource>
+    <qresource prefix="/translations">
+        <file alias="en.json">translations/en.json</file>
+        <file alias="ru.json">translations/ru.json</file>
+        <file alias="kk.json">translations/kk.json</file>
+    </qresource>
+    <qresource prefix="/legal">
+        <file alias="pamp-lite-attribution.md">../pamp_lite/ATTRIBUTION.md</file>
+    </qresource>
+    <qresource prefix="/privacy">
+        <file alias="network-rules-v1.json">privacy/network-rules-v1.json</file>
+        <file alias="url-policy-v1.json">privacy/url-policy-v1.json</file>
+        <file alias="content-ads.txt">privacy/content-ads.txt</file>
+        <file alias="content-trackers.txt">privacy/content-trackers.txt</file>
+        <file alias="content-mining.txt">privacy/content-mining.txt</file>
+        <file alias="content-social.txt">privacy/content-social.txt</file>
+        <file alias="content-regional-ru.txt">privacy/content-regional-ru.txt</file>
+        <file alias="easylist.txt">privacy/easylist.txt</file>
+        <file alias="easyprivacy.txt">privacy/easyprivacy.txt</file>
+    </qresource>
+</RCC>
