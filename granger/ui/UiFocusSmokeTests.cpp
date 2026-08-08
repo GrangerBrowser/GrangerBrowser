@@ -1460,13 +1460,19 @@ int runUiFocusSmoke(QApplication &app,
 
     switchLanguage(QStringLiteral("kk"));
     window->openAddressForDiagnostics(QStringLiteral("about:settings?category=privacy"));
-    const bool permissionSelectReady = waitFor([&] {
+    const auto permissionPageReady = [&] {
         BrowserTab *tab = window->currentTabForDiagnostics();
         return tab && !tab->isLoading()
+            && window->currentAddressForDiagnostics().contains(
+                QStringLiteral("category=privacy"), Qt::CaseInsensitive)
             && evaluate(tab->page(), QStringLiteral(
-                   "!!document.querySelector('select[name=permission][data-ds-enhanced=true]')"),
+                   "document.readyState==='complete'&&!!document.querySelector('select[name=permission][data-ds-enhanced=true]')"),
                         QWebEngineScript::MainWorld, 1000).toBool();
-    }, 6000);
+    };
+    const bool permissionSelectReady = waitFor(permissionPageReady, 6000);
+    settle(240);
+    const bool permissionSelectStable = permissionSelectReady
+        && waitFor(permissionPageReady, 3000);
     BrowserTab *permissionTab = window->currentTabForDiagnostics();
     QVariantMap permissionScrollState;
     bool permissionPopupOpened = false;
@@ -1549,7 +1555,7 @@ int runUiFocusSmoke(QApplication &app,
         })())JS")).toMap();
     const bool kazakhLanguageActive = settings.language() == QStringLiteral("kk")
         && Localization::language() == QStringLiteral("kk");
-    bool longSelectPassed = kazakhLanguageActive && permissionSelectReady
+    bool longSelectPassed = kazakhLanguageActive && permissionSelectStable
         && longSelectState.size() == 10;
     for (auto it = longSelectState.constBegin(); it != longSelectState.constEnd(); ++it) {
         if (it.key() != QStringLiteral("geometry")) {
