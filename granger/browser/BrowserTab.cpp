@@ -353,11 +353,12 @@ void BrowserTab::updateLetterbox()
     const QSize target = FingerprintViewportPolicy::standardizedSize(available);
     const bool sizeChanged = target != m_letterboxedViewportSize || m_view->size() != target;
     m_layout->setAlignment(m_view, Qt::AlignCenter);
-    m_view->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_view->setMinimumSize(0, 0);
+    m_view->setMaximumSize(target);
+    m_view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     if (sizeChanged) {
         m_letterboxedViewportSize = target;
         ++m_letterboxAdjustmentCount;
-        m_view->setFixedSize(target);
     }
     m_layout->invalidate();
     m_layout->activate();
