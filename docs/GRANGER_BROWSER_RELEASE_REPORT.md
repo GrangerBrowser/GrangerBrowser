@@ -287,8 +287,8 @@ release\Granger Browser\GrangerBrowser.exe
 | Параметр | Значение |
 | --- | --- |
 | Version | 0.4.0 |
-| Size | 9 404 928 bytes |
-| SHA-256 | `9240D46662D71028470407D5F7025AFD30A0EE4938B1482585209FF624D2D6DD` |
+| Size | 9 456 128 bytes |
+| SHA-256 | `2863CFCE9E8E5EDCB0EBA538CE0F475A3D96188BE6166A9F6C7A8F5D2991ACBD` |
 | ProductName | Granger Browser |
 | FileDescription | Granger Browser privacy browser |
 | OriginalFilename | GrangerBrowser.exe |
