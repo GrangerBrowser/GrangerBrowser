@@ -562,8 +562,8 @@ QString ThemeManager::styleSheet() const
         }
 
         QToolButton#SpaceButton[active="true"] {
-            background: __ACCENT_SOFT__;
-            border-color: rgba(217,86,97,0.34);
+            background: rgba(217,86,97,0.11);
+            border-color: rgba(217,86,97,0.28);
             color: __TEXT__;
             font-weight: 600;
         }
@@ -1249,6 +1249,36 @@ QString ThemeManager::styleSheet() const
             background: transparent;
         }
 
+    )");
+    qss += QStringLiteral(R"(
+        QLabel#SidebarSectionLabel {
+            color: __MUTED__;
+            padding: 0 9px;
+            font-size: 10px;
+            font-weight: 650;
+        }
+
+        QFrame#SidebarSectionSeparator {
+            border: 0;
+            background: __BORDER_SUBTLE__;
+        }
+
+        QToolButton#SpaceButton[expanded="true"],
+        QToolButton#TabsHeaderButton[expanded="true"] {
+            padding-left: 9px;
+            padding-right: 42px;
+        }
+
+        QToolButton#SpaceButton[expanded="false"] {
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        QToolButton[sidebarAction="true"][active="true"] {
+            background: __ACTIVE_BG__;
+            border-color: __BORDER_SUBTLE__;
+            color: __TEXT__;
+        }
     )");
     return DesignTokens::apply(qss);
 }

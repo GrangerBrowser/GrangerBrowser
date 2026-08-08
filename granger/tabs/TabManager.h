@@ -14,6 +14,7 @@ class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDropEvent;
 class QIcon;
+class QLabel;
 class QMenu;
 class QMimeData;
 class QScrollArea;
@@ -81,6 +82,7 @@ public:
     QString sidebarTransitionStateName() const;
     int sidebarReservedWidth() const;
     int sidebarTargetWidth() const;
+    void setActiveSidebarDestination(const QString &address);
     void activateIndex(int index);
     int count() const;
     int currentIndex() const;
@@ -156,6 +158,7 @@ private:
     QWidget *m_sidebarTopArea = nullptr;
     QWidget *m_bottomNavigation = nullptr;
     QWidget *m_contentLayer = nullptr;
+    QLabel *m_spacesHeader = nullptr;
     QWidget *m_spaceList = nullptr;
     QScrollArea *m_spaceScroll = nullptr;
     QVBoxLayout *m_spaceListLayout = nullptr;

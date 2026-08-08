@@ -3865,6 +3865,7 @@ BrowserTab *MainWindow::createTab(bool privateTab,
     connect(tab, &BrowserTab::displayAddressChanged, this, [this, tab](const QString &address) {
         if (currentTab() == tab) {
             m_navigation->setAddress(address);
+            m_tabs->setActiveSidebarDestination(address);
             const QUrl displayedUrl(address);
             const QString securityStatus =
                 m_certificateErrors.contains(displayedUrl.host())
@@ -7290,6 +7291,7 @@ void MainWindow::syncAddressBar()
 {
     if (BrowserTab *tab = currentTab()) {
         m_navigation->setAddress(tab->displayAddress());
+        m_tabs->setActiveSidebarDestination(tab->displayAddress());
         m_navigation->setNavigationState(tab->canGoBack(), tab->canGoForward());
         const QUrl displayedUrl(tab->displayAddress());
         const QString securityStatus =

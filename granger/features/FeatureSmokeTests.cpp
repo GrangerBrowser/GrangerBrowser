@@ -1576,10 +1576,15 @@ int runFeatureSmokeTests(QApplication &app,
                            && !tabsHeader->text().contains(defaultDisplayName)
                            && tabsHeader->text().startsWith(Localization::text(
                                QStringLiteral("spaces.tabs_header")))
-                           && tabsHeader->text().contains(QStringLiteral("20"))
+                           && tabsHeader->property("sidebarCount").toString()
+                               == QStringLiteral("20")
                            && tabsHeader->accessibleName() == Localization::text(
                                QStringLiteral("spaces.tabs_header")),
-                       tabsHeader ? tabsHeader->text() : QStringLiteral("missing header"));
+                       tabsHeader
+                           ? QStringLiteral("label=%1; count=%2")
+                                 .arg(tabsHeader->text(),
+                                      tabsHeader->property("sidebarCount").toString())
+                           : QStringLiteral("missing header"));
 
         sidebarStress.setAnimationsEnabled(true);
         if (tabScroll) {
@@ -1598,7 +1603,7 @@ int runFeatureSmokeTests(QApplication &app,
             && sidebarStress.activeSpaceId() == ContainerManager::defaultSpaceId()
             && sidebarStress.currentWidget() == activeBeforeCollapse
             && sidebarStress.visibleTabCount() == 20
-            && tabsHeader->text().contains(QStringLiteral("20"))
+            && tabsHeader->property("sidebarCount").toString() == QStringLiteral("20")
             && tabScroll->isVisible()
             && tabScroll->verticalScrollBar()->value() == scrollBeforeCollapse
             && !sidebarStress.sidebarAnimationActive();
@@ -1971,10 +1976,28 @@ int runFeatureSmokeTests(QApplication &app,
                             dragTabId.toUtf8());
             QPoint dragPoint;
             if (tabManager && tabScroll) {
-                dragPoint = tabManager->mapFrom(
-                    tabScroll->viewport(),
-                    QPoint(qMax(1, tabScroll->viewport()->width() / 2),
-                           qMax(1, tabScroll->viewport()->height() - 6)));
+                const QList<QWidget *> tabItems = tabScroll->widget()->findChildren<QWidget *>(
+                    QStringLiteral("TabItem"), Qt::FindDirectChildrenOnly);
+                QWidget *lastDropTarget = nullptr;
+                for (QWidget *item : tabItems) {
+                    if (!item->isVisible()
+                        || item->property("tabId").toString() == dragTabId) {
+                        continue;
+                    }
+                    if (!lastDropTarget
+                        || item->geometry().center().y()
+                            > lastDropTarget->geometry().center().y()) {
+                        lastDropTarget = item;
+                    }
+                }
+                if (lastDropTarget) {
+                    tabScroll->ensureWidgetVisible(lastDropTarget, 0, 0);
+                    settleEvents(40);
+                    dragPoint = lastDropTarget->mapTo(
+                        tabManager,
+                        QPoint(qMax(1, lastDropTarget->width() / 2),
+                               qMax(1, lastDropTarget->height() - 2)));
+                }
                 QDragEnterEvent enterEvent(dragPoint, Qt::MoveAction, &tabMime,
                                            Qt::LeftButton, Qt::NoModifier);
                 QApplication::sendEvent(tabManager, &enterEvent);

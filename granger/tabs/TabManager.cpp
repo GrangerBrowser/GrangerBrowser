@@ -19,6 +19,7 @@
 #include <QMouseEvent>
 #include <QMenu>
 #include <QPainter>
+#include <QPaintEvent>
 #include <QPropertyAnimation>
 #include <QPointer>
 #include <QScrollArea>
@@ -30,6 +31,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QUuid>
+#include <QUrlQuery>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 
@@ -154,6 +156,40 @@ protected:
         wash.setAlpha(qRound(112.0 * strength));
         QPainter painter(this);
         painter.fillRect(rect(), wash);
+    }
+};
+
+class SidebarCountButton final : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        if (!property("expanded").toBool()) return;
+
+        const QString count = property("sidebarCount").toString();
+        if (count.isEmpty()) return;
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QFont badgeFont = font();
+        badgeFont.setPixelSize(10);
+        badgeFont.setWeight(QFont::DemiBold);
+        painter.setFont(badgeFont);
+        const int badgeWidth = qMax(22, QFontMetrics(badgeFont).horizontalAdvance(count) + 12);
+        const QRect badgeRect(width() - badgeWidth - 8, (height() - 20) / 2,
+                              badgeWidth, 20);
+        painter.setPen(QPen(property("active").toBool()
+                                ? QColor(QStringLiteral("#684047"))
+                                : QColor(QStringLiteral("#3a3c45"))));
+        painter.setBrush(property("active").toBool()
+                             ? QColor(QStringLiteral("#4a2a30"))
+                             : QColor(QStringLiteral("#24262d")));
+        painter.drawRoundedRect(badgeRect, 7, 7);
+        painter.setPen(QColor(QStringLiteral("#d6d8df")));
+        painter.drawText(badgeRect, Qt::AlignCenter, count);
     }
 };
 
@@ -605,6 +641,12 @@ TabManager::TabManager(QWidget *parent)
     m_newTabButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     topLayout->addWidget(m_newTabButton);
 
+    m_spacesHeader = new QLabel(m_sidebarTopArea);
+    m_spacesHeader->setObjectName(QStringLiteral("SidebarSectionLabel"));
+    m_spacesHeader->setFixedHeight(18);
+    m_spacesHeader->setVisible(false);
+    topLayout->addWidget(m_spacesHeader);
+
     m_spaceList = new QWidget(m_sidebarTopArea);
     m_spaceList->setObjectName(QStringLiteral("SpaceList"));
     m_spaceListLayout = new QVBoxLayout(m_spaceList);
@@ -621,7 +663,7 @@ TabManager::TabManager(QWidget *parent)
     m_spaceScroll->setMaximumHeight(164);
     topLayout->addWidget(m_spaceScroll);
 
-    m_tabsHeaderButton = new QToolButton(m_sidebarTopArea);
+    m_tabsHeaderButton = new SidebarCountButton(m_sidebarTopArea);
     m_tabsHeaderButton->setObjectName(QStringLiteral("TabsHeaderButton"));
     m_tabsHeaderButton->setIcon(QIcon(QStringLiteral(":/icons/chevron-down.svg")));
     m_tabsHeaderButton->setIconSize(QSize(15, 15));
@@ -659,8 +701,12 @@ TabManager::TabManager(QWidget *parent)
     m_bottomNavigation->setObjectName(QStringLiteral("BottomNavigation"));
     m_bottomNavigation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *bottomLayout = new QVBoxLayout(m_bottomNavigation);
-    bottomLayout->setContentsMargins(0, 4, 0, 0);
+    bottomLayout->setContentsMargins(0, 6, 0, 0);
     bottomLayout->setSpacing(2);
+    auto *bottomSeparator = new QFrame(m_bottomNavigation);
+    bottomSeparator->setObjectName(QStringLiteral("SidebarSectionSeparator"));
+    bottomSeparator->setFrameShape(QFrame::HLine);
+    bottomSeparator->setFixedHeight(1);
     m_downloadsButton = makeSidebarAction(
         QStringLiteral("SidebarDownloadsButton"), QStringLiteral(":/icons/downloads.svg"),
         QStringLiteral("page.downloads.title"));
@@ -673,6 +719,8 @@ TabManager::TabManager(QWidget *parent)
     m_manageSpacesButton = makeSidebarAction(
         QStringLiteral("SidebarManageSpacesButton"), QStringLiteral(":/icons/container-globe.svg"),
         QStringLiteral("containers.manage"));
+    bottomLayout->addWidget(bottomSeparator);
+    bottomLayout->addSpacing(3);
     bottomLayout->addWidget(m_downloadsButton);
     bottomLayout->addWidget(m_historyButton);
     bottomLayout->addWidget(m_settingsButton);
@@ -815,6 +863,9 @@ void TabManager::retranslateUi()
         m_newTabButton->setToolTip(Localization::text(QStringLiteral("containers.create_menu")));
         m_newTabButton->setText(Localization::text(QStringLiteral("containers.create_menu")));
     }
+    if (m_spacesHeader) {
+        m_spacesHeader->setText(Localization::text(QStringLiteral("containers.title")));
+    }
     for (const TabRecord &record : std::as_const(m_tabs)) {
         if (record.item) record.item->retranslateUi();
     }
@@ -883,11 +934,12 @@ void TabManager::rebuildSpaceButtons()
     m_spaceButtons.clear();
 
     for (const SpaceDefinition &space : std::as_const(m_spaces)) {
-        auto *button = new QToolButton(m_spaceList);
+        auto *button = new SidebarCountButton(m_spaceList);
         button->setObjectName(QStringLiteral("SpaceButton"));
         button->setProperty("spaceId", space.id);
         button->setProperty("active", space.id == m_activeSpaceId);
         button->setProperty("dropTarget", false);
+        button->setProperty("expanded", m_expanded);
         button->setCheckable(true);
         button->setChecked(space.id == m_activeSpaceId);
         button->setAcceptDrops(true);
@@ -919,8 +971,8 @@ void TabManager::rebuildSpaceButtons()
         const QString displayName = space.id == ContainerManager::defaultSpaceId()
             ? Localization::text(QStringLiteral("spaces.default")) : space.name;
         const QString countText = QString::number(tabCount);
-        button->setText(m_expanded
-            ? QStringLiteral("%1  %2").arg(displayName, countText) : QString());
+        button->setProperty("sidebarCount", countText);
+        button->setText(m_expanded ? displayName : QString());
         button->setToolButtonStyle(m_expanded ? Qt::ToolButtonTextBesideIcon
                                                : Qt::ToolButtonIconOnly);
         button->setToolTip(QStringLiteral("%1\n%2")
@@ -1005,8 +1057,9 @@ void TabManager::updateSpaceUi(bool animateTabSection)
     const QString sectionTitle = Localization::text(QStringLiteral("spaces.tabs_header"));
     const QString sectionDescription = Localization::text(
         QStringLiteral("spaces.tabs_current")).arg(displayName);
-    m_tabsHeaderButton->setText(m_expanded
-        ? QStringLiteral("%1  %2").arg(sectionTitle, QString::number(count)) : QString());
+    m_tabsHeaderButton->setProperty("expanded", m_expanded);
+    m_tabsHeaderButton->setProperty("sidebarCount", QString::number(count));
+    m_tabsHeaderButton->setText(m_expanded ? sectionTitle : QString());
     m_tabsHeaderButton->setToolTip(
         QStringLiteral("%1\n%2").arg(sectionDescription,
             Localization::text(QStringLiteral("spaces.tab_count")).arg(count)));
@@ -1479,6 +1532,33 @@ int TabManager::sidebarTargetWidth() const
     return m_animationEndSidebar;
 }
 
+void TabManager::setActiveSidebarDestination(const QString &address)
+{
+    const QString normalized = address.trimmed();
+    const bool settingsPage = normalized.startsWith(
+        QStringLiteral("about:settings"), Qt::CaseInsensitive);
+    const bool manageSpaces = settingsPage
+        && QUrlQuery(QUrl(normalized)).queryItemValue(QStringLiteral("category"),
+                                                       QUrl::FullyDecoded)
+               .compare(QStringLiteral("containers"), Qt::CaseInsensitive) == 0;
+    const bool settings = settingsPage && !manageSpaces;
+    const QList<QPair<QToolButton *, bool>> states{
+        {m_downloadsButton, normalized.startsWith(QStringLiteral("about:downloads"),
+                                                   Qt::CaseInsensitive)},
+        {m_historyButton, normalized.startsWith(QStringLiteral("about:history"),
+                                                 Qt::CaseInsensitive)},
+        {m_settingsButton, settings},
+        {m_manageSpacesButton, manageSpaces}
+    };
+    for (const auto &[button, active] : states) {
+        if (!button || button->property("active").toBool() == active) continue;
+        button->setProperty("active", active);
+        button->style()->unpolish(button);
+        button->style()->polish(button);
+        button->update();
+    }
+}
+
 void TabManager::activateIndex(int index)
 {
     setCurrentIndex(index);
@@ -1948,6 +2028,8 @@ void TabManager::setItemsExpanded(bool expanded)
                                                 : Qt::ToolButtonIconOnly);
     m_newTabButton->setText(expanded
         ? Localization::text(QStringLiteral("containers.create_menu")) : QString());
+    if (m_spacesHeader) m_spacesHeader->setVisible(expanded);
+    m_tabsHeaderButton->setProperty("expanded", expanded);
     for (const TabRecord &record : std::as_const(m_tabs)) {
         record.item->setExpanded(expanded);
     }
