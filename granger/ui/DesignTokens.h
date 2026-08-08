@@ -9,7 +9,14 @@ public:
     inline static constexpr const char *windowBackgroundColor = "#0e0f12";
     inline static constexpr int toolbarHeight = 56;
     inline static constexpr int sidebarCollapsedWidth = 64;
-    inline static constexpr int sidebarExpandedWidth = 288;
+    inline static constexpr int sidebarExpandedWidth = 256;
+    inline static constexpr int sidebarOuterPadding = 4;
+    inline static constexpr int sidebarSectionSpacing = 4;
+    inline static constexpr int sidebarSpaceRowHeight = 36;
+    inline static constexpr int sidebarSpaceListMaxRows = 4;
+    inline static constexpr int sidebarSpaceListMaxHeight =
+        sidebarSpaceRowHeight * sidebarSpaceListMaxRows
+        + sidebarSectionSpacing * (sidebarSpaceListMaxRows - 1);
     inline static constexpr int toolbarButtonSize = 36;
     inline static constexpr int addressButtonSize = 30;
     inline static constexpr int iconSize = 20;

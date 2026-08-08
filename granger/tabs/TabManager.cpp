@@ -621,22 +621,25 @@ TabManager::TabManager(QWidget *parent)
     m_sidebar->installEventFilter(this);
 
     auto *sideLayout = new QVBoxLayout(m_sidebar);
-    sideLayout->setContentsMargins(5, 6, 5, 6);
-    sideLayout->setSpacing(5);
+    sideLayout->setContentsMargins(DesignTokens::sidebarOuterPadding,
+                                   DesignTokens::sidebarOuterPadding,
+                                   DesignTokens::sidebarOuterPadding,
+                                   DesignTokens::sidebarOuterPadding);
+    sideLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
 
     m_sidebarTopArea = new QWidget(m_sidebar);
     m_sidebarTopArea->setObjectName(QStringLiteral("SidebarTopArea"));
     m_sidebarTopArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *topLayout = new QVBoxLayout(m_sidebarTopArea);
     topLayout->setContentsMargins(0, 0, 0, 0);
-    topLayout->setSpacing(5);
+    topLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
 
     m_sidebarCompactTop = new QWidget(m_sidebarTopArea);
     m_sidebarCompactTop->setObjectName(QStringLiteral("SidebarCompactTop"));
     m_sidebarCompactTop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *compactLayout = new QVBoxLayout(m_sidebarCompactTop);
     compactLayout->setContentsMargins(0, 0, 0, 0);
-    compactLayout->setSpacing(5);
+    compactLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
 
     m_newTabButton = new QToolButton(m_sidebarCompactTop);
     m_newTabButton->setObjectName(QStringLiteral("NewTabButton"));
@@ -658,7 +661,7 @@ TabManager::TabManager(QWidget *parent)
     m_spaceList->setObjectName(QStringLiteral("SpaceList"));
     m_spaceListLayout = new QVBoxLayout(m_spaceList);
     m_spaceListLayout->setContentsMargins(0, 0, 0, 0);
-    m_spaceListLayout->setSpacing(3);
+    m_spaceListLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
     m_spaceScroll = new QScrollArea(m_sidebarCompactTop);
     m_spaceScroll->setObjectName(QStringLiteral("SpaceScrollArea"));
     m_spaceScroll->setFrameShape(QFrame::NoFrame);
@@ -668,7 +671,7 @@ TabManager::TabManager(QWidget *parent)
     m_spaceScroll->setWidgetResizable(true);
     m_spaceScroll->setWidget(m_spaceList);
     m_spaceScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_spaceScroll->setMaximumHeight(164);
+    m_spaceScroll->setMaximumHeight(DesignTokens::sidebarSpaceListMaxHeight);
     compactLayout->addWidget(m_spaceScroll);
 
     m_tabsHeaderButton = new SidebarCountButton(m_sidebarCompactTop);
@@ -711,8 +714,8 @@ TabManager::TabManager(QWidget *parent)
     m_bottomNavigation->setObjectName(QStringLiteral("BottomNavigation"));
     m_bottomNavigation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *bottomLayout = new QVBoxLayout(m_bottomNavigation);
-    bottomLayout->setContentsMargins(0, 6, 0, 0);
-    bottomLayout->setSpacing(2);
+    bottomLayout->setContentsMargins(0, DesignTokens::sidebarSectionSpacing, 0, 0);
+    bottomLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
     auto *bottomSeparator = new QFrame(m_bottomNavigation);
     bottomSeparator->setObjectName(QStringLiteral("SidebarSectionSeparator"));
     bottomSeparator->setFrameShape(QFrame::HLine);
@@ -730,7 +733,7 @@ TabManager::TabManager(QWidget *parent)
         QStringLiteral("SidebarManageSpacesButton"), QStringLiteral(":/icons/container-globe.svg"),
         QStringLiteral("containers.manage"));
     bottomLayout->addWidget(bottomSeparator);
-    bottomLayout->addSpacing(3);
+    bottomLayout->addSpacing(DesignTokens::sidebarSectionSpacing);
     bottomLayout->addWidget(m_downloadsButton);
     bottomLayout->addWidget(m_historyButton);
     bottomLayout->addWidget(m_settingsButton);
@@ -957,7 +960,7 @@ void TabManager::rebuildSpaceButtons()
         button->setAcceptDrops(true);
         button->installEventFilter(this);
         button->setFocusPolicy(Qt::StrongFocus);
-        button->setFixedHeight(36);
+        button->setFixedHeight(DesignTokens::sidebarSpaceRowHeight);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
         const qreal dpr = devicePixelRatioF();
@@ -1001,8 +1004,10 @@ void TabManager::rebuildSpaceButtons()
         m_spaceButtons.insert(space.id, button);
     }
     m_spaceScroll->setVisible(m_spaces.size() > 1 || m_expanded);
-    const int rowsHeight = m_spaces.size() * 36 + qMax(0, m_spaces.size() - 1) * 3;
-    const int viewportHeight = qMin(164, qMax(40, rowsHeight));
+    const int rowsHeight = m_spaces.size() * DesignTokens::sidebarSpaceRowHeight
+        + qMax(0, m_spaces.size() - 1) * DesignTokens::sidebarSectionSpacing;
+    const int viewportHeight = qMin(DesignTokens::sidebarSpaceListMaxHeight,
+                                    qMax(DesignTokens::sidebarSpaceRowHeight, rowsHeight));
     m_spaceScroll->setMinimumHeight(viewportHeight);
     m_spaceScroll->setMaximumHeight(viewportHeight);
     m_sidebarCompactTop->updateGeometry();
