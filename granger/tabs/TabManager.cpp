@@ -588,7 +588,14 @@ TabManager::TabManager(QWidget *parent)
     sideLayout->setContentsMargins(5, 6, 5, 6);
     sideLayout->setSpacing(5);
 
-    m_newTabButton = new QToolButton(m_sidebar);
+    m_sidebarTopArea = new QWidget(m_sidebar);
+    m_sidebarTopArea->setObjectName(QStringLiteral("SidebarTopArea"));
+    m_sidebarTopArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto *topLayout = new QVBoxLayout(m_sidebarTopArea);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(5);
+
+    m_newTabButton = new QToolButton(m_sidebarTopArea);
     m_newTabButton->setObjectName(QStringLiteral("NewTabButton"));
     m_newTabButton->setIcon(QIcon(QStringLiteral(":/icons/plus.svg")));
     m_newTabButton->setIconSize(QSize(DesignTokens::iconSize, DesignTokens::iconSize));
@@ -596,14 +603,14 @@ TabManager::TabManager(QWidget *parent)
     m_newTabButton->setFixedHeight(40);
     m_newTabButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_newTabButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    sideLayout->addWidget(m_newTabButton);
+    topLayout->addWidget(m_newTabButton);
 
-    m_spaceList = new QWidget(m_sidebar);
+    m_spaceList = new QWidget(m_sidebarTopArea);
     m_spaceList->setObjectName(QStringLiteral("SpaceList"));
     m_spaceListLayout = new QVBoxLayout(m_spaceList);
     m_spaceListLayout->setContentsMargins(0, 0, 0, 0);
     m_spaceListLayout->setSpacing(3);
-    m_spaceScroll = new QScrollArea(m_sidebar);
+    m_spaceScroll = new QScrollArea(m_sidebarTopArea);
     m_spaceScroll->setObjectName(QStringLiteral("SpaceScrollArea"));
     m_spaceScroll->setFrameShape(QFrame::NoFrame);
     m_spaceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -612,9 +619,9 @@ TabManager::TabManager(QWidget *parent)
     m_spaceScroll->setWidgetResizable(true);
     m_spaceScroll->setWidget(m_spaceList);
     m_spaceScroll->setMaximumHeight(164);
-    sideLayout->addWidget(m_spaceScroll);
+    topLayout->addWidget(m_spaceScroll);
 
-    m_tabsHeaderButton = new QToolButton(m_sidebar);
+    m_tabsHeaderButton = new QToolButton(m_sidebarTopArea);
     m_tabsHeaderButton->setObjectName(QStringLiteral("TabsHeaderButton"));
     m_tabsHeaderButton->setIcon(QIcon(QStringLiteral(":/icons/chevron-down.svg")));
     m_tabsHeaderButton->setIconSize(QSize(15, 15));
@@ -622,9 +629,9 @@ TabManager::TabManager(QWidget *parent)
     m_tabsHeaderButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_tabsHeaderButton->setFixedHeight(30);
     m_tabsHeaderButton->setFocusPolicy(Qt::StrongFocus);
-    sideLayout->addWidget(m_tabsHeaderButton);
+    topLayout->addWidget(m_tabsHeaderButton);
 
-    m_tabList = new QWidget(m_sidebar);
+    m_tabList = new QWidget(m_sidebarTopArea);
     m_tabListLayout = new QVBoxLayout(m_tabList);
     m_tabListLayout->setContentsMargins(0, 0, 0, 0);
     m_tabListLayout->setSpacing(3);
@@ -635,7 +642,7 @@ TabManager::TabManager(QWidget *parent)
     m_dropIndicator->hide();
     m_tabListLayout->addWidget(m_dropIndicator);
     m_tabListLayout->addStretch(1);
-    m_tabScroll = new QScrollArea(m_sidebar);
+    m_tabScroll = new QScrollArea(m_sidebarTopArea);
     m_tabScroll->setObjectName(QStringLiteral("TabScrollArea"));
     m_tabScroll->setFrameShape(QFrame::NoFrame);
     m_tabScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -646,11 +653,12 @@ TabManager::TabManager(QWidget *parent)
     m_spaceTransitionOverlay = new SpaceTransitionOverlay(m_tabScroll->viewport());
     m_spaceTransitionOverlay->setGeometry(m_tabScroll->viewport()->rect());
     m_tabScroll->viewport()->installEventFilter(this);
-    sideLayout->addWidget(m_tabScroll, 1);
+    topLayout->addWidget(m_tabScroll, 1);
 
-    auto *bottom = new QWidget(m_sidebar);
-    bottom->setObjectName(QStringLiteral("SidebarActions"));
-    auto *bottomLayout = new QVBoxLayout(bottom);
+    m_bottomNavigation = new QWidget(m_sidebar);
+    m_bottomNavigation->setObjectName(QStringLiteral("BottomNavigation"));
+    m_bottomNavigation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *bottomLayout = new QVBoxLayout(m_bottomNavigation);
     bottomLayout->setContentsMargins(0, 4, 0, 0);
     bottomLayout->setSpacing(2);
     m_downloadsButton = makeSidebarAction(
@@ -669,7 +677,8 @@ TabManager::TabManager(QWidget *parent)
     bottomLayout->addWidget(m_historyButton);
     bottomLayout->addWidget(m_settingsButton);
     bottomLayout->addWidget(m_manageSpacesButton);
-    sideLayout->addWidget(bottom);
+    sideLayout->addWidget(m_sidebarTopArea, 1);
+    sideLayout->addWidget(m_bottomNavigation, 0);
 
     m_stack = new QStackedWidget(this);
     m_stack->setObjectName(QStringLiteral("WebStack"));

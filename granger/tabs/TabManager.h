@@ -138,6 +138,8 @@ private:
     void setItemsExpanded(bool expanded);
 
     QFrame *m_sidebar = nullptr;
+    QWidget *m_sidebarTopArea = nullptr;
+    QWidget *m_bottomNavigation = nullptr;
     QWidget *m_spaceList = nullptr;
     QScrollArea *m_spaceScroll = nullptr;
     QVBoxLayout *m_spaceListLayout = nullptr;

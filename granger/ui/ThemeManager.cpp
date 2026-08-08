@@ -530,7 +530,8 @@ QString ThemeManager::styleSheet() const
         }
 
         QWidget#SpaceList,
-        QWidget#SidebarActions,
+        QWidget#SidebarTopArea,
+        QWidget#BottomNavigation,
         QScrollArea#SpaceScrollArea,
         QScrollArea#SpaceScrollArea > QWidget > QWidget {
             background: transparent;
