@@ -156,6 +156,7 @@ private:
 
     QFrame *m_sidebar = nullptr;
     QWidget *m_sidebarTopArea = nullptr;
+    QWidget *m_sidebarCompactTop = nullptr;
     QWidget *m_bottomNavigation = nullptr;
     QWidget *m_contentLayer = nullptr;
     QLabel *m_spacesHeader = nullptr;

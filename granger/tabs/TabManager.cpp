@@ -631,7 +631,14 @@ TabManager::TabManager(QWidget *parent)
     topLayout->setContentsMargins(0, 0, 0, 0);
     topLayout->setSpacing(5);
 
-    m_newTabButton = new QToolButton(m_sidebarTopArea);
+    m_sidebarCompactTop = new QWidget(m_sidebarTopArea);
+    m_sidebarCompactTop->setObjectName(QStringLiteral("SidebarCompactTop"));
+    m_sidebarCompactTop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *compactLayout = new QVBoxLayout(m_sidebarCompactTop);
+    compactLayout->setContentsMargins(0, 0, 0, 0);
+    compactLayout->setSpacing(5);
+
+    m_newTabButton = new QToolButton(m_sidebarCompactTop);
     m_newTabButton->setObjectName(QStringLiteral("NewTabButton"));
     m_newTabButton->setIcon(QIcon(QStringLiteral(":/icons/plus.svg")));
     m_newTabButton->setIconSize(QSize(DesignTokens::iconSize, DesignTokens::iconSize));
@@ -639,20 +646,20 @@ TabManager::TabManager(QWidget *parent)
     m_newTabButton->setFixedHeight(40);
     m_newTabButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_newTabButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    topLayout->addWidget(m_newTabButton);
+    compactLayout->addWidget(m_newTabButton);
 
-    m_spacesHeader = new QLabel(m_sidebarTopArea);
+    m_spacesHeader = new QLabel(m_sidebarCompactTop);
     m_spacesHeader->setObjectName(QStringLiteral("SidebarSectionLabel"));
     m_spacesHeader->setFixedHeight(18);
     m_spacesHeader->setVisible(false);
-    topLayout->addWidget(m_spacesHeader);
+    compactLayout->addWidget(m_spacesHeader);
 
-    m_spaceList = new QWidget(m_sidebarTopArea);
+    m_spaceList = new QWidget(m_sidebarCompactTop);
     m_spaceList->setObjectName(QStringLiteral("SpaceList"));
     m_spaceListLayout = new QVBoxLayout(m_spaceList);
     m_spaceListLayout->setContentsMargins(0, 0, 0, 0);
     m_spaceListLayout->setSpacing(3);
-    m_spaceScroll = new QScrollArea(m_sidebarTopArea);
+    m_spaceScroll = new QScrollArea(m_sidebarCompactTop);
     m_spaceScroll->setObjectName(QStringLiteral("SpaceScrollArea"));
     m_spaceScroll->setFrameShape(QFrame::NoFrame);
     m_spaceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -660,10 +667,11 @@ TabManager::TabManager(QWidget *parent)
     m_spaceScroll->setFocusPolicy(Qt::NoFocus);
     m_spaceScroll->setWidgetResizable(true);
     m_spaceScroll->setWidget(m_spaceList);
+    m_spaceScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_spaceScroll->setMaximumHeight(164);
-    topLayout->addWidget(m_spaceScroll);
+    compactLayout->addWidget(m_spaceScroll);
 
-    m_tabsHeaderButton = new SidebarCountButton(m_sidebarTopArea);
+    m_tabsHeaderButton = new SidebarCountButton(m_sidebarCompactTop);
     m_tabsHeaderButton->setObjectName(QStringLiteral("TabsHeaderButton"));
     m_tabsHeaderButton->setIcon(QIcon(QStringLiteral(":/icons/chevron-down.svg")));
     m_tabsHeaderButton->setIconSize(QSize(15, 15));
@@ -671,7 +679,8 @@ TabManager::TabManager(QWidget *parent)
     m_tabsHeaderButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_tabsHeaderButton->setFixedHeight(30);
     m_tabsHeaderButton->setFocusPolicy(Qt::StrongFocus);
-    topLayout->addWidget(m_tabsHeaderButton);
+    compactLayout->addWidget(m_tabsHeaderButton);
+    topLayout->addWidget(m_sidebarCompactTop);
 
     m_tabList = new QWidget(m_sidebarTopArea);
     m_tabListLayout = new QVBoxLayout(m_tabList);
@@ -696,6 +705,7 @@ TabManager::TabManager(QWidget *parent)
     m_spaceTransitionOverlay->setGeometry(m_tabScroll->viewport()->rect());
     m_tabScroll->viewport()->installEventFilter(this);
     topLayout->addWidget(m_tabScroll, 1);
+    topLayout->addStretch(0);
 
     m_bottomNavigation = new QWidget(m_sidebar);
     m_bottomNavigation->setObjectName(QStringLiteral("BottomNavigation"));
@@ -991,7 +1001,11 @@ void TabManager::rebuildSpaceButtons()
         m_spaceButtons.insert(space.id, button);
     }
     m_spaceScroll->setVisible(m_spaces.size() > 1 || m_expanded);
-    m_spaceScroll->setMaximumHeight(qMin(164, qMax(40, m_spaces.size() * 39)));
+    const int rowsHeight = m_spaces.size() * 36 + qMax(0, m_spaces.size() - 1) * 3;
+    const int viewportHeight = qMin(164, qMax(40, rowsHeight));
+    m_spaceScroll->setMinimumHeight(viewportHeight);
+    m_spaceScroll->setMaximumHeight(viewportHeight);
+    m_sidebarCompactTop->updateGeometry();
 }
 
 QString TabManager::activeSpaceId() const
