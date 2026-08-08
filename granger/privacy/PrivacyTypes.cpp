@@ -5,6 +5,18 @@
 
 namespace granger {
 
+QSize FingerprintViewportPolicy::standardizedSize(const QSize &available)
+{
+    if (available.width() <= 0 || available.height() <= 0) return QSize();
+    const int width = available.width() >= widthBucket
+        ? qMax(widthBucket, (available.width() / widthBucket) * widthBucket)
+        : available.width();
+    const int height = available.height() >= heightBucket
+        ? qMax(heightBucket, (available.height() / heightBucket) * heightBucket)
+        : available.height();
+    return QSize(qMin(width, available.width()), qMin(height, available.height()));
+}
+
 QString privacyPresetId(PrivacyPreset preset)
 {
     switch (preset) {

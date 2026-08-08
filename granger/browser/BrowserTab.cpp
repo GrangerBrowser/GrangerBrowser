@@ -63,7 +63,8 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
 
     setAutoFillBackground(true);
     QPalette neutralPalette = palette();
-    neutralPalette.setColor(QPalette::Window, QColor(QStringLiteral("#17181d")));
+    neutralPalette.setColor(QPalette::Window,
+                            QColor(QString::fromLatin1(DesignTokens::windowBackgroundColor)));
     setPalette(neutralPalette);
 
     m_letterboxTimer = new QTimer(this);
@@ -275,6 +276,8 @@ int BrowserTab::letterboxAdjustmentCount() const
 void BrowserTab::synchronizeViewportGeometry()
 {
     if (!m_layout || !m_view) return;
+    m_layout->invalidate();
+    m_layout->activate();
     if (m_letterboxingEnabled) {
         if (m_letterboxTimer) m_letterboxTimer->stop();
         updateLetterbox();
@@ -301,11 +304,24 @@ QJsonObject BrowserTab::viewportDiagnostics() const
         ? QStyle::alignedRect(layoutDirection(), Qt::AlignCenter, target, available)
         : available;
     const QRect actual = m_view ? m_view->geometry() : QRect();
+    const int leftMargin = actual.left() - available.left();
+    const int rightMargin = available.right() - actual.right();
+    const int topMargin = actual.top() - available.top();
+    const int bottomMargin = available.bottom() - actual.bottom();
     return QJsonObject{
         {QStringLiteral("host"), rectObject(available)},
         {QStringLiteral("view"), rectObject(actual)},
         {QStringLiteral("expected"), rectObject(expected)},
         {QStringLiteral("matchesExpected"), actual == expected},
+        {QStringLiteral("centered"), qAbs(leftMargin - rightMargin) <= 1
+             && qAbs(topMargin - bottomMargin) <= 1},
+        {QStringLiteral("leftMargin"), leftMargin},
+        {QStringLiteral("rightMargin"), rightMargin},
+        {QStringLiteral("topMargin"), topMargin},
+        {QStringLiteral("bottomMargin"), bottomMargin},
+        {QStringLiteral("widthBucket"), FingerprintViewportPolicy::widthBucket},
+        {QStringLiteral("heightBucket"), FingerprintViewportPolicy::heightBucket},
+        {QStringLiteral("policy"), QStringLiteral("fingerprint-viewport-standardization")},
         {QStringLiteral("letterboxing"), m_letterboxingEnabled},
         {QStringLiteral("devicePixelRatio"), devicePixelRatioF()}
     };
@@ -334,21 +350,17 @@ void BrowserTab::updateLetterbox()
     const QSize available = contentsRect().size();
     if (available.width() <= 0 || available.height() <= 0) return;
 
-    constexpr int widthStep = 200;
-    constexpr int heightStep = 100;
-    const int width = available.width() >= widthStep
-        ? qMax(widthStep, (available.width() / widthStep) * widthStep)
-        : available.width();
-    const int height = available.height() >= heightStep
-        ? qMax(heightStep, (available.height() / heightStep) * heightStep)
-        : available.height();
-    const QSize target(qMin(width, available.width()), qMin(height, available.height()));
-    if (target == m_letterboxedViewportSize && m_view->size() == target) return;
-    m_letterboxedViewportSize = target;
-    ++m_letterboxAdjustmentCount;
+    const QSize target = FingerprintViewportPolicy::standardizedSize(available);
+    const bool sizeChanged = target != m_letterboxedViewportSize || m_view->size() != target;
     m_layout->setAlignment(m_view, Qt::AlignCenter);
     m_view->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    m_view->setFixedSize(target);
+    if (sizeChanged) {
+        m_letterboxedViewportSize = target;
+        ++m_letterboxAdjustmentCount;
+        m_view->setFixedSize(target);
+    }
+    m_layout->invalidate();
+    m_layout->activate();
 }
 
 bool BrowserTab::ensureProfile(QWebEngineProfile *profile, PrivacyProfileKind profileKind)

@@ -2,6 +2,7 @@
 
 #include <QHash>
 #include <QJsonObject>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -45,6 +46,14 @@ enum class PrivacyPermissionDecision {
     AllowSession,
     AllowAlways,
     Block
+};
+
+class FingerprintViewportPolicy final {
+public:
+    inline static constexpr int widthBucket = 200;
+    inline static constexpr int heightBucket = 100;
+
+    static QSize standardizedSize(const QSize &available);
 };
 
 struct PrivacySettings {

@@ -6,6 +6,7 @@ namespace granger {
 
 class DesignTokens final {
 public:
+    inline static constexpr const char *windowBackgroundColor = "#0e0f12";
     inline static constexpr int toolbarHeight = 56;
     inline static constexpr int sidebarCollapsedWidth = 64;
     inline static constexpr int sidebarExpandedWidth = 288;
