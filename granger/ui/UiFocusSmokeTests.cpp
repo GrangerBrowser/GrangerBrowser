@@ -42,10 +42,13 @@
 #include <QPainter>
 #include <QPointer>
 #include <QScreen>
+#include <QScrollArea>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrlQuery>
 #include <QWebEnginePage>
 #include <QWebEngineCookieStore>
@@ -57,6 +60,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <utility>
 
 namespace granger {
 namespace {
@@ -376,6 +380,7 @@ int runUiFocusSmoke(QApplication &app,
     settings.setProxy(QString(), false);
     settings.setHttpsFirstMode(QStringLiteral("off"));
     settings.setContentBlockingMode(QStringLiteral("standard"));
+    settings.setWindowSizeProtectionMode(QStringLiteral("on"));
     settings.setSidebarPinned(false);
     settings.setDeveloperToolsOptions(true, QStringLiteral("right"), true, true, true, false);
     Localization::setLanguage(QStringLiteral("en"));
@@ -854,7 +859,152 @@ int runUiFocusSmoke(QApplication &app,
 
     window->setSidebarPinnedForDiagnostics(true);
     waitFor([&] { return tabs && !tabs->sidebarAnimationActive(); });
+
+    const QVector<SpaceDefinition> layoutSpaces{
+        SpaceDefinition{ContainerManager::defaultSpaceId(), QStringLiteral("Default"),
+                        QStringLiteral("#d95661"), QStringLiteral("globe"), QString(), 0},
+        SpaceDefinition{QStringLiteral("layout-work"), QStringLiteral("Work"),
+                        QStringLiteral("#d18b48"), QStringLiteral("briefcase"), QString(), 1},
+        SpaceDefinition{QStringLiteral("layout-research"), QStringLiteral("Research"),
+                        QStringLiteral("#4b9ac7"), QStringLiteral("search"), QString(), 2},
+        SpaceDefinition{QStringLiteral("layout-security"), QStringLiteral("Security"),
+                        QStringLiteral("#6fa66f"), QStringLiteral("shield"), QString(), 3}
+    };
+    if (tabs) tabs->setSpaces(layoutSpaces);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    settle(80);
+
+    QWidget *sidebar = tabs ? tabs->sidebarWidget() : nullptr;
+    QWidget *compactTop = sidebar
+        ? sidebar->findChild<QWidget *>(QStringLiteral("SidebarCompactTop")) : nullptr;
+    QWidget *topArea = sidebar
+        ? sidebar->findChild<QWidget *>(QStringLiteral("SidebarTopArea")) : nullptr;
+    QWidget *bottomNavigation = sidebar
+        ? sidebar->findChild<QWidget *>(QStringLiteral("BottomNavigation")) : nullptr;
+    auto *newTabButton = sidebar
+        ? sidebar->findChild<QToolButton *>(QStringLiteral("NewTabButton")) : nullptr;
+    QWidget *spacesHeader = sidebar
+        ? sidebar->findChild<QWidget *>(QStringLiteral("SidebarSectionLabel")) : nullptr;
+    auto *spaceScroll = sidebar
+        ? sidebar->findChild<QScrollArea *>(QStringLiteral("SpaceScrollArea")) : nullptr;
+    auto *tabsHeader = sidebar
+        ? sidebar->findChild<QToolButton *>(QStringLiteral("TabsHeaderButton")) : nullptr;
+    auto *tabScroll = sidebar
+        ? sidebar->findChild<QScrollArea *>(QStringLiteral("TabScrollArea")) : nullptr;
+    QWidget *spaceList = sidebar
+        ? sidebar->findChild<QWidget *>(QStringLiteral("SpaceList")) : nullptr;
+    const auto sidebarRect = [sidebar](const QWidget *widget) {
+        if (!sidebar || !widget) return QRect();
+        return QRect(widget->mapTo(sidebar, QPoint(0, 0)), widget->size());
+    };
+    QList<QToolButton *> spaceRows = spaceList
+        ? spaceList->findChildren<QToolButton *>(QStringLiteral("SpaceButton"),
+                                                 Qt::FindDirectChildrenOnly)
+        : QList<QToolButton *>();
+    std::sort(spaceRows.begin(), spaceRows.end(), [](const QToolButton *left,
+                                                      const QToolButton *right) {
+        return left && right && left->y() < right->y();
+    });
+
+    const QRect createRect = sidebarRect(newTabButton);
+    const QRect spacesHeaderRect = sidebarRect(spacesHeader);
+    const QRect spacesRect = sidebarRect(spaceScroll);
+    const QRect tabsHeaderRect = sidebarRect(tabsHeader);
+    const QRect compactRect = sidebarRect(compactTop);
+    const QRect topRect = sidebarRect(topArea);
+    const QRect tabScrollRect = sidebarRect(tabScroll);
+    const QRect bottomRect = sidebarRect(bottomNavigation);
+    const auto gapAfter = [](const QRect &first, const QRect &second) {
+        return second.top() - first.bottom() - 1;
+    };
+    const int expectedCompactHeight = (newTabButton ? newTabButton->height() : 0)
+        + (spacesHeader ? spacesHeader->height() : 0)
+        + DesignTokens::sidebarSpaceListMaxHeight
+        + (tabsHeader ? tabsHeader->height() : 0)
+        + 3 * DesignTokens::sidebarSectionSpacing;
+    bool rowsAreCompact = spaceRows.size() == DesignTokens::sidebarSpaceListMaxRows;
+    for (const QToolButton *row : std::as_const(spaceRows)) {
+        rowsAreCompact = rowsAreCompact && row
+            && row->height() == DesignTokens::sidebarSpaceRowHeight;
+    }
+    const bool compactSectionGeometry = sidebar && compactTop && topArea && bottomNavigation
+        && newTabButton && spacesHeader && spaceScroll && tabsHeader && tabScroll
+        && sidebar->width() == DesignTokens::sidebarExpandedWidth
+        && DesignTokens::sidebarExpandedWidth
+            == 4 * DesignTokens::sidebarCollapsedWidth
+        && qAbs(gapAfter(createRect, spacesHeaderRect)
+                - DesignTokens::sidebarSectionSpacing) <= 1
+        && qAbs(gapAfter(spacesHeaderRect, spacesRect)
+                - DesignTokens::sidebarSectionSpacing) <= 1
+        && qAbs(gapAfter(spacesRect, tabsHeaderRect)
+                - DesignTokens::sidebarSectionSpacing) <= 1
+        && qAbs(compactRect.height() - expectedCompactHeight) <= 1
+        && spaceScroll->height() == DesignTokens::sidebarSpaceListMaxHeight
+        && rowsAreCompact
+        && tabScroll->isVisible()
+        && tabScrollRect.height() >= DesignTokens::tabHeight
+        && tabScrollRect.top() >= compactRect.bottom()
+        && topRect.bottom() < bottomRect.top()
+        && sidebar->height() - bottomRect.bottom() - 1
+            <= DesignTokens::sidebarOuterPadding + 1;
+    results.record(QStringLiteral("Sidebar compact sections use token-derived natural geometry"),
+                   compactSectionGeometry,
+                   QStringLiteral("sidebar=%1 compact=%2 expected=%3 rows=%4 gaps=%5/%6/%7")
+                       .arg(sidebar ? sidebar->width() : -1)
+                       .arg(compactRect.height())
+                       .arg(expectedCompactHeight)
+                       .arg(spaceRows.size())
+                       .arg(gapAfter(createRect, spacesHeaderRect))
+                       .arg(gapAfter(spacesHeaderRect, spacesRect))
+                       .arg(gapAfter(spacesRect, tabsHeaderRect)));
+
     capture(QStringLiteral("verticalTabs"), QStringLiteral("06-vertical-tabs-expanded.png"), window);
+    const QRect createAnchorBeforeCollapse = sidebarRect(newTabButton);
+    const QRect spacesAnchorBeforeCollapse = sidebarRect(spaceScroll);
+    const QRect tabsHeaderAnchorBeforeCollapse = sidebarRect(tabsHeader);
+    const QRect bottomAnchorBeforeCollapse = sidebarRect(bottomNavigation);
+    if (tabsHeader && tabs) {
+        const QSignalBlocker keepSyntheticSpacesLocal(tabs);
+        tabsHeader->click();
+    }
+    const bool tabSectionCollapsed = tabs && tabScroll
+        && waitFor([&] {
+            return !tabs->sidebarAnimationActive() && !tabScroll->isVisible();
+        });
+    const bool compactAnchorsStable = tabSectionCollapsed
+        && sidebarRect(newTabButton) == createAnchorBeforeCollapse
+        && sidebarRect(spaceScroll) == spacesAnchorBeforeCollapse
+        && sidebarRect(tabsHeader) == tabsHeaderAnchorBeforeCollapse
+        && sidebarRect(bottomNavigation) == bottomAnchorBeforeCollapse;
+    results.record(QStringLiteral("collapsing Tabs leaves compact sections and bottom navigation anchored"),
+                   compactAnchorsStable,
+                   QStringLiteral("create=%1/%2 spaces=%3/%4 tabs=%5/%6 bottom=%7/%8")
+                       .arg(createAnchorBeforeCollapse.y()).arg(sidebarRect(newTabButton).y())
+                       .arg(spacesAnchorBeforeCollapse.y()).arg(sidebarRect(spaceScroll).y())
+                       .arg(tabsHeaderAnchorBeforeCollapse.y()).arg(sidebarRect(tabsHeader).y())
+                       .arg(bottomAnchorBeforeCollapse.y())
+                       .arg(sidebarRect(bottomNavigation).y()));
+    capture(QStringLiteral("tabSectionCollapsed"),
+            QStringLiteral("06a-tabs-section-collapsed.png"), window);
+    if (tabsHeader && tabs) {
+        const QSignalBlocker keepSyntheticSpacesLocal(tabs);
+        tabsHeader->click();
+    }
+    waitFor([&] {
+        return tabs && tabScroll && !tabs->sidebarAnimationActive() && tabScroll->isVisible();
+    });
+
+    if (tabs) {
+        window->setSidebarPinnedForDiagnostics(false);
+        waitFor([&] { return !tabs->sidebarAnimationActive(); });
+        tabs->setSidebarVisible(false);
+        settle(80);
+        capture(QStringLiteral("sidebarHidden"), QStringLiteral("06c-sidebar-hidden.png"), window);
+        tabs->setSidebarVisible(true);
+        window->setSidebarPinnedForDiagnostics(true);
+        waitFor([&] { return !tabs->sidebarAnimationActive(); });
+    }
+
     const QJsonObject rapidGeometryBefore = window->fullscreenDiagnostics();
     if (tabs) {
         for (int i = 0; i < 20; ++i) {
@@ -948,8 +1098,179 @@ int runUiFocusSmoke(QApplication &app,
                                          .toJson(QJsonDocument::Compact)));
     capture(QStringLiteral("verticalTabsCollapsed"),
             QStringLiteral("06b-vertical-tabs-collapsed.png"), window);
+
+    window->setExternalFixtureForDiagnostics(
+        QStringLiteral(R"HTML(<!doctype html><meta charset="utf-8">
+<title>Letterbox UI geometry fixture</title>
+<style>html,body{height:100%;margin:0;background:#24272d;color:#f3eef0}
+body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
+<main>Fingerprint viewport standardization fixture</main>)HTML"),
+        QUrl(QStringLiteral("https://letterbox-ui-smoke.invalid/fixture")));
+    const bool protectedFixtureReady = waitFor([&] {
+        BrowserTab *tab = window->currentTabForDiagnostics();
+        return tab && tab->letterboxingEnabled() && !tab->isLoading()
+            && tab->letterboxedViewportSize().isValid()
+            && evaluate(tab->page(), QStringLiteral("document.title"),
+                        QWebEngineScript::MainWorld, 700).toString()
+                == QStringLiteral("Letterbox UI geometry fixture");
+    }, 6000);
+
+    const auto protectedSidebarStateValid = [](const QJsonObject &state,
+                                                bool sidebarVisible,
+                                                int expectedSidebarWidth) {
+        const QJsonObject content = state.value(QStringLiteral("contentLayerGeometry")).toObject();
+        const QJsonObject stack = state.value(QStringLiteral("webStackGeometry")).toObject();
+        const QJsonObject viewport = state.value(QStringLiteral("viewport")).toObject();
+        const QJsonObject host = viewport.value(QStringLiteral("host")).toObject();
+        const QJsonObject view = viewport.value(QStringLiteral("view")).toObject();
+        const QSize hostSize(host.value(QStringLiteral("width")).toInt(),
+                             host.value(QStringLiteral("height")).toInt());
+        const QSize viewSize(view.value(QStringLiteral("width")).toInt(),
+                             view.value(QStringLiteral("height")).toInt());
+        const QSize policySize = FingerprintViewportPolicy::standardizedSize(hostSize);
+        const int expectedInset = sidebarVisible ? expectedSidebarWidth : 0;
+        const bool stackOwnsRemainingContent =
+            stack.value(QStringLiteral("x")).toInt()
+                    == content.value(QStringLiteral("x")).toInt() + expectedInset
+            && stack.value(QStringLiteral("width")).toInt() + expectedInset
+                    == content.value(QStringLiteral("width")).toInt()
+            && hostSize == QSize(stack.value(QStringLiteral("width")).toInt(),
+                                 stack.value(QStringLiteral("height")).toInt());
+        return state.value(QStringLiteral("sidebarVisible")).toBool() == sidebarVisible
+            && (!sidebarVisible
+                || state.value(QStringLiteral("sidebarWidth")).toInt() == expectedSidebarWidth)
+            && state.value(QStringLiteral("letterboxing")).toBool()
+            && viewport.value(QStringLiteral("letterboxing")).toBool()
+            && viewport.value(QStringLiteral("matchesExpected")).toBool()
+            && viewport.value(QStringLiteral("centered")).toBool()
+            && viewport.value(QStringLiteral("policy")).toString()
+                == QStringLiteral("fingerprint-viewport-standardization")
+            && viewport.value(QStringLiteral("widthBucket")).toInt()
+                == FingerprintViewportPolicy::widthBucket
+            && viewport.value(QStringLiteral("heightBucket")).toInt()
+                == FingerprintViewportPolicy::heightBucket
+            && qAbs(viewport.value(QStringLiteral("leftMargin")).toInt()
+                    - viewport.value(QStringLiteral("rightMargin")).toInt()) <= 1
+            && qAbs(viewport.value(QStringLiteral("topMargin")).toInt()
+                    - viewport.value(QStringLiteral("bottomMargin")).toInt()) <= 1
+            && viewSize == policySize
+            && stackOwnsRemainingContent;
+    };
+    const auto stableProtectedState = [&] (bool sidebarVisible, int sidebarWidth) {
+        return waitFor([&] {
+            return tabs && !tabs->sidebarAnimationActive()
+                && protectedSidebarStateValid(window->fullscreenDiagnostics(),
+                                               sidebarVisible, sidebarWidth);
+        }, 5000);
+    };
+
+    if (tabs) tabs->setSidebarVisible(false);
+    const bool hiddenBeforeReady = protectedFixtureReady
+        && stableProtectedState(false, 0);
+    settle(180);
+    const QJsonObject protectedHiddenBefore = window->fullscreenDiagnostics();
+    capture(QStringLiteral("letterboxHidden"), QStringLiteral("07-letterbox-hidden.png"), window);
+
+    if (tabs) tabs->setSidebarVisible(true);
+    const bool railBeforeReady = stableProtectedState(
+        true, DesignTokens::sidebarCollapsedWidth);
+    settle(180);
+    const QJsonObject protectedRailBefore = window->fullscreenDiagnostics();
+    capture(QStringLiteral("letterboxRail"), QStringLiteral("07b-letterbox-rail.png"), window);
+
     if (tabs) window->setSidebarPinnedForDiagnostics(true);
-    waitFor([&] { return tabs && !tabs->sidebarAnimationActive(); });
+    const bool expandedReady = stableProtectedState(
+        true, DesignTokens::sidebarExpandedWidth);
+    settle(180);
+    const QJsonObject protectedExpanded = window->fullscreenDiagnostics();
+    capture(QStringLiteral("letterboxExpanded"),
+            QStringLiteral("07c-letterbox-expanded.png"), window);
+
+    if (tabs) window->setSidebarPinnedForDiagnostics(false);
+    const bool railAfterReady = stableProtectedState(
+        true, DesignTokens::sidebarCollapsedWidth);
+    const QJsonObject protectedRailAfter = window->fullscreenDiagnostics();
+    if (tabs) tabs->setSidebarVisible(false);
+    const bool hiddenAfterReady = stableProtectedState(false, 0);
+    const QJsonObject protectedHiddenAfter = window->fullscreenDiagnostics();
+
+    const QJsonObject hiddenViewportBefore = protectedHiddenBefore
+        .value(QStringLiteral("viewport")).toObject();
+    const QJsonObject hiddenViewportAfter = protectedHiddenAfter
+        .value(QStringLiteral("viewport")).toObject();
+    const QJsonObject railViewportBefore = protectedRailBefore
+        .value(QStringLiteral("viewport")).toObject();
+    const QJsonObject railViewportAfter = protectedRailAfter
+        .value(QStringLiteral("viewport")).toObject();
+    const bool sidebarModeSequenceStable = hiddenBeforeReady && railBeforeReady
+        && expandedReady && railAfterReady && hiddenAfterReady
+        && hiddenViewportBefore == hiddenViewportAfter
+        && railViewportBefore == railViewportAfter;
+    results.record(QStringLiteral("physical letterboxing stays centered across hidden, rail, and expanded Sidebar modes"),
+                   sidebarModeSequenceStable,
+                   QString::fromUtf8(QJsonDocument(QJsonObject{
+                       {QStringLiteral("hiddenBefore"), protectedHiddenBefore},
+                       {QStringLiteral("railBefore"), protectedRailBefore},
+                       {QStringLiteral("expanded"), protectedExpanded},
+                       {QStringLiteral("railAfter"), protectedRailAfter},
+                       {QStringLiteral("hiddenAfter"), protectedHiddenAfter}
+                   }).toJson(QJsonDocument::Compact)));
+    const int hiddenProtectedWidth = hiddenViewportBefore
+        .value(QStringLiteral("view")).toObject().value(QStringLiteral("width")).toInt();
+    const int expandedProtectedWidth = protectedExpanded.value(QStringLiteral("viewport"))
+        .toObject().value(QStringLiteral("view")).toObject()
+        .value(QStringLiteral("width")).toInt();
+    results.record(QStringLiteral("fingerprint viewport size is selected from policy buckets, not one fixed geometry"),
+                   hiddenProtectedWidth != expandedProtectedWidth
+                       && hiddenProtectedWidth % FingerprintViewportPolicy::widthBucket == 0
+                       && expandedProtectedWidth % FingerprintViewportPolicy::widthBucket == 0,
+                   QStringLiteral("hidden=%1 expanded=%2 bucket=%3")
+                       .arg(hiddenProtectedWidth)
+                       .arg(expandedProtectedWidth)
+                       .arg(FingerprintViewportPolicy::widthBucket));
+
+    if (tabs) tabs->setSidebarVisible(true);
+    stableProtectedState(true, DesignTokens::sidebarCollapsedWidth);
+    if (tabs) {
+        for (int i = 0; i < 20; ++i) {
+            tabs->toggleSidebarPinned();
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 3);
+        }
+    }
+    const bool protectedTwentySettled = stableProtectedState(
+        true, DesignTokens::sidebarCollapsedWidth);
+    const QJsonObject protectedAfterTwenty = window->fullscreenDiagnostics();
+    const bool protectedTwentyStable = protectedTwentySettled
+        && protectedAfterTwenty.value(QStringLiteral("viewport")).toObject()
+            == railViewportBefore;
+    results.record(QStringLiteral("twenty rapid Sidebar reversals do not offset the protected viewport"),
+                   protectedTwentyStable);
+
+    int protectedSettledSignals = 0;
+    QMetaObject::Connection protectedSettledConnection;
+    if (tabs) {
+        protectedSettledConnection = QObject::connect(
+            tabs, &TabManager::sidebarGeometrySettled, window,
+            [&protectedSettledSignals] { ++protectedSettledSignals; });
+        for (int i = 0; i < 50; ++i) tabs->toggleSidebarPinned();
+    }
+    const bool protectedFiftySettled = stableProtectedState(
+        true, DesignTokens::sidebarCollapsedWidth);
+    if (protectedSettledConnection) QObject::disconnect(protectedSettledConnection);
+    const QJsonObject protectedAfterFifty = window->fullscreenDiagnostics();
+    const bool protectedFiftyStable = protectedFiftySettled
+        && protectedSettledSignals == 1
+        && protectedAfterFifty.value(QStringLiteral("viewport")).toObject()
+            == railViewportBefore;
+    results.record(QStringLiteral("fifty immediate Sidebar toggles settle the protected viewport once without drift"),
+                   protectedFiftyStable,
+                   QStringLiteral("settled=%1").arg(protectedSettledSignals));
+    settle(180);
+    capture(QStringLiteral("letterboxToggleStress"),
+            QStringLiteral("07d-letterbox-toggle-stress.png"), window);
+
+    if (tabs) window->setSidebarPinnedForDiagnostics(true);
+    stableProtectedState(true, DesignTokens::sidebarExpandedWidth);
 
     QElapsedTimer tabTimer;
     tabTimer.start();
