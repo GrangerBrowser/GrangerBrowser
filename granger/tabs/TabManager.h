@@ -32,6 +32,14 @@ class TabManager final : public QWidget {
     Q_OBJECT
 
 public:
+    enum class SidebarTransitionState {
+        Closed,
+        Opening,
+        Open,
+        Closing
+    };
+    Q_ENUM(SidebarTransitionState)
+
     explicit TabManager(QWidget *parent = nullptr);
 
     int addTab(QWidget *page, const QString &title);
@@ -69,6 +77,10 @@ public:
     bool sidebarVisible() const;
     QWidget *sidebarWidget() const;
     bool sidebarAnimationActive() const;
+    SidebarTransitionState sidebarTransitionState() const;
+    QString sidebarTransitionStateName() const;
+    int sidebarReservedWidth() const;
+    int sidebarTargetWidth() const;
     void activateIndex(int index);
     int count() const;
     int currentIndex() const;
@@ -94,6 +106,7 @@ signals:
     void settingsRequested();
     void manageSpacesRequested();
     void sidebarPinnedChanged(bool pinned);
+    void sidebarGeometrySettled();
     void sidebarInteractionStarted();
     void sidebarInteractionEnded();
 
@@ -135,11 +148,14 @@ private:
                                    const QString &textKey);
     void setCurrentIndex(int index);
     void animateSidebar(bool expanded);
+    void applySidebarGeometry(int sidebarWidth, int spacerWidth);
+    void finishSidebarTransition();
     void setItemsExpanded(bool expanded);
 
     QFrame *m_sidebar = nullptr;
     QWidget *m_sidebarTopArea = nullptr;
     QWidget *m_bottomNavigation = nullptr;
+    QWidget *m_contentLayer = nullptr;
     QWidget *m_spaceList = nullptr;
     QScrollArea *m_spaceScroll = nullptr;
     QVBoxLayout *m_spaceListLayout = nullptr;
@@ -173,8 +189,10 @@ private:
     int m_animationEndSidebar = 0;
     int m_animationStartSpacer = 0;
     int m_animationEndSpacer = 0;
+    SidebarTransitionState m_sidebarTransitionState = SidebarTransitionState::Closed;
     bool m_expanded = false;
     bool m_pinnedExpanded = false;
+    bool m_sidebarHovered = false;
     bool m_sidebarShown = true;
     bool m_animationsEnabled = true;
     bool m_tabSectionCollapsed = false;

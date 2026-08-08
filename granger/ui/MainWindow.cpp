@@ -2381,9 +2381,9 @@ void MainWindow::wireSignals()
     });
     connect(m_tabs, &TabManager::sidebarPinnedChanged, this, [this](bool pinned) {
         m_settings.setSidebarPinned(pinned);
-        QTimer::singleShot(AnimationPolicy::duration(AnimationKind::Sidebar),
-                           this, &MainWindow::layoutDownloadUi);
     });
+    connect(m_tabs, &TabManager::sidebarGeometrySettled,
+            this, &MainWindow::layoutDownloadUi);
     connect(m_tabs, &TabManager::spaceCollapsedChanged, this,
             [this](const QString &spaceId, bool collapsed) {
         QString error;

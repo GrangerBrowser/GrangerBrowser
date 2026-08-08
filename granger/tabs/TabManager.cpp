@@ -683,15 +683,17 @@ TabManager::TabManager(QWidget *parent)
     m_stack = new QStackedWidget(this);
     m_stack->setObjectName(QStringLiteral("WebStack"));
 
-    auto *contentLayer = new QWidget(this);
-    auto *contentLayout = new QHBoxLayout(contentLayer);
+    m_contentLayer = new QWidget(this);
+    m_contentLayer->setObjectName(QStringLiteral("BrowserContentLayer"));
+    auto *contentLayout = new QHBoxLayout(m_contentLayer);
     contentLayout->setContentsMargins(0, 0, 0, 0);
     contentLayout->setSpacing(0);
-    m_sidebarSpacer = new QWidget(contentLayer);
+    m_sidebarSpacer = new QWidget(m_contentLayer);
+    m_sidebarSpacer->setObjectName(QStringLiteral("SidebarReservedSpace"));
     m_sidebarSpacer->setFixedWidth(DesignTokens::sidebarCollapsedWidth);
     contentLayout->addWidget(m_sidebarSpacer);
     contentLayout->addWidget(m_stack, 1);
-    layout->addWidget(contentLayer, 0, 0);
+    layout->addWidget(m_contentLayer, 0, 0);
     m_sidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     layout->addWidget(m_sidebar, 0, 0, Qt::AlignLeft);
     m_sidebar->raise();
@@ -706,10 +708,14 @@ TabManager::TabManager(QWidget *parent)
             + (m_animationEndSidebar - m_animationStartSidebar) * progress);
         const int spacerWidth = qRound(m_animationStartSpacer
             + (m_animationEndSpacer - m_animationStartSpacer) * progress);
-        m_sidebar->setMinimumWidth(sidebarWidth);
-        m_sidebar->setMaximumWidth(sidebarWidth);
-        m_sidebarSpacer->setFixedWidth(spacerWidth);
+        applySidebarGeometry(sidebarWidth, spacerWidth);
     });
+    connect(m_widthAnimation, &QVariantAnimation::finished,
+            this, &TabManager::finishSidebarTransition);
+    m_animationStartSidebar = DesignTokens::sidebarCollapsedWidth;
+    m_animationEndSidebar = DesignTokens::sidebarCollapsedWidth;
+    m_animationStartSpacer = DesignTokens::sidebarCollapsedWidth;
+    m_animationEndSpacer = DesignTokens::sidebarCollapsedWidth;
 
     m_spaceSwitchAnimation = new QVariantAnimation(this);
     AnimationPolicy::configure(m_spaceSwitchAnimation, AnimationKind::SpaceSwitch);
@@ -1332,6 +1338,7 @@ void TabManager::setAnimationsEnabled(bool enabled)
 {
     if (m_animationsEnabled == enabled) return;
     m_animationsEnabled = enabled;
+    if (!enabled) m_widthAnimation->stop();
     for (const TabRecord &record : std::as_const(m_tabs)) {
         if (record.item) record.item->setAnimationsEnabled(enabled);
     }
@@ -1349,7 +1356,7 @@ void TabManager::setAnimationsEnabled(bool enabled)
         m_tabSectionAnimation->stop();
         m_tabScroll->setVisible(!m_tabSectionCollapsed);
         m_tabScroll->setMaximumHeight(QWIDGETSIZE_MAX);
-        animateSidebar(m_expanded);
+        animateSidebar(m_pinnedExpanded || m_sidebarHovered);
     }
 }
 
@@ -1390,7 +1397,7 @@ void TabManager::setSidebarPinned(bool pinned)
 {
     if (m_pinnedExpanded == pinned) return;
     m_pinnedExpanded = pinned;
-    animateSidebar(pinned || m_sidebar->underMouse());
+    animateSidebar(pinned || m_sidebarHovered);
     emit sidebarPinnedChanged(pinned);
 }
 
@@ -1404,18 +1411,28 @@ void TabManager::setSidebarVisible(bool visible)
     if (m_sidebarShown == visible) return;
     m_sidebarShown = visible;
     m_widthAnimation->stop();
+    if (!visible) m_sidebarHovered = false;
+    const bool expanded = m_pinnedExpanded || m_sidebarHovered;
+    if (m_expanded != expanded) {
+        m_expanded = expanded;
+        setItemsExpanded(expanded);
+    }
+    const int sidebarWidth = expanded ? DesignTokens::sidebarExpandedWidth
+                                      : DesignTokens::sidebarCollapsedWidth;
+    const int spacerWidth = m_pinnedExpanded ? DesignTokens::sidebarExpandedWidth
+                                             : DesignTokens::sidebarCollapsedWidth;
+    m_animationStartSidebar = m_animationEndSidebar = sidebarWidth;
+    m_animationStartSpacer = m_animationEndSpacer = spacerWidth;
+    applySidebarGeometry(sidebarWidth, spacerWidth);
     m_sidebar->setVisible(visible);
     m_sidebarSpacer->setVisible(visible);
-    if (visible) {
-        const int sidebarWidth = m_expanded ? DesignTokens::sidebarExpandedWidth
-                                            : DesignTokens::sidebarCollapsedWidth;
-        const int spacerWidth = m_pinnedExpanded ? DesignTokens::sidebarExpandedWidth
-                                                 : DesignTokens::sidebarCollapsedWidth;
-        m_sidebar->setMinimumWidth(sidebarWidth);
-        m_sidebar->setMaximumWidth(sidebarWidth);
-        m_sidebarSpacer->setFixedWidth(spacerWidth);
-        m_sidebar->raise();
+    m_sidebarTransitionState = m_expanded ? SidebarTransitionState::Open
+                                          : SidebarTransitionState::Closed;
+    if (m_contentLayer && m_contentLayer->layout()) {
+        m_contentLayer->layout()->invalidate();
+        m_contentLayer->layout()->activate();
     }
+    emit sidebarGeometrySettled();
 }
 
 bool TabManager::sidebarVisible() const
@@ -1433,6 +1450,32 @@ bool TabManager::sidebarAnimationActive() const
     return (m_widthAnimation && m_widthAnimation->state() == QAbstractAnimation::Running)
         || (m_tabSectionAnimation
             && m_tabSectionAnimation->state() == QAbstractAnimation::Running);
+}
+
+TabManager::SidebarTransitionState TabManager::sidebarTransitionState() const
+{
+    return m_sidebarTransitionState;
+}
+
+QString TabManager::sidebarTransitionStateName() const
+{
+    switch (m_sidebarTransitionState) {
+    case SidebarTransitionState::Closed: return QStringLiteral("Closed");
+    case SidebarTransitionState::Opening: return QStringLiteral("Opening");
+    case SidebarTransitionState::Open: return QStringLiteral("Open");
+    case SidebarTransitionState::Closing: return QStringLiteral("Closing");
+    }
+    return QStringLiteral("Closed");
+}
+
+int TabManager::sidebarReservedWidth() const
+{
+    return m_sidebarSpacer ? m_sidebarSpacer->width() : 0;
+}
+
+int TabManager::sidebarTargetWidth() const
+{
+    return m_animationEndSidebar;
 }
 
 void TabManager::activateIndex(int index)
@@ -1713,12 +1756,15 @@ bool TabManager::eventFilter(QObject *watched, QEvent *event)
     }
     if (watched == m_sidebar) {
         if (event->type() == QEvent::Enter) {
+            m_sidebarHovered = true;
             emit sidebarInteractionStarted();
             animateSidebar(true);
         } else if (event->type() == QEvent::Leave && !m_pinnedExpanded) {
+            m_sidebarHovered = false;
             emit sidebarInteractionEnded();
             animateSidebar(false);
         } else if (event->type() == QEvent::Leave) {
+            m_sidebarHovered = false;
             emit sidebarInteractionEnded();
         }
     }
@@ -1831,26 +1877,66 @@ void TabManager::animateSidebar(bool expanded)
                                        : DesignTokens::sidebarCollapsedWidth;
     const int targetSpacer = m_pinnedExpanded ? DesignTokens::sidebarExpandedWidth
                                               : DesignTokens::sidebarCollapsedWidth;
-    if (m_expanded == expanded && m_sidebar->width() == targetSidebar
-        && m_sidebarSpacer->width() == targetSpacer) return;
-    m_expanded = expanded;
-    setItemsExpanded(expanded);
+    if (m_expanded == expanded
+        && m_animationEndSidebar == targetSidebar
+        && m_animationEndSpacer == targetSpacer
+        && ((m_widthAnimation->state() == QAbstractAnimation::Running)
+            || (m_sidebar->width() == targetSidebar
+                && m_sidebarSpacer->width() == targetSpacer))) {
+        return;
+    }
+    if (m_expanded != expanded) {
+        m_expanded = expanded;
+        setItemsExpanded(expanded);
+    }
 
     m_widthAnimation->stop();
     m_animationStartSidebar = m_sidebar->width();
     m_animationEndSidebar = targetSidebar;
     m_animationStartSpacer = m_sidebarSpacer->width();
     m_animationEndSpacer = targetSpacer;
+    const bool opening = targetSidebar > m_animationStartSidebar
+        || targetSpacer > m_animationStartSpacer;
+    m_sidebarTransitionState = opening ? SidebarTransitionState::Opening
+                                       : SidebarTransitionState::Closing;
     if (!m_animationsEnabled || AnimationPolicy::reducedMotion()) {
-        m_sidebar->setMinimumWidth(targetSidebar);
-        m_sidebar->setMaximumWidth(targetSidebar);
-        m_sidebarSpacer->setFixedWidth(targetSpacer);
-        m_sidebar->raise();
+        finishSidebarTransition();
         return;
     }
+    const int fullTravel = DesignTokens::sidebarExpandedWidth
+        - DesignTokens::sidebarCollapsedWidth;
+    const int remainingTravel = qMax(qAbs(m_animationEndSidebar - m_animationStartSidebar),
+                                     qAbs(m_animationEndSpacer - m_animationStartSpacer));
+    const int fullDuration = AnimationPolicy::duration(AnimationKind::Sidebar);
+    m_widthAnimation->setDuration(qMax(1, qRound(fullDuration
+        * (qreal(remainingTravel) / qMax(1, fullTravel)))));
     m_widthAnimation->setCurrentTime(0);
     m_widthAnimation->start();
     m_sidebar->raise();
+}
+
+void TabManager::applySidebarGeometry(int sidebarWidth, int spacerWidth)
+{
+    if (!m_sidebar || !m_sidebarSpacer) return;
+    m_sidebar->setFixedWidth(sidebarWidth);
+    m_sidebarSpacer->setFixedWidth(spacerWidth);
+    m_sidebar->raise();
+}
+
+void TabManager::finishSidebarTransition()
+{
+    applySidebarGeometry(m_animationEndSidebar, m_animationEndSpacer);
+    m_sidebarTransitionState = m_expanded ? SidebarTransitionState::Open
+                                          : SidebarTransitionState::Closed;
+    if (m_contentLayer && m_contentLayer->layout()) {
+        m_contentLayer->layout()->invalidate();
+        m_contentLayer->layout()->activate();
+    }
+    if (m_stack && m_stack->layout()) {
+        m_stack->layout()->invalidate();
+        m_stack->layout()->activate();
+    }
+    emit sidebarGeometrySettled();
 }
 
 void TabManager::setItemsExpanded(bool expanded)
