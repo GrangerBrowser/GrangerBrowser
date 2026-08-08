@@ -1432,6 +1432,7 @@ void TabManager::setSidebarVisible(bool visible)
         m_contentLayer->layout()->invalidate();
         m_contentLayer->layout()->activate();
     }
+    if (BrowserTab *tab = currentBrowserTab()) tab->synchronizeViewportGeometry();
     emit sidebarGeometrySettled();
 }
 
@@ -1867,6 +1868,7 @@ void TabManager::setCurrentIndex(int index)
         }
     }
     updateSpaceUi();
+    if (BrowserTab *tab = currentBrowserTab()) tab->synchronizeViewportGeometry();
     if (spaceChanged) emit spaceActivated(m_activeSpaceId);
     emit currentTabChanged(index);
 }
@@ -1936,6 +1938,7 @@ void TabManager::finishSidebarTransition()
         m_stack->layout()->invalidate();
         m_stack->layout()->activate();
     }
+    if (BrowserTab *tab = currentBrowserTab()) tab->synchronizeViewportGeometry();
     emit sidebarGeometrySettled();
 }
 

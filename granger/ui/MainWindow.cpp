@@ -1816,6 +1816,16 @@ QJsonObject MainWindow::fullscreenDiagnostics() const
         return QStringLiteral("Normal");
     };
     QJsonObject result;
+    const auto widgetGeometry = [this](const QWidget *widget) {
+        if (!widget) return QJsonObject{};
+        const QPoint origin = widget->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0));
+        return QJsonObject{
+            {QStringLiteral("x"), origin.x()},
+            {QStringLiteral("y"), origin.y()},
+            {QStringLiteral("width"), widget->width()},
+            {QStringLiteral("height"), widget->height()}
+        };
+    };
     result.insert(QStringLiteral("presentationState"), presentationStateName());
     result.insert(QStringLiteral("preFullscreenPresentationState"),
                   stateName(m_preFullscreenPresentationState));
@@ -1832,6 +1842,20 @@ QJsonObject MainWindow::fullscreenDiagnostics() const
     result.insert(QStringLiteral("sidebarPinned"), m_tabs && m_tabs->sidebarPinned());
     result.insert(QStringLiteral("sidebarWidth"), m_tabs && m_tabs->sidebarWidget()
                       ? m_tabs->sidebarWidget()->width() : 0);
+    result.insert(QStringLiteral("sidebarReservedWidth"),
+                  m_tabs ? m_tabs->sidebarReservedWidth() : 0);
+    result.insert(QStringLiteral("sidebarTargetWidth"),
+                  m_tabs ? m_tabs->sidebarTargetWidth() : 0);
+    result.insert(QStringLiteral("sidebarTransitionState"),
+                  m_tabs ? m_tabs->sidebarTransitionStateName() : QStringLiteral("Closed"));
+    result.insert(QStringLiteral("windowGeometry"), widgetGeometry(this));
+    result.insert(QStringLiteral("centralGeometry"), widgetGeometry(centralWidget()));
+    result.insert(QStringLiteral("navigationGeometry"), widgetGeometry(m_navigation));
+    result.insert(QStringLiteral("tabsGeometry"), widgetGeometry(m_tabs));
+    result.insert(QStringLiteral("contentLayerGeometry"), widgetGeometry(
+        m_tabs ? m_tabs->findChild<QWidget *>(QStringLiteral("BrowserContentLayer")) : nullptr));
+    result.insert(QStringLiteral("webStackGeometry"), widgetGeometry(
+        m_tabs ? m_tabs->findChild<QWidget *>(QStringLiteral("WebStack")) : nullptr));
     result.insert(QStringLiteral("activeTab"), m_tabs ? m_tabs->currentIndex() : -1);
     result.insert(QStringLiteral("tabCount"), m_tabs ? m_tabs->count() : 0);
     if (const BrowserTab *tab = currentTab()) {
@@ -1839,6 +1863,7 @@ QJsonObject MainWindow::fullscreenDiagnostics() const
         result.insert(QStringLiteral("letterboxWidth"), tab->letterboxedViewportSize().width());
         result.insert(QStringLiteral("letterboxHeight"), tab->letterboxedViewportSize().height());
         result.insert(QStringLiteral("letterboxAdjustments"), tab->letterboxAdjustmentCount());
+        result.insert(QStringLiteral("viewport"), tab->viewportDiagnostics());
     }
     result.insert(QStringLiteral("chromeAnimationActive"), m_fullscreenChromeAnimation
                       && m_fullscreenChromeAnimation->state() == QAbstractAnimation::Running);

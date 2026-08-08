@@ -1,10 +1,13 @@
 #include "granger/browser/BrowserTab.h"
 
 #include <QIcon>
+#include <QJsonObject>
 #include <QPalette>
 #include <QResizeEvent>
 #include <QSet>
+#include <QShowEvent>
 #include <QSizePolicy>
+#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWebEngineCertificateError>
@@ -269,10 +272,55 @@ int BrowserTab::letterboxAdjustmentCount() const
     return m_letterboxAdjustmentCount;
 }
 
+void BrowserTab::synchronizeViewportGeometry()
+{
+    if (!m_layout || !m_view) return;
+    if (m_letterboxingEnabled) {
+        if (m_letterboxTimer) m_letterboxTimer->stop();
+        updateLetterbox();
+    }
+    m_layout->invalidate();
+    m_layout->activate();
+    m_view->updateGeometry();
+}
+
+QJsonObject BrowserTab::viewportDiagnostics() const
+{
+    const auto rectObject = [](const QRect &rect) {
+        return QJsonObject{
+            {QStringLiteral("x"), rect.x()},
+            {QStringLiteral("y"), rect.y()},
+            {QStringLiteral("width"), rect.width()},
+            {QStringLiteral("height"), rect.height()}
+        };
+    };
+    const QRect available = contentsRect();
+    const QSize target = m_letterboxingEnabled && m_letterboxedViewportSize.isValid()
+        ? m_letterboxedViewportSize : available.size();
+    const QRect expected = m_letterboxingEnabled
+        ? QStyle::alignedRect(layoutDirection(), Qt::AlignCenter, target, available)
+        : available;
+    const QRect actual = m_view ? m_view->geometry() : QRect();
+    return QJsonObject{
+        {QStringLiteral("host"), rectObject(available)},
+        {QStringLiteral("view"), rectObject(actual)},
+        {QStringLiteral("expected"), rectObject(expected)},
+        {QStringLiteral("matchesExpected"), actual == expected},
+        {QStringLiteral("letterboxing"), m_letterboxingEnabled},
+        {QStringLiteral("devicePixelRatio"), devicePixelRatioF()}
+    };
+}
+
 void BrowserTab::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     scheduleLetterboxUpdate();
+}
+
+void BrowserTab::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    synchronizeViewportGeometry();
 }
 
 void BrowserTab::scheduleLetterboxUpdate()

@@ -14,7 +14,9 @@
 #include "granger/privacy/PrivacyTypes.h"
 
 class QIcon;
+class QJsonObject;
 class QResizeEvent;
+class QShowEvent;
 class QTimer;
 class QVBoxLayout;
 class QWebEngineLoadingInfo;
@@ -43,6 +45,8 @@ public:
     bool letterboxingEnabled() const;
     QSize letterboxedViewportSize() const;
     int letterboxAdjustmentCount() const;
+    void synchronizeViewportGeometry();
+    QJsonObject viewportDiagnostics() const;
     bool ensureProfile(QWebEngineProfile *profile, PrivacyProfileKind profileKind);
     PrivacyProfileKind privacyProfileKind() const;
     void setContainerContext(const QString &id,
@@ -97,6 +101,7 @@ public:
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 signals:
     void displayAddressChanged(const QString &address);
