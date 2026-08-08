@@ -54,6 +54,7 @@
 #include <QWebEngineCookieStore>
 #include <QWebEngineProfile>
 #include <QWebEngineScript>
+#include <QWebEngineView>
 #include <QtMath>
 
 #include <algorithm>
@@ -1114,6 +1115,35 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                         QWebEngineScript::MainWorld, 700).toString()
                 == QStringLiteral("Letterbox UI geometry fixture");
     }, 6000);
+
+    BrowserTab *earlySizedTab = window->currentTabForDiagnostics();
+    QWebEngineView *earlySizedView = earlySizedTab ? earlySizedTab->view() : nullptr;
+    const QSize restoredHostTarget = earlySizedTab
+        ? FingerprintViewportPolicy::standardizedSize(earlySizedTab->contentsRect().size())
+        : QSize();
+    if (earlySizedView) {
+        earlySizedView->setMinimumSize(0, 0);
+        earlySizedView->setMaximumSize(QSize(100, 30));
+        earlySizedView->resize(QSize(100, 30));
+    }
+    if (earlySizedTab) earlySizedTab->synchronizeViewportGeometry();
+    const bool earlyViewportRecovered = waitFor([&] {
+        if (!earlySizedTab || !earlySizedView) return false;
+        const QJsonObject viewport = earlySizedTab->viewportDiagnostics();
+        return earlySizedView->size() == restoredHostTarget
+            && earlySizedTab->letterboxedViewportSize() == restoredHostTarget
+            && viewport.value(QStringLiteral("matchesExpected")).toBool()
+            && viewport.value(QStringLiteral("centered")).toBool();
+    }, 3000);
+    results.record(QStringLiteral("letterboxing expands an early tiny restored viewport to the host policy bucket"),
+                   protectedFixtureReady && restoredHostTarget.isValid()
+                       && restoredHostTarget.width() >= FingerprintViewportPolicy::widthBucket
+                       && restoredHostTarget.height() >= FingerprintViewportPolicy::heightBucket
+                       && earlyViewportRecovered,
+                   earlySizedTab
+                       ? QString::fromUtf8(QJsonDocument(earlySizedTab->viewportDiagnostics())
+                                               .toJson(QJsonDocument::Compact))
+                       : QStringLiteral("missing BrowserTab"));
 
     const auto protectedSidebarStateValid = [](const QJsonObject &state,
                                                 bool sidebarVisible,

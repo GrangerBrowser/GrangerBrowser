@@ -26,6 +26,30 @@
 namespace granger {
 
 namespace {
+class LetterboxedWebView final : public QWebEngineView {
+public:
+    explicit LetterboxedWebView(QWidget *parent = nullptr)
+        : QWebEngineView(parent)
+    {
+    }
+
+    void setPreferredViewportSize(const QSize &size)
+    {
+        if (m_preferredViewportSize == size) return;
+        m_preferredViewportSize = size;
+        updateGeometry();
+    }
+
+    QSize sizeHint() const override
+    {
+        return m_preferredViewportSize.isValid()
+            ? m_preferredViewportSize : QWebEngineView::sizeHint();
+    }
+
+private:
+    QSize m_preferredViewportSize;
+};
+
 QString esc(const QString &value)
 {
     return value.toHtmlEscaped();
@@ -56,7 +80,7 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
     m_layout->setContentsMargins(0, 0, 0, 0);
     m_layout->setSpacing(0);
 
-    m_view = new QWebEngineView(this);
+    m_view = new LetterboxedWebView(this);
     m_view->setContextMenuPolicy(Qt::CustomContextMenu);
     installPage(profile, profileKind);
     m_layout->addWidget(m_view);
@@ -245,6 +269,7 @@ void BrowserTab::setLetterboxingEnabled(bool enabled)
     if (!enabled) {
         if (m_letterboxTimer) m_letterboxTimer->stop();
         m_letterboxedViewportSize = QSize();
+        static_cast<LetterboxedWebView *>(m_view)->setPreferredViewportSize(QSize());
         m_layout->setAlignment(m_view, Qt::Alignment());
         m_view->setMinimumSize(0, 0);
         m_view->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
@@ -353,6 +378,7 @@ void BrowserTab::updateLetterbox()
     const QSize target = FingerprintViewportPolicy::standardizedSize(available);
     const bool sizeChanged = target != m_letterboxedViewportSize || m_view->size() != target;
     m_layout->setAlignment(m_view, Qt::AlignCenter);
+    static_cast<LetterboxedWebView *>(m_view)->setPreferredViewportSize(target);
     m_view->setMinimumSize(0, 0);
     m_view->setMaximumSize(target);
     m_view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
