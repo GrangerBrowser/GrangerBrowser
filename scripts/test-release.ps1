@@ -625,6 +625,7 @@ userAgentProfile=default
         -not $privacyCleanupPrepare.ok -or -not $privacyCleanupVerify.ok -or -not $privacyStability.ok -or -not $privacyVisual.ok -or
         -not $mainWindowDownload.ok -or $mainWindowDownload.pageUnavailableSeen -or -not $mainWindowDownload.sourceTabClosed -or
         -not $mainWindowDownload.concurrentDownloadsObserved -or -not $mainWindowDownload.sourceUrlSanitized -or
+        -not $mainWindowDownload.activePanelVerified -or -not $mainWindowDownload.activePanelScreenshotSaved -or
         -not $unknownLengthDownload.ok -or -not $unknownLengthDownload.activeShelfVerified -or
         -not $pauseResumeDownload.ok -or -not $pauseResumeDownload.pauseRequested -or
         -not $pauseResumeDownload.pausedObserved -or -not $pauseResumeDownload.resumeRequested -or

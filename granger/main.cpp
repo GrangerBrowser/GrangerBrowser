@@ -1030,6 +1030,14 @@ int runMainWindowDownloadSmoke(QApplication &app,
     int expectedHistoryCount = initialHistoryCount + expectedNewHistoryCount;
     bool activeScreenshotSaved = activeScreenshotPath.isEmpty();
     bool completedScreenshotSaved = completedScreenshotPath.isEmpty();
+    const QFileInfo activeScreenshotInfo(activeScreenshotPath);
+    const QString activePanelScreenshotPath = activeScreenshotPath.isEmpty()
+        ? QString()
+        : activeScreenshotInfo.dir().filePath(
+              activeScreenshotInfo.completeBaseName() + QStringLiteral("-panel.png"));
+    bool activePanelScreenshotSaved = activePanelScreenshotPath.isEmpty();
+    bool activePanelVerified = activePanelScreenshotPath.isEmpty();
+    bool activePanelCaptureStarted = false;
     const QFileInfo completedScreenshotInfo(completedScreenshotPath);
     const QString panelScreenshotPath = completedScreenshotPath.isEmpty()
         ? QString()
@@ -1105,11 +1113,15 @@ int runMainWindowDownloadSmoke(QApplication &app,
         result.insert(QStringLiteral("panelVerified"), panelVerified);
         result.insert(QStringLiteral("sourceUrlSanitized"), sourceUrlSanitized);
         result.insert(QStringLiteral("activeScreenshotSaved"), activeScreenshotSaved);
+        result.insert(QStringLiteral("activePanelScreenshotSaved"),
+                      activePanelScreenshotSaved);
+        result.insert(QStringLiteral("activePanelVerified"), activePanelVerified);
         result.insert(QStringLiteral("completedScreenshotSaved"), completedScreenshotSaved);
         result.insert(QStringLiteral("panelScreenshotSaved"), panelScreenshotSaved);
         result.insert(QStringLiteral("shelfScreenshotSaved"), shelfScreenshotSaved);
         result.insert(QStringLiteral("recentPageVerified"), recentPageVerified);
         result.insert(QStringLiteral("activeScreenshot"), activeScreenshotPath);
+        result.insert(QStringLiteral("activePanelScreenshot"), activePanelScreenshotPath);
         result.insert(QStringLiteral("completedScreenshot"), completedScreenshotPath);
         result.insert(QStringLiteral("panelScreenshot"), panelScreenshotPath);
         result.insert(QStringLiteral("shelfScreenshot"), shelfScreenshotPath);
@@ -1178,6 +1190,41 @@ int runMainWindowDownloadSmoke(QApplication &app,
                     : diagnostics.value(QStringLiteral("toolbarPercent")).toInt(-1) > 0;
                 if (!sourceTabClosed && concurrentDownloadsObserved) {
                     activeScreenshotSaved = captureWindow(activeScreenshotPath);
+                    if (!activePanelScreenshotPath.isEmpty()
+                        && !activePanelCaptureStarted) {
+                        activePanelCaptureStarted = true;
+                        poll.stop();
+                        window->showDownloadPanelForDiagnostics();
+                        QTimer::singleShot(240, &app, [&] {
+                            if (finished || !window) return;
+                            const QJsonObject panel = window->downloadDiagnostics()
+                                                          .value(QStringLiteral("panel"))
+                                                          .toObject();
+                            activePanelVerified = panel.value(QStringLiteral("visible")).toBool()
+                                && panel.value(QStringLiteral("activeRows")).toInt()
+                                    == expectedDownloadCount
+                                && panel.value(QStringLiteral("laidOutRows")).toInt()
+                                    == panel.value(QStringLiteral("rowCount")).toInt()
+                                && panel.value(QStringLiteral("surfaceVisible")).toBool()
+                                && panel.value(QStringLiteral("surfaceStyled")).toBool()
+                                && panel.value(QStringLiteral("headerIconVisible")).toBool()
+                                && panel.value(QStringLiteral("historyFullWidth")).toBool()
+                                && panel.value(QStringLiteral("actionsInside")).toBool()
+                                && panel.value(QStringLiteral("inViewport")).toBool();
+                            if (auto *panelWidget = window->findChild<granger::DownloadPanel *>()) {
+                                QDir().mkpath(
+                                    QFileInfo(activePanelScreenshotPath).absolutePath());
+                                const QPixmap panelPixmap = panelWidget->grab();
+                                activePanelScreenshotSaved = !panelPixmap.isNull()
+                                    && panelPixmap.save(activePanelScreenshotPath, "PNG");
+                                panelWidget->hide();
+                            }
+                            window->closeCurrentTabForDiagnostics();
+                            sourceTabClosed = true;
+                            poll.start();
+                        });
+                        return;
+                    }
                     window->closeCurrentTabForDiagnostics();
                     sourceTabClosed = true;
                 }
@@ -1229,6 +1276,8 @@ int runMainWindowDownloadSmoke(QApplication &app,
                         == initialRecentCount + 1
                     && panel.value(QStringLiteral("rowCount")).toInt()
                         == expectedHistoryCount
+                    && panel.value(QStringLiteral("laidOutRows")).toInt()
+                        == panel.value(QStringLiteral("rowCount")).toInt()
                     && panel.value(QStringLiteral("inViewport")).toBool();
                 const QJsonArray items = newDownloadItems(finalDiagnostics);
                 sourceUrlSanitized = items.size() == 1;
@@ -1245,7 +1294,8 @@ int runMainWindowDownloadSmoke(QApplication &app,
                     && activeShelfVerified && activeToolbarCountVerified
                     && sourceTabClosed && cancelRequested && cancelledUiVerified
                     && panelVerified && sourceUrlSanitized
-                    && activeScreenshotSaved;
+                    && activeScreenshotSaved && activePanelVerified
+                    && activePanelScreenshotSaved;
                 finish(ok, ok ? QStringLiteral("real download cancellation and native UI state verified")
                               : QStringLiteral("download cancellation acceptance checks failed"));
             });
@@ -1316,6 +1366,8 @@ int runMainWindowDownloadSmoke(QApplication &app,
                         == initialRecentCount + expectedDownloadCount
                     && panel.value(QStringLiteral("rowCount")).toInt()
                         == expectedHistoryCount
+                    && panel.value(QStringLiteral("laidOutRows")).toInt()
+                        == panel.value(QStringLiteral("rowCount")).toInt()
                     && panel.value(QStringLiteral("inViewport")).toBool();
                 if (!panelScreenshotPath.isEmpty()) {
                     if (auto *panelWidget = window->findChild<granger::DownloadPanel *>()) {
@@ -1410,6 +1462,7 @@ int runMainWindowDownloadSmoke(QApplication &app,
                             && finalDiagnostics.value(QStringLiteral("allFinished")).toBool()
                             && bytesComplete && recentPageVerified
                             && activeScreenshotSaved && completedScreenshotSaved
+                            && activePanelVerified && activePanelScreenshotSaved
                             && panelScreenshotSaved && shelfScreenshotSaved;
                         finish(ok,
                                ok ? QStringLiteral("real MainWindow download progress, native surfaces, tab independence, completion, and history verified")

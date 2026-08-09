@@ -66,6 +66,12 @@ public:
     inline static constexpr int downloadShelfHeight = 136;
     inline static constexpr int downloadPanelWidth = 420;
     inline static constexpr int downloadPanelMaxHeight = 560;
+    inline static constexpr int downloadPanelMinHeight = 224;
+    inline static constexpr int downloadPanelContentMaxHeight = 400;
+    inline static constexpr int downloadPanelEmptyContentHeight = 104;
+    inline static constexpr int downloadPanelShadowMargin = 12;
+    inline static constexpr int downloadPanelShadowBlur = 24;
+    inline static constexpr int downloadPanelShadowOffsetY = 4;
     inline static constexpr int tabHeight = 46;
     inline static constexpr int controlHeightSm = 32;
     inline static constexpr int controlHeight = 40;
@@ -91,6 +97,7 @@ public:
     inline static constexpr int pressedDurationMs = 80;
     inline static constexpr int focusDurationMs = 120;
     inline static constexpr int popupDurationMs = 150;
+    inline static constexpr int popupCloseDurationMs = 110;
     inline static constexpr int dialogDurationMs = 170;
     inline static constexpr int tabDurationMs = 180;
     inline static constexpr int tabReorderDurationMs = 190;

@@ -251,6 +251,8 @@
   "downloads.more_active": "+%1 белсенді",
   "downloads.active_count": "%1 белсенді жүктеу",
   "downloads.panel_recent": "Соңғы әрекеттер",
+  "downloads.none_active": "Белсенді жүктеулер жоқ",
+  "downloads.empty_hint": "Соңғы файлдар осында көрсетіледі.",
   "downloads.section_active": "БЕЛСЕНДІ",
   "downloads.section_attention": "НАЗАР АУДАРУ КЕРЕК",
   "downloads.section_recent": "СОҢҒЫ",

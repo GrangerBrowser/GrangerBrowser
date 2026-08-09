@@ -251,6 +251,8 @@
   "downloads.more_active": "+%1 active",
   "downloads.active_count": "%1 active downloads",
   "downloads.panel_recent": "Recent activity",
+  "downloads.none_active": "No active downloads",
+  "downloads.empty_hint": "Recent files will appear here.",
   "downloads.section_active": "ACTIVE",
   "downloads.section_attention": "NEEDS ATTENTION",
   "downloads.section_recent": "RECENT",

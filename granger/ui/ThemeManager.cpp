@@ -737,17 +737,41 @@ QString ThemeManager::styleSheet() const
             background: transparent;
             border-color: transparent;
         }
+    )");
+
+    qss += QStringLiteral(R"(
 
         QFrame#DownloadShelfCard,
-        QFrame#DownloadPanel {
+        QFrame#DownloadPanelSurface {
             background: __POPUP_BG__;
             border: 1px solid __BORDER__;
             border-radius: __POPUP_RADIUS__;
         }
 
+        QFrame#DownloadPanel {
+            background: transparent;
+            border: 0;
+        }
+
+        QWidget#DownloadPanelHeader,
+        QWidget#DownloadEmptyState {
+            background: transparent;
+            border: 0;
+        }
+
+        QLabel#DownloadPanelIcon {
+            background: __ACCENT_SOFT__;
+            border: 1px solid rgba(217,86,97,0.26);
+            border-radius: __CONTROL_RADIUS__;
+        }
+
         QFrame#DownloadShelfCard[warning="true"],
-        QFrame#DownloadPanel QFrame#DownloadRow[warning="true"] {
+        QFrame#DownloadPanel QFrame#DownloadRow[attention="true"] {
             border-color: rgba(224,171,85,0.72);
+        }
+
+        QFrame#DownloadPanel QFrame#DownloadRow[warning="true"] {
+            background: rgba(224,171,85,0.08);
         }
 
         QLabel#DownloadFileName {
@@ -771,6 +795,14 @@ QString ThemeManager::styleSheet() const
 
         QLabel#DownloadSecurity[warning="true"] {
             color: __WARNING__;
+        }
+
+        QLabel#DownloadStatus[attention="true"] {
+            color: __WARNING__;
+        }
+
+        QLabel#DownloadStatus[warning="true"] {
+            color: __ERROR__;
         }
 
         QLabel#DownloadCountBadge {
@@ -857,7 +889,13 @@ QString ThemeManager::styleSheet() const
 
         QLabel#DownloadEmpty {
             color: __MUTED__;
-            padding: 16px;
+            font-size: 12px;
+            padding: 0 12px;
+        }
+
+        QLabel#DownloadEmptyIcon {
+            background: transparent;
+            border: 0;
         }
 
         QToolButton#DownloadHistoryButton {

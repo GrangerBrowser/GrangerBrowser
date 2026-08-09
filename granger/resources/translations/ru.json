@@ -251,6 +251,8 @@
   "downloads.more_active": "+%1 активных",
   "downloads.active_count": "Активных загрузок: %1",
   "downloads.panel_recent": "Недавняя активность",
+  "downloads.none_active": "Нет активных загрузок",
+  "downloads.empty_hint": "Недавние файлы появятся здесь.",
   "downloads.section_active": "АКТИВНЫЕ",
   "downloads.section_attention": "ТРЕБУЮТ ВНИМАНИЯ",
   "downloads.section_recent": "НЕДАВНИЕ",

@@ -5,6 +5,7 @@
 #include <QContextMenuEvent>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
 #include <QHideEvent>
 #include <QHBoxLayout>
@@ -21,6 +22,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
@@ -61,6 +63,13 @@ public:
     }
 
 protected:
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QLabel::minimumSizeHint();
+        hint.setWidth(0);
+        return hint;
+    }
+
     void resizeEvent(QResizeEvent *event) override
     {
         QLabel::resizeEvent(event);
@@ -280,8 +289,11 @@ public:
     void setSnapshot(const DownloadSnapshot &snapshot)
     {
         m_snapshot = snapshot;
+        const bool attention = snapshot.securityWarning
+            || snapshot.state == QStringLiteral("Failed");
         setProperty("state", snapshot.state.toLower());
         setProperty("warning", snapshot.securityWarning);
+        setProperty("attention", attention);
         style()->unpolish(this);
         style()->polish(this);
 
@@ -300,7 +312,15 @@ public:
             status = snapshot.reason.trimmed();
         }
         m_status->setFullText(status);
+        m_status->setProperty("attention", attention);
+        m_status->setProperty("warning", snapshot.securityWarning);
+        m_status->style()->unpolish(m_status);
+        m_status->style()->polish(m_status);
         setAccessibleName(QStringLiteral("%1, %2").arg(snapshot.fileName, status));
+
+        m_progress->setProperty("warning", attention);
+        m_progress->style()->unpolish(m_progress);
+        m_progress->style()->polish(m_progress);
 
         if (snapshot.active && snapshot.totalBytes <= 0) {
             if (AnimationPolicy::reducedMotion()) {
@@ -353,6 +373,21 @@ public:
         } else {
             m_tertiary->hide();
         }
+    }
+
+    bool actionsInsideBounds() const
+    {
+        for (const QToolButton *button : {m_primary, m_secondary, m_tertiary}) {
+            if (button && button->isVisible() && !rect().contains(button->geometry())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool hasAttentionState() const
+    {
+        return property("attention").toBool();
     }
 
 protected:
@@ -846,33 +881,62 @@ DownloadPanel::DownloadPanel(QWidget *parent)
     setFixedWidth(DesignTokens::downloadPanelWidth);
     setMaximumHeight(DesignTokens::downloadPanelMaxHeight);
 
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(12, 12, 12, 10);
+    auto *outerLayout = new QVBoxLayout(this);
+    outerLayout->setContentsMargins(DesignTokens::downloadPanelShadowMargin,
+                                    DesignTokens::downloadPanelShadowMargin,
+                                    DesignTokens::downloadPanelShadowMargin,
+                                    DesignTokens::downloadPanelShadowMargin);
+    outerLayout->setSpacing(0);
+
+    m_surface = new QFrame(this);
+    m_surface->setObjectName(QStringLiteral("DownloadPanelSurface"));
+    m_surface->setAttribute(Qt::WA_StyledBackground, true);
+    auto *shadow = new QGraphicsDropShadowEffect(m_surface);
+    shadow->setBlurRadius(DesignTokens::downloadPanelShadowBlur);
+    shadow->setOffset(0, DesignTokens::downloadPanelShadowOffsetY);
+    shadow->setColor(QColor(0, 0, 0, 112));
+    m_surface->setGraphicsEffect(shadow);
+    outerLayout->addWidget(m_surface);
+
+    auto *layout = new QVBoxLayout(m_surface);
+    layout->setContentsMargins(14, 12, 14, 12);
     layout->setSpacing(9);
-    auto *header = new QHBoxLayout;
-    header->setContentsMargins(2, 0, 0, 0);
-    header->setSpacing(8);
+
+    auto *headerWidget = new QWidget(m_surface);
+    headerWidget->setObjectName(QStringLiteral("DownloadPanelHeader"));
+    auto *header = new QHBoxLayout(headerWidget);
+    header->setContentsMargins(0, 0, 0, 0);
+    header->setSpacing(10);
+    m_headerIcon = new QLabel(headerWidget);
+    m_headerIcon->setObjectName(QStringLiteral("DownloadPanelIcon"));
+    m_headerIcon->setFixedSize(32, 32);
+    m_headerIcon->setAlignment(Qt::AlignCenter);
+    m_headerIcon->setPixmap(QIcon(QStringLiteral(":/icons/downloads.svg")).pixmap(18, 18));
+    header->addWidget(m_headerIcon, 0, Qt::AlignVCenter);
     auto *heading = new QVBoxLayout;
     heading->setContentsMargins(0, 0, 0, 0);
     heading->setSpacing(1);
-    m_title = new QLabel(this);
+    m_title = new QLabel(headerWidget);
     m_title->setObjectName(QStringLiteral("DownloadPanelTitle"));
-    m_summary = new QLabel(this);
+    m_summary = new QLabel(headerWidget);
     m_summary->setObjectName(QStringLiteral("DownloadPanelSummary"));
     heading->addWidget(m_title);
     heading->addWidget(m_summary);
     header->addLayout(heading, 1);
-    m_close = makeActionButton(this);
+    m_close = makeActionButton(headerWidget);
     m_close->setIcon(QIcon(QStringLiteral(":/icons/close.svg")));
-    header->addWidget(m_close, 0, Qt::AlignTop);
-    layout->addLayout(header);
+    m_close->setFixedSize(DesignTokens::controlHeightSm,
+                          DesignTokens::controlHeightSm);
+    header->addWidget(m_close, 0, Qt::AlignVCenter);
+    layout->addWidget(headerWidget);
 
-    m_scroll = new QScrollArea(this);
+    m_scroll = new QScrollArea(m_surface);
     m_scroll->setObjectName(QStringLiteral("DownloadScroll"));
     m_scroll->setWidgetResizable(true);
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_scroll->setMaximumHeight(440);
+    m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setMaximumHeight(DesignTokens::downloadPanelContentMaxHeight);
     m_content = new QWidget(m_scroll);
     m_content->setObjectName(QStringLiteral("DownloadPanelContent"));
     auto *contentLayout = new QVBoxLayout(m_content);
@@ -881,35 +945,48 @@ DownloadPanel::DownloadPanel(QWidget *parent)
     m_activeSection = makeSection(m_content, &m_activeHeading, &m_activeRows);
     m_attentionSection = makeSection(m_content, &m_attentionHeading, &m_attentionRows);
     m_recentSection = makeSection(m_content, &m_recentHeading, &m_recentRows);
-    m_empty = new QLabel(m_content);
+
+    m_emptyState = new QWidget(m_content);
+    m_emptyState->setObjectName(QStringLiteral("DownloadEmptyState"));
+    auto *emptyLayout = new QVBoxLayout(m_emptyState);
+    emptyLayout->setContentsMargins(12, 12, 12, 12);
+    emptyLayout->setSpacing(7);
+    m_emptyIcon = new QLabel(m_emptyState);
+    m_emptyIcon->setObjectName(QStringLiteral("DownloadEmptyIcon"));
+    m_emptyIcon->setAlignment(Qt::AlignCenter);
+    m_emptyIcon->setFixedHeight(28);
+    m_emptyIcon->setPixmap(QIcon(QStringLiteral(":/icons/download-file.svg")).pixmap(24, 24));
+    m_empty = new QLabel(m_emptyState);
     m_empty->setObjectName(QStringLiteral("DownloadEmpty"));
     m_empty->setAlignment(Qt::AlignCenter);
-    m_empty->setMinimumHeight(92);
     m_empty->setWordWrap(true);
+    emptyLayout->addWidget(m_emptyIcon);
+    emptyLayout->addWidget(m_empty);
     contentLayout->addWidget(m_activeSection);
     contentLayout->addWidget(m_attentionSection);
     contentLayout->addWidget(m_recentSection);
-    contentLayout->addWidget(m_empty);
+    contentLayout->addWidget(m_emptyState);
     contentLayout->addStretch(1);
     m_scroll->setWidget(m_content);
-    layout->addWidget(m_scroll, 1);
+    layout->addWidget(m_scroll);
 
-    m_history = new QToolButton(this);
+    m_history = new QToolButton(m_surface);
     m_history->setObjectName(QStringLiteral("DownloadHistoryButton"));
     m_history->setIcon(QIcon(QStringLiteral(":/icons/downloads.svg")));
     m_history->setIconSize(QSize(17, 17));
     m_history->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_history->setFixedHeight(36);
+    m_history->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_history->setFocusPolicy(Qt::StrongFocus);
     layout->addWidget(m_history);
 
     m_animation = new QParallelAnimationGroup(this);
-    connect(m_close, &QToolButton::clicked, this, &QWidget::hide);
+    connect(m_close, &QToolButton::clicked, this, &DownloadPanel::animateClose);
     connect(m_history, &QToolButton::clicked, this, [this] {
         hide();
         emit historyRequested();
     });
-    retranslateUi();
+    setDownloads({});
 }
 
 void DownloadPanel::setDownloads(const QVector<DownloadSnapshot> &downloads)
@@ -945,8 +1022,9 @@ void DownloadPanel::setDownloads(const QVector<DownloadSnapshot> &downloads)
     m_activeRowCount = active.size();
     m_attentionRowCount = attention.size();
     m_recentRowCount = recent.size();
-    m_empty->setVisible(keep.isEmpty());
+    m_emptyState->setVisible(keep.isEmpty());
     retranslateUi();
+    updateScrollHeight();
 }
 
 void DownloadPanel::populateSection(QVBoxLayout *layout,
@@ -961,6 +1039,71 @@ void DownloadPanel::populateSection(QVBoxLayout *layout,
         row->show();
     }
     section->setVisible(!downloads.isEmpty());
+}
+
+void DownloadPanel::updateScrollHeight()
+{
+    if (!m_scroll || !m_content || !m_content->layout()) return;
+    auto rowLayoutHeight = [](QVBoxLayout *rows) {
+        if (!rows) return 0;
+        rows->invalidate();
+        const QMargins margins = rows->contentsMargins();
+        int height = margins.top() + margins.bottom();
+        int widgets = 0;
+        for (int index = 0; index < rows->count(); ++index) {
+            QWidget *widget = rows->itemAt(index)->widget();
+            if (!widget || widget->isHidden()) continue;
+            height += qMax(widget->minimumHeight(), widget->sizeHint().height());
+            ++widgets;
+        }
+        if (widgets > 1) height += rows->spacing() * (widgets - 1);
+        return height;
+    };
+    auto sectionHeight = [&rowLayoutHeight](QWidget *section,
+                                             QLabel *heading,
+                                             QVBoxLayout *rows) {
+        if (!section || section->isHidden() || !section->layout()) return 0;
+        section->layout()->invalidate();
+        const QMargins margins = section->layout()->contentsMargins();
+        const int headingHeight = heading
+            ? qMax(heading->minimumHeight(), heading->sizeHint().height()) : 0;
+        const int rowsHeight = rowLayoutHeight(rows);
+        return margins.top() + margins.bottom() + headingHeight + rowsHeight
+            + (headingHeight > 0 && rowsHeight > 0 ? section->layout()->spacing() : 0);
+    };
+
+    QVector<int> visibleHeights;
+    for (const int height : {
+             sectionHeight(m_activeSection, m_activeHeading, m_activeRows),
+             sectionHeight(m_attentionSection, m_attentionHeading, m_attentionRows),
+             sectionHeight(m_recentSection, m_recentHeading, m_recentRows)}) {
+        if (height > 0) visibleHeights.append(height);
+    }
+    if (m_emptyState && !m_emptyState->isHidden()) {
+        visibleHeights.append(qMax(DesignTokens::downloadPanelEmptyContentHeight,
+                                   m_emptyState->sizeHint().height()));
+    }
+    int contentHeight = 0;
+    for (const int height : visibleHeights) contentHeight += height;
+    if (visibleHeights.size() > 1) {
+        contentHeight += m_content->layout()->spacing() * (visibleHeights.size() - 1);
+    }
+    contentHeight = qMax(1, contentHeight);
+    m_content->setMinimumHeight(contentHeight);
+    m_content->layout()->invalidate();
+    m_content->layout()->activate();
+    m_content->updateGeometry();
+    const int targetHeight = qMin(DesignTokens::downloadPanelContentMaxHeight,
+                                  contentHeight);
+    const bool needsScroll = contentHeight > DesignTokens::downloadPanelContentMaxHeight;
+    m_scroll->setVerticalScrollBarPolicy(needsScroll
+        ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+    m_scroll->setFixedHeight(targetHeight);
+    if (!needsScroll) m_scroll->verticalScrollBar()->setValue(0);
+    m_scroll->updateGeometry();
+    if (m_surface && m_surface->layout()) m_surface->layout()->activate();
+    if (layout()) layout()->activate();
+    updateGeometry();
 }
 
 DownloadRow *DownloadPanel::rowFor(const DownloadSnapshot &snapshot)
@@ -994,15 +1137,17 @@ void DownloadPanel::dispatchAction(int action, quint32 id)
 
 void DownloadPanel::toggleAt(const QPoint &globalAnchor)
 {
-    if (isVisible()) hide();
+    if (isVisible()) animateClose();
     else openAt(globalAnchor);
 }
 
 void DownloadPanel::openAt(const QPoint &globalAnchor)
 {
+    updateScrollHeight();
     adjustSize();
     resize(DesignTokens::downloadPanelWidth,
-           qBound(220, sizeHint().height(), DesignTokens::downloadPanelMaxHeight));
+           qBound(DesignTokens::downloadPanelMinHeight,
+                  sizeHint().height(), DesignTokens::downloadPanelMaxHeight));
     QScreen *screen = QApplication::screenAt(globalAnchor);
     if (!screen) screen = QApplication::primaryScreen();
     QRect bounds = screen ? screen->availableGeometry() : QRect(globalAnchor, size());
@@ -1017,6 +1162,7 @@ void DownloadPanel::openAt(const QPoint &globalAnchor)
 
 void DownloadPanel::animateOpen(const QPoint &target)
 {
+    m_closing = false;
     m_animation->stop();
     while (m_animation->animationCount() > 0) {
         QAbstractAnimation *animation = m_animation->takeAnimation(0);
@@ -1047,16 +1193,48 @@ void DownloadPanel::animateOpen(const QPoint &target)
     m_close->setFocus(Qt::PopupFocusReason);
 }
 
+void DownloadPanel::animateClose()
+{
+    if (!isVisible() || m_closing) return;
+    m_animation->stop();
+    while (m_animation->animationCount() > 0) {
+        QAbstractAnimation *animation = m_animation->takeAnimation(0);
+        animation->deleteLater();
+    }
+    if (AnimationPolicy::reducedMotion()) {
+        hide();
+        return;
+    }
+
+    m_closing = true;
+    auto *opacity = new QPropertyAnimation(this, "windowOpacity", m_animation);
+    AnimationPolicy::configure(opacity, AnimationKind::Popup);
+    opacity->setDuration(DesignTokens::popupCloseDurationMs);
+    opacity->setStartValue(windowOpacity());
+    opacity->setEndValue(0.0);
+    m_animation->addAnimation(opacity);
+    connect(m_animation, &QParallelAnimationGroup::finished, this, [this] {
+        if (!m_closing) return;
+        hide();
+    }, Qt::SingleShotConnection);
+    m_animation->start();
+}
+
 void DownloadPanel::retranslateUi()
 {
     m_title->setText(Localization::text(QStringLiteral("page.downloads.title")));
     m_summary->setText(m_activeRowCount > 0
         ? Localization::text(QStringLiteral("downloads.active_count")).arg(m_activeRowCount)
-        : Localization::text(QStringLiteral("downloads.panel_recent")));
+        : (m_rows.isEmpty()
+            ? Localization::text(QStringLiteral("downloads.none_active"))
+            : Localization::text(QStringLiteral("downloads.panel_recent"))));
     m_activeHeading->setText(Localization::text(QStringLiteral("downloads.section_active")));
     m_attentionHeading->setText(Localization::text(QStringLiteral("downloads.section_attention")));
     m_recentHeading->setText(Localization::text(QStringLiteral("downloads.section_recent")));
-    m_empty->setText(Localization::text(QStringLiteral("downloads.none")));
+    m_empty->setText(Localization::text(QStringLiteral("downloads.empty_hint")));
+    m_headerIcon->setAccessibleName(m_title->text());
+    m_emptyIcon->setAccessibleName(Localization::text(
+        QStringLiteral("downloads.none_active")));
     m_close->setToolTip(Localization::text(QStringLiteral("common.close")));
     m_close->setAccessibleName(m_close->toolTip());
     m_history->setText(Localization::text(QStringLiteral("downloads.full_history")));
@@ -1068,7 +1246,7 @@ void DownloadPanel::retranslateUi()
 void DownloadPanel::keyPressEvent(QKeyEvent *event)
 {
     if (event->key() == Qt::Key_Escape) {
-        hide();
+        animateClose();
         event->accept();
         return;
     }
@@ -1078,18 +1256,54 @@ void DownloadPanel::keyPressEvent(QKeyEvent *event)
 void DownloadPanel::hideEvent(QHideEvent *event)
 {
     m_animation->stop();
+    m_closing = false;
     setWindowOpacity(1.0);
     QFrame::hideEvent(event);
 }
 
 QJsonObject DownloadPanel::diagnostics() const
 {
+    bool actionsInside = true;
+    int attentionStyledRows = 0;
+    for (DownloadRow *row : m_rows) {
+        if (!row) continue;
+        actionsInside = actionsInside && row->actionsInsideBounds();
+        if (row->hasAttentionState()) ++attentionStyledRows;
+    }
+    const int laidOutRows = (m_activeRows ? m_activeRows->count() : 0)
+        + (m_attentionRows ? m_attentionRows->count() : 0)
+        + (m_recentRows ? m_recentRows->count() : 0);
+    const bool contentNeedsScroll = m_content && m_scroll
+        && m_content->minimumHeight() > m_scroll->viewport()->height();
+    const bool scrollbarVisible = m_scroll && m_scroll->verticalScrollBar()->isVisible();
     return QJsonObject{
         {QStringLiteral("visible"), isVisible()},
         {QStringLiteral("rowCount"), m_rows.size()},
+        {QStringLiteral("laidOutRows"), laidOutRows},
         {QStringLiteral("activeRows"), m_activeRowCount},
         {QStringLiteral("attentionRows"), m_attentionRowCount},
         {QStringLiteral("recentRows"), m_recentRowCount},
+        {QStringLiteral("surfaceVisible"), m_surface && m_surface->isVisible()},
+        {QStringLiteral("surfaceStyled"), m_surface
+            && m_surface->testAttribute(Qt::WA_StyledBackground)},
+        {QStringLiteral("shadowEnabled"), m_surface
+            && qobject_cast<QGraphicsDropShadowEffect *>(m_surface->graphicsEffect())
+                != nullptr},
+        {QStringLiteral("headerIconVisible"), m_headerIcon && m_headerIcon->isVisible()},
+        {QStringLiteral("emptyStateVisible"), m_emptyState && m_emptyState->isVisible()},
+        {QStringLiteral("historyFullWidth"), m_history && m_scroll
+            && qAbs(m_history->width() - m_scroll->width()) <= 2},
+        {QStringLiteral("actionsInside"), actionsInside},
+        {QStringLiteral("attentionStyledRows"), attentionStyledRows},
+        {QStringLiteral("scrollbarVisible"), scrollbarVisible},
+        {QStringLiteral("scrollPolicyValid"), contentNeedsScroll
+            ? m_scroll->verticalScrollBarPolicy() == Qt::ScrollBarAsNeeded
+            : !scrollbarVisible},
+        {QStringLiteral("contentMinimumHeight"), m_content
+            ? m_content->minimumHeight() : 0},
+        {QStringLiteral("panelWidth"), width()},
+        {QStringLiteral("panelHeight"), height()},
+        {QStringLiteral("scrollHeight"), m_scroll ? m_scroll->height() : 0},
         {QStringLiteral("inViewport"), !isVisible() || (screen()
             && screen()->availableGeometry().contains(frameGeometry()))},
         {QStringLiteral("animationActive"), m_animation

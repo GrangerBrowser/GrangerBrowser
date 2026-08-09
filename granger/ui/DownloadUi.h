@@ -8,6 +8,7 @@
 #include <QVector>
 
 class QGraphicsOpacityEffect;
+class QFrame;
 class QHideEvent;
 class QKeyEvent;
 class QLabel;
@@ -139,9 +140,13 @@ private:
     DownloadRow *rowFor(const DownloadSnapshot &snapshot);
     void dispatchAction(int action, quint32 id);
     void animateOpen(const QPoint &target);
+    void animateClose();
+    void updateScrollHeight();
 
     QVector<DownloadSnapshot> m_downloads;
     QHash<quint32, DownloadRow *> m_rows;
+    QFrame *m_surface = nullptr;
+    QLabel *m_headerIcon = nullptr;
     QLabel *m_title = nullptr;
     QLabel *m_summary = nullptr;
     QToolButton *m_close = nullptr;
@@ -156,12 +161,15 @@ private:
     QWidget *m_recentSection = nullptr;
     QLabel *m_recentHeading = nullptr;
     QVBoxLayout *m_recentRows = nullptr;
+    QWidget *m_emptyState = nullptr;
+    QLabel *m_emptyIcon = nullptr;
     QLabel *m_empty = nullptr;
     QToolButton *m_history = nullptr;
     QParallelAnimationGroup *m_animation = nullptr;
     int m_activeRowCount = 0;
     int m_attentionRowCount = 0;
     int m_recentRowCount = 0;
+    bool m_closing = false;
 };
 
 }

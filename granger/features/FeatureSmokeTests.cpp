@@ -1432,12 +1432,34 @@ int runFeatureSmokeTests(QApplication &app,
                        QString::fromUtf8(QJsonDocument(shelfDiagnostics)
                                              .toJson(QJsonDocument::Compact)));
 
-        DownloadPanel downloadPanel;
-        downloadPanel.setDownloads(
-            {activeDownload, warningDownload, completedDownload});
         const QRect available = QApplication::primaryScreen()
             ? QApplication::primaryScreen()->availableGeometry()
             : QRect(0, 0, 1280, 720);
+
+        DownloadPanel emptyDownloadPanel;
+        emptyDownloadPanel.setDownloads({});
+        emptyDownloadPanel.openAt(available.bottomRight());
+        settleEvents(40);
+        const QJsonObject emptyPanelDiagnostics = emptyDownloadPanel.diagnostics();
+        results.record(QStringLiteral("download panel empty state is compact and intentional"),
+                       emptyPanelDiagnostics.value(QStringLiteral("visible")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("surfaceVisible")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("surfaceStyled")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("shadowEnabled")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("headerIconVisible")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("emptyStateVisible")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("laidOutRows")).toInt() == 0
+                           && emptyPanelDiagnostics.value(QStringLiteral("historyFullWidth")).toBool()
+                           && !emptyPanelDiagnostics.value(QStringLiteral("scrollbarVisible")).toBool()
+                           && emptyPanelDiagnostics.value(QStringLiteral("panelHeight")).toInt()
+                               <= 300,
+                       QString::fromUtf8(QJsonDocument(emptyPanelDiagnostics)
+                                             .toJson(QJsonDocument::Compact)));
+        emptyDownloadPanel.hide();
+
+        DownloadPanel downloadPanel;
+        downloadPanel.setDownloads(
+            {activeDownload, warningDownload, completedDownload});
         downloadPanel.openAt(available.bottomRight());
         settleEvents(40);
         const QJsonObject panelDiagnostics = downloadPanel.diagnostics();
@@ -1452,7 +1474,16 @@ int runFeatureSmokeTests(QApplication &app,
                            && panelDiagnostics.value(QStringLiteral("attentionRows")).toInt() == 1
                            && panelDiagnostics.value(QStringLiteral("recentRows")).toInt() == 1
                            && panelDiagnostics.value(QStringLiteral("rowCount")).toInt() == 3
+                           && panelDiagnostics.value(QStringLiteral("laidOutRows")).toInt() == 3
                            && panelDiagnostics.value(QStringLiteral("inViewport")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("surfaceVisible")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("surfaceStyled")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("shadowEnabled")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("headerIconVisible")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("historyFullWidth")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("actionsInside")).toBool()
+                           && panelDiagnostics.value(QStringLiteral("attentionStyledRows")).toInt() == 1
+                           && panelDiagnostics.value(QStringLiteral("scrollPolicyValid")).toBool()
                            && !panelDiagnostics.value(QStringLiteral("animationActive")).toBool()
                            && !panelText.contains(QStringLiteral("download-secret"))
                            && !panelText.contains(QStringLiteral("password")),
