@@ -921,6 +921,16 @@ int runUiFocusSmoke(QApplication &app,
     window->setSidebarPinnedForDiagnostics(true);
     waitFor([&] { return tabs && !tabs->sidebarAnimationActive(); });
 
+    const QVector<SpaceDefinition> singleLayoutSpace{
+        SpaceDefinition{ContainerManager::defaultSpaceId(), QStringLiteral("Default"),
+                        QStringLiteral("#d95661"), QStringLiteral("globe"), QString(), 0}
+    };
+    if (tabs) tabs->setSpaces(singleLayoutSpace);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    settle(80);
+    capture(QStringLiteral("sidebarOneSpace"),
+            QStringLiteral("05b-sidebar-one-space.png"), window);
+
     const QVector<SpaceDefinition> layoutSpaces{
         SpaceDefinition{ContainerManager::defaultSpaceId(), QStringLiteral("Default"),
                         QStringLiteral("#d95661"), QStringLiteral("globe"), QString(), 0},
@@ -984,10 +994,92 @@ int runUiFocusSmoke(QApplication &app,
         + (tabsHeader ? tabsHeader->height() : 0)
         + 3 * DesignTokens::sidebarSectionSpacing;
     bool rowsAreCompact = spaceRows.size() == DesignTokens::sidebarSpaceListMaxRows;
+    int activeSpaceRows = 0;
     for (const QToolButton *row : std::as_const(spaceRows)) {
         rowsAreCompact = rowsAreCompact && row
-            && row->height() == DesignTokens::sidebarSpaceRowHeight;
+            && row->height() == DesignTokens::sidebarSpaceRowHeight
+            && row->property("expanded").toBool()
+            && !row->text().isEmpty()
+            && !row->toolTip().isEmpty()
+            && !row->accessibleName().isEmpty()
+            && row->property("sidebarCount").isValid()
+            && row->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
+        if (row && row->property("active").toBool()) ++activeSpaceRows;
     }
+    rowsAreCompact = rowsAreCompact && activeSpaceRows == 1;
+
+    QList<QToolButton *> sidebarActions;
+    if (bottomNavigation) {
+        const auto buttons = bottomNavigation->findChildren<QToolButton *>();
+        for (QToolButton *button : buttons) {
+            if (button && button->property("sidebarAction").toBool()) {
+                sidebarActions.append(button);
+            }
+        }
+    }
+    bool bottomActionsValid = sidebarActions.size() == 4;
+    for (const QToolButton *button : std::as_const(sidebarActions)) {
+        bottomActionsValid = bottomActionsValid && button
+            && button->height() == DesignTokens::sidebarActionHeight
+            && button->property("expanded").toBool()
+            && button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon
+            && !button->text().isEmpty()
+            && !button->toolTip().isEmpty()
+            && !button->accessibleName().isEmpty();
+    }
+
+    auto expandedTabItems = tabScroll
+        ? tabScroll->findChildren<QWidget *>(QStringLiteral("TabItem"))
+        : QList<QWidget *>();
+    expandedTabItems.erase(std::remove_if(expandedTabItems.begin(), expandedTabItems.end(),
+        [](const QWidget *item) { return !item || !item->isVisible(); }),
+        expandedTabItems.end());
+    bool tabPresentationValid = !expandedTabItems.isEmpty();
+    int activeTabItems = 0;
+    QString activeTabMetrics;
+    for (const QWidget *item : expandedTabItems) {
+        const auto *title = item
+            ? item->findChild<QLabel *>(QStringLiteral("TabTitle")) : nullptr;
+        const auto *close = item
+            ? item->findChild<QToolButton *>(QStringLiteral("CloseTabButton")) : nullptr;
+        const auto *indicator = item
+            ? item->findChild<QFrame *>(QStringLiteral("TabActiveIndicator")) : nullptr;
+        const bool active = item && item->property("active").toBool();
+        if (active) {
+            ++activeTabItems;
+            activeTabMetrics = QStringLiteral("h=%1 hint=%2 max=%3 indicator=%4 close=%5x%6")
+                .arg(item->height())
+                .arg(item->sizeHint().height())
+                .arg(item->maximumHeight())
+                .arg(indicator ? indicator->maximumHeight() : -1)
+                .arg(close ? close->width() : -1)
+                .arg(close ? close->height() : -1);
+        }
+        tabPresentationValid = tabPresentationValid && item && title && close && indicator
+            && item->testAttribute(Qt::WA_StyledBackground)
+            && item->height() == DesignTokens::tabHeight
+            && item->sizeHint().height() == DesignTokens::tabHeight
+            && item->maximumHeight() == DesignTokens::tabHeight
+            && item->property("expanded").toBool()
+            && !item->accessibleName().isEmpty()
+            && !item->accessibleDescription().isEmpty()
+            && title->minimumSizeHint().width() == 0
+            && close->size() == QSize(DesignTokens::tabCloseButtonSize,
+                                      DesignTokens::tabCloseButtonSize)
+            && item->rect().contains(close->geometry())
+            && (!active || indicator->maximumHeight()
+                == DesignTokens::tabActiveIndicatorHeight);
+    }
+    tabPresentationValid = tabPresentationValid && activeTabItems == 1
+        && tabs && expandedTabItems.size() == tabs->visibleTabCount();
+    const bool createPresentationValid = newTabButton
+        && newTabButton->height() == DesignTokens::sidebarCreateButtonHeight
+        && newTabButton->property("expanded").toBool()
+        && newTabButton->toolButtonStyle() == Qt::ToolButtonTextBesideIcon
+        && !newTabButton->accessibleName().isEmpty();
+    const bool tabsHeaderPresentationValid = tabsHeader
+        && tabsHeader->height() == DesignTokens::sidebarTabsHeaderHeight
+        && tabsHeader->property("expanded").toBool();
     const bool compactSectionGeometry = sidebar && compactTop && topArea && bottomNavigation
         && newTabButton && spacesHeader && spaceScroll && tabsHeader && tabScroll
         && sidebar->width() == DesignTokens::sidebarExpandedWidth
@@ -1002,6 +1094,10 @@ int runUiFocusSmoke(QApplication &app,
         && qAbs(compactRect.height() - expectedCompactHeight) <= 1
         && spaceScroll->height() == DesignTokens::sidebarSpaceListMaxHeight
         && rowsAreCompact
+        && createPresentationValid
+        && tabsHeaderPresentationValid
+        && bottomActionsValid
+        && tabPresentationValid
         && tabScroll->isVisible()
         && tabScrollRect.height() >= DesignTokens::tabHeight
         && tabScrollRect.top() >= compactRect.bottom()
@@ -1017,9 +1113,87 @@ int runUiFocusSmoke(QApplication &app,
                        .arg(spaceRows.size())
                        .arg(gapAfter(createRect, spacesHeaderRect))
                        .arg(gapAfter(spacesHeaderRect, spacesRect))
-                       .arg(gapAfter(spacesRect, tabsHeaderRect)));
+                       .arg(gapAfter(spacesRect, tabsHeaderRect))
+                       + QStringLiteral(" rowsOk=%1 createOk=%2 headerOk=%3 actions=%4/%5 tabs=%6/%7/%8 active=%9 %10")
+                             .arg(rowsAreCompact)
+                             .arg(createPresentationValid)
+                             .arg(tabsHeaderPresentationValid)
+                             .arg(sidebarActions.size())
+                             .arg(bottomActionsValid)
+                             .arg(expandedTabItems.size())
+                             .arg(tabs ? tabs->visibleTabCount() : -1)
+                             .arg(tabPresentationValid)
+                             .arg(activeTabItems)
+                             .arg(activeTabMetrics));
 
     capture(QStringLiteral("verticalTabs"), QStringLiteral("06-vertical-tabs-expanded.png"), window);
+
+    const int tabCountBeforePresentationCapture = tabs ? tabs->count() : 0;
+    QVector<QPointer<QWidget>> presentationPages;
+    if (tabs) {
+        for (int i = 0; i < 8; ++i) {
+            auto *page = new QWidget;
+            presentationPages.append(page);
+            tabs->addTab(page, QStringLiteral("Sidebar presentation tab %1").arg(i + 1));
+        }
+        QWidget *featuredPage = tabs->currentWidget();
+        tabs->setTabTitle(featuredPage,
+            QStringLiteral("A deliberately long tab title that must elide without horizontal overflow"));
+        tabs->setTabPinned(featuredPage, true);
+        tabs->setTabAudible(featuredPage, true);
+    }
+    settle(120);
+    auto denseTabItems = tabScroll
+        ? tabScroll->findChildren<QWidget *>(QStringLiteral("TabItem"))
+        : QList<QWidget *>();
+    denseTabItems.erase(std::remove_if(denseTabItems.begin(), denseTabItems.end(),
+        [](const QWidget *item) { return !item || !item->isVisible(); }),
+        denseTabItems.end());
+    bool denseTabsFit = tabs && denseTabItems.size() == tabs->visibleTabCount()
+        && tabScroll && tabScroll->horizontalScrollBar()->maximum() == 0;
+    int denseActiveItems = 0;
+    for (const QWidget *item : denseTabItems) {
+        const auto *title = item
+            ? item->findChild<QLabel *>(QStringLiteral("TabTitle")) : nullptr;
+        const auto *close = item
+            ? item->findChild<QToolButton *>(QStringLiteral("CloseTabButton")) : nullptr;
+        if (item && item->property("active").toBool()) ++denseActiveItems;
+        denseTabsFit = denseTabsFit && item && title && close
+            && item->width() <= tabScroll->viewport()->width()
+            && title->minimumSizeHint().width() == 0
+            && item->rect().contains(close->geometry());
+    }
+    denseTabsFit = denseTabsFit && denseActiveItems == 1;
+    results.record(QStringLiteral("dense Sidebar tabs elide without horizontal overflow"),
+                   denseTabsFit,
+                   QStringLiteral("items=%1 visible=%2 horizontalMaximum=%3")
+                       .arg(denseTabItems.size())
+                       .arg(tabs ? tabs->visibleTabCount() : -1)
+                       .arg(tabScroll ? tabScroll->horizontalScrollBar()->maximum() : -1));
+    capture(QStringLiteral("sidebarDenseTabs"),
+            QStringLiteral("06d-sidebar-dense-tabs.png"), window);
+    if (tabs) {
+        for (const QPointer<QWidget> &page : std::as_const(presentationPages)) {
+            if (page) tabs->closePage(page);
+        }
+        if (tabCountBeforePresentationCapture > 0) tabs->activateIndex(0);
+    }
+    const bool presentationTabsClosed = waitFor([&] {
+        return tabs && tabs->count() == tabCountBeforePresentationCapture;
+    });
+    settle(DesignTokens::tabDurationMs + 40);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    auto remainingVisibleTabItems = tabScroll
+        ? tabScroll->findChildren<QWidget *>(QStringLiteral("TabItem"))
+        : QList<QWidget *>();
+    remainingVisibleTabItems.erase(std::remove_if(remainingVisibleTabItems.begin(),
+                                                  remainingVisibleTabItems.end(),
+        [](const QWidget *item) { return !item || !item->isVisible(); }),
+        remainingVisibleTabItems.end());
+    results.record(QStringLiteral("temporary Sidebar presentation tabs release cleanly"),
+                   presentationTabsClosed && tabs
+                       && remainingVisibleTabItems.size() == tabs->visibleTabCount());
+
     const QRect createAnchorBeforeCollapse = sidebarRect(newTabButton);
     const QRect spacesAnchorBeforeCollapse = sidebarRect(spaceScroll);
     const QRect tabsHeaderAnchorBeforeCollapse = sidebarRect(tabsHeader);
@@ -1160,6 +1334,50 @@ int runUiFocusSmoke(QApplication &app,
                                          .toJson(QJsonDocument::Compact)));
     capture(QStringLiteral("verticalTabsCollapsed"),
             QStringLiteral("06b-vertical-tabs-collapsed.png"), window);
+    QList<QToolButton *> collapsedSpaceRows = spaceList
+        ? spaceList->findChildren<QToolButton *>(QStringLiteral("SpaceButton"),
+                                                 Qt::FindDirectChildrenOnly)
+        : QList<QToolButton *>();
+    collapsedSpaceRows.erase(std::remove_if(collapsedSpaceRows.begin(),
+                                            collapsedSpaceRows.end(),
+        [](const QToolButton *row) { return !row || !row->isVisible(); }),
+        collapsedSpaceRows.end());
+    bool collapsedItemsAreIconOnly = newTabButton
+        && !newTabButton->property("expanded").toBool()
+        && newTabButton->toolButtonStyle() == Qt::ToolButtonIconOnly
+        && newTabButton->text().isEmpty();
+    for (const QToolButton *row : std::as_const(collapsedSpaceRows)) {
+        collapsedItemsAreIconOnly = collapsedItemsAreIconOnly && row
+            && !row->property("expanded").toBool()
+            && row->toolButtonStyle() == Qt::ToolButtonIconOnly
+            && row->text().isEmpty()
+            && !row->toolTip().isEmpty();
+    }
+    for (const QToolButton *button : std::as_const(sidebarActions)) {
+        collapsedItemsAreIconOnly = collapsedItemsAreIconOnly && button
+            && !button->property("expanded").toBool()
+            && button->toolButtonStyle() == Qt::ToolButtonIconOnly
+            && button->text().isEmpty()
+            && !button->toolTip().isEmpty();
+    }
+    auto collapsedTabItems = tabScroll
+        ? tabScroll->findChildren<QWidget *>(QStringLiteral("TabItem"))
+        : QList<QWidget *>();
+    collapsedTabItems.erase(std::remove_if(collapsedTabItems.begin(), collapsedTabItems.end(),
+        [](const QWidget *item) { return !item || !item->isVisible(); }),
+        collapsedTabItems.end());
+    for (const QWidget *item : collapsedTabItems) {
+        const auto *title = item
+            ? item->findChild<QLabel *>(QStringLiteral("TabTitle")) : nullptr;
+        const auto *close = item
+            ? item->findChild<QToolButton *>(QStringLiteral("CloseTabButton")) : nullptr;
+        collapsedItemsAreIconOnly = collapsedItemsAreIconOnly && item && title && close
+            && !item->property("expanded").toBool()
+            && !title->isVisible()
+            && !close->isVisible();
+    }
+    results.record(QStringLiteral("collapsed Sidebar keeps controls icon-only with accessible tooltips"),
+                   collapsedItemsAreIconOnly);
 
     window->setExternalFixtureForDiagnostics(
         QStringLiteral(R"HTML(<!doctype html><meta charset="utf-8">

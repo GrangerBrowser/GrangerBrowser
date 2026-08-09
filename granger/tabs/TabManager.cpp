@@ -64,6 +64,13 @@ public:
     }
 
 protected:
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QLabel::minimumSizeHint();
+        hint.setWidth(0);
+        return hint;
+    }
+
     void resizeEvent(QResizeEvent *event) override
     {
         QLabel::resizeEvent(event);
@@ -124,7 +131,8 @@ protected:
         Q_UNUSED(event)
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(QPen(QColor(QStringLiteral("#d85b64")), 1.8, Qt::SolidLine, Qt::RoundCap));
+        painter.setPen(QPen(QColor(QString::fromLatin1(DesignTokens::accentColor)),
+                            1.8, Qt::SolidLine, Qt::RoundCap));
         const QRectF ring = QRectF(rect()).adjusted(3.0, 3.0, -3.0, -3.0);
         painter.drawArc(ring, (90 - m_angle) * 16, -240 * 16);
     }
@@ -178,17 +186,24 @@ protected:
         badgeFont.setPixelSize(10);
         badgeFont.setWeight(QFont::DemiBold);
         painter.setFont(badgeFont);
-        const int badgeWidth = qMax(22, QFontMetrics(badgeFont).horizontalAdvance(count) + 12);
-        const QRect badgeRect(width() - badgeWidth - 8, (height() - 20) / 2,
-                              badgeWidth, 20);
-        painter.setPen(QPen(property("active").toBool()
-                                ? QColor(QStringLiteral("#684047"))
-                                : QColor(QStringLiteral("#3a3c45"))));
-        painter.setBrush(property("active").toBool()
-                             ? QColor(QStringLiteral("#4a2a30"))
-                             : QColor(QStringLiteral("#24262d")));
-        painter.drawRoundedRect(badgeRect, 7, 7);
-        painter.setPen(QColor(QStringLiteral("#d6d8df")));
+        const int badgeWidth = qMax(DesignTokens::sidebarBadgeMinWidth,
+                                    QFontMetrics(badgeFont).horizontalAdvance(count) + 10);
+        const QRect badgeRect(width() - badgeWidth - DesignTokens::sidebarBadgeInset,
+                              (height() - DesignTokens::sidebarBadgeHeight) / 2,
+                              badgeWidth, DesignTokens::sidebarBadgeHeight);
+        QColor border(QString::fromLatin1(property("active").toBool()
+            ? DesignTokens::accentColor : DesignTokens::borderDefaultColor));
+        QColor fill(QString::fromLatin1(property("active").toBool()
+            ? DesignTokens::accentColor : DesignTokens::surfaceBackgroundColor));
+        border.setAlpha(property("active").toBool() ? 104 : 220);
+        fill.setAlpha(property("active").toBool() ? 42 : 238);
+        painter.setPen(QPen(border));
+        painter.setBrush(fill);
+        painter.drawRoundedRect(badgeRect, DesignTokens::radiusSm,
+                                DesignTokens::radiusSm);
+        painter.setPen(QColor(QString::fromLatin1(
+            property("sidebarCountEmpty").toBool()
+                ? DesignTokens::textMutedColor : DesignTokens::textSecondaryColor)));
         painter.drawText(badgeRect, Qt::AlignCenter, count);
     }
 };
@@ -203,8 +218,10 @@ public:
         : QWidget(parent)
     {
         setObjectName(QStringLiteral("TabItem"));
+        setAttribute(Qt::WA_StyledBackground, true);
         setMinimumHeight(0);
         setMaximumHeight(DesignTokens::tabHeight);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         setProperty("active", false);
         setProperty("expanded", false);
         setProperty("crashed", false);
@@ -275,7 +292,8 @@ public:
         m_close->setIcon(QIcon(QStringLiteral(":/icons/close.svg")));
         m_close->setIconSize(QSize(15, 15));
         m_close->setToolTip(QStringLiteral("Close tab"));
-        m_close->setFixedSize(22, 22);
+        m_close->setFixedSize(DesignTokens::tabCloseButtonSize,
+                              DesignTokens::tabCloseButtonSize);
         m_closeEffect = new QGraphicsOpacityEffect(m_close);
         m_closeEffect->setOpacity(0.0);
         m_close->setGraphicsEffect(m_closeEffect);
@@ -299,11 +317,20 @@ public:
         retranslateUi();
     }
 
+    QSize sizeHint() const override
+    {
+        QSize hint = QWidget::sizeHint();
+        hint.setHeight(DesignTokens::tabHeight);
+        return hint;
+    }
+
     void setTitle(const QString &title)
     {
-        const QString clean = title.trimmed().isEmpty() ? QStringLiteral("New tab") : title.trimmed();
+        const QString clean = title.trimmed().isEmpty()
+            ? Localization::text(QStringLiteral("toolbar.new_tab")) : title.trimmed();
         m_fullTitle = clean;
         m_title->setFullText(clean);
+        m_title->setToolTip(clean);
         setAccessibleName(clean);
         setToolTip(clean);
     }
@@ -312,6 +339,7 @@ public:
     {
         m_close->setToolTip(Localization::text(QStringLiteral("toolbar.close_tab")));
         m_audio->setToolTip(Localization::text(QStringLiteral("tabs.audio_playing")));
+        setAccessibleDescription(Localization::text(QStringLiteral("tabs.browser_tab")));
     }
 
     void setIcon(const QIcon &icon)
@@ -380,10 +408,12 @@ public:
         m_indicatorAnimation->stop();
         if (isVisible() && m_animationsEnabled && !AnimationPolicy::reducedMotion()) {
             m_indicatorAnimation->setStartValue(m_indicator->maximumHeight());
-            m_indicatorAnimation->setEndValue(active ? 24 : 0);
+            m_indicatorAnimation->setEndValue(
+                active ? DesignTokens::tabActiveIndicatorHeight : 0);
             m_indicatorAnimation->start();
         } else {
-            m_indicator->setMaximumHeight(active ? 24 : 0);
+            m_indicator->setMaximumHeight(
+                active ? DesignTokens::tabActiveIndicatorHeight : 0);
         }
         updateCloseVisibility();
     }
@@ -438,7 +468,8 @@ public:
         if (enabled) return;
         m_indicatorAnimation->stop();
         m_closeAnimation->stop();
-        m_indicator->setMaximumHeight(m_active ? 24 : 0);
+        m_indicator->setMaximumHeight(
+            m_active ? DesignTokens::tabActiveIndicatorHeight : 0);
         m_closeEffect->setOpacity(
             m_expanded && (m_active || underMouse()) ? 1.0 : 0.0);
     }
@@ -646,14 +677,15 @@ TabManager::TabManager(QWidget *parent)
     m_newTabButton->setIcon(QIcon(QStringLiteral(":/icons/plus.svg")));
     m_newTabButton->setIconSize(QSize(DesignTokens::iconSize, DesignTokens::iconSize));
     m_newTabButton->setToolTip(QStringLiteral("Create"));
-    m_newTabButton->setFixedHeight(40);
+    m_newTabButton->setFixedHeight(DesignTokens::sidebarCreateButtonHeight);
+    m_newTabButton->setProperty("expanded", false);
     m_newTabButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_newTabButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     compactLayout->addWidget(m_newTabButton);
 
     m_spacesHeader = new QLabel(m_sidebarCompactTop);
     m_spacesHeader->setObjectName(QStringLiteral("SidebarSectionLabel"));
-    m_spacesHeader->setFixedHeight(18);
+    m_spacesHeader->setFixedHeight(DesignTokens::sidebarSectionHeaderHeight);
     m_spacesHeader->setVisible(false);
     compactLayout->addWidget(m_spacesHeader);
 
@@ -680,7 +712,7 @@ TabManager::TabManager(QWidget *parent)
     m_tabsHeaderButton->setIconSize(QSize(15, 15));
     m_tabsHeaderButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_tabsHeaderButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_tabsHeaderButton->setFixedHeight(30);
+    m_tabsHeaderButton->setFixedHeight(DesignTokens::sidebarTabsHeaderHeight);
     m_tabsHeaderButton->setFocusPolicy(Qt::StrongFocus);
     compactLayout->addWidget(m_tabsHeaderButton);
     topLayout->addWidget(m_sidebarCompactTop);
@@ -688,7 +720,7 @@ TabManager::TabManager(QWidget *parent)
     m_tabList = new QWidget(m_sidebarTopArea);
     m_tabListLayout = new QVBoxLayout(m_tabList);
     m_tabListLayout->setContentsMargins(0, 0, 0, 0);
-    m_tabListLayout->setSpacing(3);
+    m_tabListLayout->setSpacing(DesignTokens::tabRowSpacing);
     m_dropIndicator = new QFrame(m_tabList);
     m_dropIndicator->setObjectName(QStringLiteral("TabDropIndicator"));
     m_dropIndicator->setMinimumHeight(0);
@@ -867,7 +899,8 @@ QToolButton *TabManager::makeSidebarAction(const QString &objectName,
     button->setIconSize(QSize(DesignTokens::iconSize, DesignTokens::iconSize));
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
     button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    button->setFixedHeight(34);
+    button->setFixedHeight(DesignTokens::sidebarActionHeight);
+    button->setProperty("expanded", false);
     button->setFocusPolicy(Qt::StrongFocus);
     return button;
 }
@@ -875,8 +908,11 @@ QToolButton *TabManager::makeSidebarAction(const QString &objectName,
 void TabManager::retranslateUi()
 {
     if (m_newTabButton) {
-        m_newTabButton->setToolTip(Localization::text(QStringLiteral("containers.create_menu")));
-        m_newTabButton->setText(Localization::text(QStringLiteral("containers.create_menu")));
+        const QString createText = Localization::text(
+            QStringLiteral("containers.create_menu"));
+        m_newTabButton->setToolTip(createText);
+        m_newTabButton->setAccessibleName(createText);
+        m_newTabButton->setText(createText);
     }
     if (m_spacesHeader) {
         m_spacesHeader->setText(Localization::text(QStringLiteral("containers.title")));
@@ -943,7 +979,11 @@ void TabManager::rebuildSpaceButtons()
 {
     if (!m_spaceListLayout) return;
     while (QLayoutItem *layoutItem = m_spaceListLayout->takeAt(0)) {
-        if (QWidget *widget = layoutItem->widget()) widget->deleteLater();
+        if (QWidget *widget = layoutItem->widget()) {
+            widget->hide();
+            widget->setEnabled(false);
+            widget->deleteLater();
+        }
         delete layoutItem;
     }
     m_spaceButtons.clear();
@@ -987,6 +1027,7 @@ void TabManager::rebuildSpaceButtons()
             ? Localization::text(QStringLiteral("spaces.default")) : space.name;
         const QString countText = QString::number(tabCount);
         button->setProperty("sidebarCount", countText);
+        button->setProperty("sidebarCountEmpty", tabCount == 0);
         button->setText(m_expanded ? displayName : QString());
         button->setToolButtonStyle(m_expanded ? Qt::ToolButtonTextBesideIcon
                                                : Qt::ToolButtonIconOnly);
@@ -1080,6 +1121,7 @@ void TabManager::updateSpaceUi(bool animateTabSection)
         QStringLiteral("spaces.tabs_current")).arg(displayName);
     m_tabsHeaderButton->setProperty("expanded", m_expanded);
     m_tabsHeaderButton->setProperty("sidebarCount", QString::number(count));
+    m_tabsHeaderButton->setProperty("sidebarCountEmpty", count == 0);
     m_tabsHeaderButton->setText(m_expanded ? sectionTitle : QString());
     m_tabsHeaderButton->setToolTip(
         QStringLiteral("%1\n%2").arg(sectionDescription,
@@ -2045,6 +2087,9 @@ void TabManager::finishSidebarTransition()
 
 void TabManager::setItemsExpanded(bool expanded)
 {
+    m_newTabButton->setProperty("expanded", expanded);
+    m_newTabButton->style()->unpolish(m_newTabButton);
+    m_newTabButton->style()->polish(m_newTabButton);
     m_newTabButton->setToolButtonStyle(expanded ? Qt::ToolButtonTextBesideIcon
                                                 : Qt::ToolButtonIconOnly);
     m_newTabButton->setText(expanded
@@ -2059,10 +2104,13 @@ void TabManager::setItemsExpanded(bool expanded)
     };
     for (QToolButton *button : actions) {
         if (!button) continue;
+        button->setProperty("expanded", expanded);
         button->setToolButtonStyle(expanded ? Qt::ToolButtonTextBesideIcon
                                              : Qt::ToolButtonIconOnly);
         button->setText(expanded
             ? Localization::text(button->property("translationKey").toString()) : QString());
+        button->style()->unpolish(button);
+        button->style()->polish(button);
     }
     rebuildSpaceButtons();
     updateSpaceUi();

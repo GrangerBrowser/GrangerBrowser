@@ -48,6 +48,13 @@ public:
     inline static constexpr int sidebarOuterPadding = 4;
     inline static constexpr int sidebarSectionSpacing = 4;
     inline static constexpr int sidebarSpaceRowHeight = 36;
+    inline static constexpr int sidebarCreateButtonHeight = 40;
+    inline static constexpr int sidebarSectionHeaderHeight = 18;
+    inline static constexpr int sidebarTabsHeaderHeight = 30;
+    inline static constexpr int sidebarActionHeight = 34;
+    inline static constexpr int sidebarBadgeHeight = 18;
+    inline static constexpr int sidebarBadgeMinWidth = 20;
+    inline static constexpr int sidebarBadgeInset = 8;
     inline static constexpr int sidebarSpaceListMaxRows = 4;
     inline static constexpr int sidebarSpaceListMaxHeight =
         sidebarSpaceRowHeight * sidebarSpaceListMaxRows
@@ -73,6 +80,9 @@ public:
     inline static constexpr int downloadPanelShadowBlur = 24;
     inline static constexpr int downloadPanelShadowOffsetY = 4;
     inline static constexpr int tabHeight = 46;
+    inline static constexpr int tabRowSpacing = 3;
+    inline static constexpr int tabCloseButtonSize = 24;
+    inline static constexpr int tabActiveIndicatorHeight = 22;
     inline static constexpr int controlHeightSm = 32;
     inline static constexpr int controlHeight = 40;
     inline static constexpr int controlHeightLg = 44;

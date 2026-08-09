@@ -530,6 +530,9 @@ QString ThemeManager::styleSheet() const
         QToolButton#AddressButton {
             border-radius: __RADIUS_SM__;
         }
+    )");
+
+    qss += QStringLiteral(R"(
 
         QFrame#VerticalTabs {
             background: __SIDEBAR_BG__;
@@ -553,12 +556,15 @@ QString ThemeManager::styleSheet() const
             color: __SECONDARY__;
             padding: 0 9px;
             text-align: left;
+            font-size: __FONT_CONTROL__;
+            font-weight: 500;
         }
 
         QToolButton#SpaceButton:hover,
         QToolButton#TabsHeaderButton:hover,
         QToolButton[sidebarAction="true"]:hover {
             background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
             color: __TEXT__;
         }
 
@@ -569,10 +575,15 @@ QString ThemeManager::styleSheet() const
         }
 
         QToolButton#SpaceButton[active="true"] {
-            background: rgba(217,86,97,0.11);
-            border-color: rgba(217,86,97,0.28);
+            background: __SURFACE_BG__;
+            border-color: __BORDER__;
             color: __TEXT__;
             font-weight: 600;
+        }
+
+        QToolButton#SpaceButton[active="true"]:hover {
+            background: __ACTIVE_BG__;
+            border-color: __BORDER_STRONG__;
         }
 
         QToolButton#SpaceButton[dropTarget="true"] {
@@ -593,7 +604,6 @@ QString ThemeManager::styleSheet() const
         }
 
         QToolButton#NewTabButton {
-            min-height: 40px;
             padding: 0 11px;
             background: __SURFACE_BG__;
             border: 1px solid __BORDER_SUBTLE__;
@@ -611,17 +621,40 @@ QString ThemeManager::styleSheet() const
             border-color: __ACCENT__;
         }
 
+        QToolButton#NewTabButton[expanded="false"] {
+            background: transparent;
+            border-color: transparent;
+            padding: 0;
+        }
+
+        QToolButton#NewTabButton[expanded="false"]:hover,
+        QToolButton#NewTabButton[expanded="false"]:focus {
+            background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
+        }
+
         QWidget#TabItem {
             border-radius: __CONTROL_RADIUS__;
         }
 
         QWidget#TabItem:hover {
             background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
         }
 
         QWidget#TabItem[active="true"] {
+            background: __SURFACE_BG__;
+            border-color: __BORDER__;
+        }
+
+        QWidget#TabItem[active="true"]:hover {
             background: __ACTIVE_BG__;
-            border-color: __BORDER_SUBTLE__;
+            border-color: __BORDER_STRONG__;
+        }
+
+        QWidget#TabItem:focus {
+            background: __HOVER_BG__;
+            border-color: __FOCUS__;
         }
 
         QWidget#TabItem[pinned="true"] {
@@ -686,7 +719,12 @@ QString ThemeManager::styleSheet() const
         }
 
         QToolButton#CloseTabButton:hover {
-            background: rgba(255,255,255,0.09);
+            background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
+        }
+
+        QToolButton#CloseTabButton:focus {
+            border-color: __FOCUS__;
         }
 
         QMenu#BrowserMenu,
@@ -1299,7 +1337,7 @@ QString ThemeManager::styleSheet() const
     qss += QStringLiteral(R"(
         QLabel#SidebarSectionLabel {
             color: __MUTED__;
-            padding: 0 9px;
+            padding: 0 10px;
             font-size: 10px;
             font-weight: 650;
         }
@@ -1320,9 +1358,19 @@ QString ThemeManager::styleSheet() const
             padding-right: 0;
         }
 
+        QToolButton[sidebarAction="true"][expanded="false"] {
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        QToolButton[sidebarAction="true"][expanded="true"] {
+            padding-left: 9px;
+            padding-right: 9px;
+        }
+
         QToolButton[sidebarAction="true"][active="true"] {
-            background: __ACTIVE_BG__;
-            border-color: __BORDER_SUBTLE__;
+            background: __SURFACE_BG__;
+            border-color: __BORDER__;
             color: __TEXT__;
         }
     )");

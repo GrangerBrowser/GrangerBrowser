@@ -27,6 +27,7 @@
   "toolbar.settings": "Настройки",
   "toolbar.new_tab": "Новая вкладка",
   "tabs.audio_playing": "Эта вкладка воспроизводит звук",
+  "tabs.browser_tab": "Вкладка браузера",
   "toolbar.more": "Дополнительные действия браузера",
   "toolbar.close_tab": "Закрыть вкладку",
   "context.undo": "Отменить",

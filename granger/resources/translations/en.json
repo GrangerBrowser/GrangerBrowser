@@ -27,6 +27,7 @@
   "toolbar.settings": "Settings",
   "toolbar.new_tab": "New tab",
   "tabs.audio_playing": "This tab is playing audio",
+  "tabs.browser_tab": "Browser tab",
   "toolbar.more": "More browser actions",
   "toolbar.close_tab": "Close tab",
   "context.undo": "Undo",
