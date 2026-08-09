@@ -392,7 +392,7 @@ int runUiFocusSmoke(QApplication &app,
     theme.apply(app);
     const QString tokenProbe = DesignTokens::apply(QStringLiteral(
         "__WINDOW_BG__|__SURFACE_BG__|__TEXT__|__ACCENT__|__BORDER_STRONG__|"
-        "__POPUP_SHADOW__|__FONT_UI__|__SPACING_3XL__"));
+        "__POPUP_SHADOW__|__FONT_UI__|__SPACING_3XL__|__ADDRESS_BAR_HEIGHT__"));
     const QPalette palette = app.palette();
     const bool tokenPaletteMatches =
         palette.color(QPalette::Window)
@@ -407,6 +407,7 @@ int runUiFocusSmoke(QApplication &app,
                    tokenPaletteMatches
                        && !tokenProbe.contains(QStringLiteral("__"))
                        && DesignTokens::spacing3Xl == 32
+                       && DesignTokens::addressBarHeight == 42
                        && app.styleSheet().contains(
                            QString::fromLatin1(DesignTokens::windowBackgroundColor))
                        && app.styleSheet().contains(
@@ -711,8 +712,14 @@ int runUiFocusSmoke(QApplication &app,
         return window->tabCountForDiagnostics() == popupLifecycleTabCount
             && !window->siteInfoPopupDiagnostics().value(QStringLiteral("open")).toBool();
     });
+    const bool homeReadyAfterPopupLifecycle = waitFor([&] {
+        BrowserTab *current = window->currentTabForDiagnostics();
+        return current && !current->isLoading()
+            && evaluate(current->page(), QStringLiteral("!!document.querySelector('.searchbox')"),
+                        QWebEngineScript::MainWorld, 1000).toBool();
+    }, 5000);
     results.record(QStringLiteral("site-information popup closes safely with its current tab"),
-                   lifecyclePopupOpened && popupClosedWithTab);
+                   lifecyclePopupOpened && popupClosedWithTab && homeReadyAfterPopupLifecycle);
 
     const QJsonObject initial = window->fullscreenDiagnostics();
     results.record(QStringLiteral("normal window has visible browser chrome"),
@@ -724,6 +731,74 @@ int runUiFocusSmoke(QApplication &app,
     capture(QStringLiteral("normal"), QStringLiteral("01-normal.png"), window);
 
     auto *providerNavigation = window->findChild<NavigationBar *>();
+    const QJsonObject chromeLayout = providerNavigation
+        ? providerNavigation->layoutDiagnostics() : QJsonObject();
+    const QJsonObject identityDivider = chromeLayout
+        .value(QStringLiteral("identityDivider")).toObject();
+    results.record(QStringLiteral("toolbar and address bar use stable tokenized control geometry"),
+                   providerNavigation
+                       && chromeLayout.value(QStringLiteral("invariant")).toBool()
+                       && chromeLayout.value(QStringLiteral("toolbarButtonsConsistent")).toBool()
+                       && chromeLayout.value(QStringLiteral("addressButtonsConsistent")).toBool()
+                       && chromeLayout.value(QStringLiteral("overflowUsesIcon")).toBool()
+                       && chromeLayout.value(QStringLiteral("addressHeight")).toInt()
+                           == DesignTokens::addressBarHeight
+                       && identityDivider.value(QStringLiteral("width")).toInt() == 1
+                       && identityDivider.value(QStringLiteral("height")).toInt()
+                           == DesignTokens::addressIdentityDividerHeight
+                       && !identityDivider.value(QStringLiteral("hidden")).toBool(),
+                   QString::fromUtf8(QJsonDocument(chromeLayout)
+                                         .toJson(QJsonDocument::Compact)));
+    results.record(QStringLiteral("native tooltips and address suggestions share local popup styling"),
+                   app.styleSheet().contains(QStringLiteral("QToolTip"))
+                       && app.styleSheet().contains(QStringLiteral("AddressSuggestionPopup"))
+                       && app.styleSheet().contains(
+                           QString::fromLatin1(DesignTokens::elevatedBackgroundColor)));
+
+    QJsonObject chromeStates;
+    if (providerNavigation) {
+        providerNavigation->setPrivacyRestrictionCount(0);
+        providerNavigation->setSecurityStatus(QStringLiteral("https-direct"), true);
+        chromeStates.insert(QStringLiteral("secure"),
+                            providerNavigation->layoutDiagnostics()
+                                .value(QStringLiteral("securityTone")));
+        providerNavigation->setPrivacyRestrictionCount(2);
+        chromeStates.insert(QStringLiteral("protected"),
+                            providerNavigation->layoutDiagnostics()
+                                .value(QStringLiteral("securityTone")));
+        providerNavigation->setSecurityStatus(QStringLiteral("https-over-tor"), true);
+        chromeStates.insert(QStringLiteral("tor"),
+                            providerNavigation->layoutDiagnostics()
+                                .value(QStringLiteral("securityTone")));
+        providerNavigation->setSecurityStatus(QStringLiteral("certificate-error"), true);
+        chromeStates.insert(QStringLiteral("warning"),
+                            providerNavigation->layoutDiagnostics()
+                                .value(QStringLiteral("securityTone")));
+        providerNavigation->setLoading(true);
+        providerNavigation->setLoadProgress(37);
+        const QJsonObject loadingState = providerNavigation->layoutDiagnostics();
+        chromeStates.insert(QStringLiteral("loading"),
+                            loadingState.value(QStringLiteral("loading")));
+        chromeStates.insert(QStringLiteral("progress"),
+                            loadingState.value(QStringLiteral("loadProgress")));
+        providerNavigation->setLoading(false);
+        providerNavigation->setPrivacyRestrictionCount(0);
+        providerNavigation->setSecurityStatus(QStringLiteral("not-applicable"), true);
+    }
+    results.record(QStringLiteral("address identity states and load progress reflect real inputs"),
+                   chromeStates.value(QStringLiteral("secure")).toString()
+                           == QStringLiteral("secure")
+                       && chromeStates.value(QStringLiteral("protected")).toString()
+                           == QStringLiteral("protected")
+                       && chromeStates.value(QStringLiteral("tor")).toString()
+                           == QStringLiteral("tor")
+                       && chromeStates.value(QStringLiteral("warning")).toString()
+                           == QStringLiteral("warning")
+                       && chromeStates.value(QStringLiteral("loading")).toBool()
+                       && chromeStates.value(QStringLiteral("progress")).toInt() == 37,
+                   QString::fromUtf8(QJsonDocument(chromeStates)
+                                         .toJson(QJsonDocument::Compact)));
+
     QMenu *providerMenu = nullptr;
     if (providerNavigation) {
         providerNavigation->openSearchEngineMenu();
@@ -1142,7 +1217,7 @@ int runUiFocusSmoke(QApplication &app,
         tabs->setTabPinned(featuredPage, true);
         tabs->setTabAudible(featuredPage, true);
     }
-    settle(120);
+    settle(DesignTokens::tabDurationMs + 80);
     auto denseTabItems = tabScroll
         ? tabScroll->findChildren<QWidget *>(QStringLiteral("TabItem"))
         : QList<QWidget *>();

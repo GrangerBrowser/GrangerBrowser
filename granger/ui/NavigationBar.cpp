@@ -1,6 +1,9 @@
 #include "granger/ui/NavigationBar.h"
 
+#include <algorithm>
+
 #include <QAction>
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QCompleter>
 #include <QEvent>
@@ -37,6 +40,33 @@
 #include "granger/ui/DesignTokens.h"
 
 namespace granger {
+
+class AddressBarFrame final : public QFrame {
+public:
+    explicit AddressBarFrame(QWidget *parent = nullptr)
+        : QFrame(parent)
+    {
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QFrame::paintEvent(event);
+        if (!property("loading").toBool()) return;
+        const int progress = qBound(0, property("loadProgress").toInt(), 100);
+        if (progress <= 0) return;
+
+        const qreal inset = DesignTokens::radiusLg;
+        const qreal available = qMax<qreal>(0.0, width() - (inset * 2.0));
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(QColor(QString::fromLatin1(DesignTokens::accentColor)),
+                            2.0, Qt::SolidLine, Qt::RoundCap));
+        const qreal y = height() - 1.5;
+        painter.drawLine(QPointF(inset, y),
+                         QPointF(inset + (available * progress / 100.0), y));
+    }
+};
 
 class DownloadToolButton final : public QToolButton {
 public:
@@ -166,24 +196,29 @@ NavigationBar::NavigationBar(QWidget *parent)
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 6, 8, 6);
-    layout->setSpacing(6);
+    layout->setContentsMargins(DesignTokens::toolbarHorizontalPadding,
+                               DesignTokens::toolbarVerticalPadding,
+                               DesignTokens::toolbarHorizontalPadding,
+                               DesignTokens::toolbarVerticalPadding);
+    layout->setSpacing(DesignTokens::toolbarContentSpacing);
 
     m_leftGroup = new QWidget(this);
     m_leftGroup->setObjectName(QStringLiteral("ToolbarGroup"));
-    m_leftGroup->setFixedSize((DesignTokens::toolbarButtonSize * 4) + (4 * 3),
+    m_leftGroup->setFixedSize((DesignTokens::toolbarButtonSize * 4)
+                                  + (DesignTokens::toolbarGroupSpacing * 3),
                               DesignTokens::toolbarButtonSize);
     auto *leftLayout = new QHBoxLayout(m_leftGroup);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(4);
+    leftLayout->setSpacing(DesignTokens::toolbarGroupSpacing);
 
     m_rightGroup = new QWidget(this);
     m_rightGroup->setObjectName(QStringLiteral("ToolbarGroup"));
-    m_rightGroup->setFixedSize((DesignTokens::toolbarButtonSize * 3) + (4 * 2),
+    m_rightGroup->setFixedSize((DesignTokens::toolbarButtonSize * 3)
+                                   + (DesignTokens::toolbarGroupSpacing * 2),
                                DesignTokens::toolbarButtonSize);
     auto *rightLayout = new QHBoxLayout(m_rightGroup);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(4);
+    rightLayout->setSpacing(DesignTokens::toolbarGroupSpacing);
 
     auto makeTool = [this](QWidget *parentWidget, QHBoxLayout *targetLayout, const QString &iconPath, const QString &tooltip) {
         auto *button = new QToolButton(parentWidget);
@@ -191,6 +226,8 @@ NavigationBar::NavigationBar(QWidget *parent)
         button->setIcon(QIcon(iconPath));
         button->setIconSize(QSize(DesignTokens::iconSize, DesignTokens::iconSize));
         button->setToolTip(tooltip);
+        button->setAccessibleName(tooltip);
+        button->setFocusPolicy(Qt::StrongFocus);
         button->setFixedSize(DesignTokens::toolbarButtonSize, DesignTokens::toolbarButtonSize);
         targetLayout->addWidget(button);
         return button;
@@ -203,13 +240,15 @@ NavigationBar::NavigationBar(QWidget *parent)
     m_back->setEnabled(false);
     m_forward->setEnabled(false);
 
-    m_addressFrame = new QFrame(this);
+    m_addressFrame = new AddressBarFrame(this);
     m_addressFrame->setObjectName(QStringLiteral("AddressBarFrame"));
     m_addressFrame->setMinimumWidth(120);
+    m_addressFrame->setFixedHeight(DesignTokens::addressBarHeight);
     m_addressFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *addressLayout = new QHBoxLayout(m_addressFrame);
-    addressLayout->setContentsMargins(7, 0, 7, 0);
-    addressLayout->setSpacing(3);
+    addressLayout->setContentsMargins(DesignTokens::addressBarHorizontalPadding, 0,
+                                      DesignTokens::addressBarHorizontalPadding, 0);
+    addressLayout->setSpacing(DesignTokens::addressBarControlSpacing);
 
     auto makeAddressTool = [this, addressLayout](const QString &iconPath, const QString &tooltip) {
         auto *button = new QToolButton(m_addressFrame);
@@ -217,12 +256,19 @@ NavigationBar::NavigationBar(QWidget *parent)
         button->setIcon(QIcon(iconPath));
         button->setIconSize(QSize(16, 16));
         button->setToolTip(tooltip);
+        button->setAccessibleName(tooltip);
+        button->setFocusPolicy(Qt::StrongFocus);
         button->setFixedSize(DesignTokens::addressButtonSize, DesignTokens::addressButtonSize);
         addressLayout->addWidget(button);
         return button;
     };
 
     m_security = makeAddressTool(QStringLiteral(":/icons/lock.svg"), QString());
+    m_identityDivider = new QFrame(m_addressFrame);
+    m_identityDivider->setObjectName(QStringLiteral("AddressIdentityDivider"));
+    m_identityDivider->setFixedSize(1, DesignTokens::addressIdentityDividerHeight);
+    m_identityDivider->setAttribute(Qt::WA_TransparentForMouseEvents);
+    addressLayout->addWidget(m_identityDivider);
     m_searchEngine = makeAddressTool(QStringLiteral(":/icons/search.svg"), QStringLiteral("Search engine"));
     m_searchEngine->setObjectName(QStringLiteral("SearchEngineButton"));
     m_searchEngine->setIconSize(QSize(DesignTokens::searchEngineToolbarIconSize,
@@ -231,6 +277,7 @@ NavigationBar::NavigationBar(QWidget *parent)
     m_searchEngineMenu = new QMenu(m_searchEngine);
     m_searchEngineMenu->setObjectName(QStringLiteral("SearchEngineMenu"));
     m_searchEngineMenu->setMinimumWidth(DesignTokens::searchEngineMenuWidth);
+    m_searchEngineMenu->setSeparatorsCollapsible(false);
     m_searchEngine->setMenu(m_searchEngineMenu);
 
     m_address = new QLineEdit(m_addressFrame);
@@ -245,6 +292,11 @@ NavigationBar::NavigationBar(QWidget *parent)
     m_completer->setCaseSensitivity(Qt::CaseInsensitive);
     m_completer->setCompletionMode(QCompleter::PopupCompletion);
     m_completer->setMaxVisibleItems(8);
+    if (QAbstractItemView *popup = m_completer->popup()) {
+        popup->setObjectName(QStringLiteral("AddressSuggestionPopup"));
+        popup->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        popup->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    }
     m_address->setCompleter(m_completer);
     m_suggestionNetwork = new QNetworkAccessManager(this);
     m_suggestionTimer = new QTimer(this);
@@ -263,11 +315,14 @@ NavigationBar::NavigationBar(QWidget *parent)
 
     m_more = new QToolButton(this);
     m_more->setObjectName(QStringLiteral("ToolbarButton"));
-    m_more->setText(QStringLiteral("..."));
+    m_more->setIcon(QIcon(QStringLiteral(":/icons/overflow.svg")));
+    m_more->setIconSize(QSize(DesignTokens::iconSize, DesignTokens::iconSize));
+    m_more->setFocusPolicy(Qt::StrongFocus);
     m_more->setPopupMode(QToolButton::InstantPopup);
     m_more->setFixedSize(DesignTokens::toolbarButtonSize, DesignTokens::toolbarButtonSize);
     m_overflowMenu = new QMenu(m_more);
     m_overflowMenu->setObjectName(QStringLiteral("BrowserMenu"));
+    m_overflowMenu->setSeparatorsCollapsible(false);
     m_more->setMenu(m_overflowMenu);
     m_overflowBack = m_overflowMenu->addAction(QIcon(QStringLiteral(":/icons/back.svg")), QString());
     m_overflowForward = m_overflowMenu->addAction(QIcon(QStringLiteral(":/icons/forward.svg")), QString());
@@ -278,10 +333,10 @@ NavigationBar::NavigationBar(QWidget *parent)
     m_overflowNewTab = m_overflowMenu->addAction(QIcon(QStringLiteral(":/icons/plus.svg")), QString());
     m_more->setVisible(false);
 
-    layout->addWidget(m_leftGroup, 0);
-    layout->addWidget(m_addressFrame, 1);
-    layout->addWidget(m_rightGroup, 0);
-    layout->addWidget(m_more, 0);
+    layout->addWidget(m_leftGroup, 0, Qt::AlignVCenter);
+    layout->addWidget(m_addressFrame, 1, Qt::AlignVCenter);
+    layout->addWidget(m_rightGroup, 0, Qt::AlignVCenter);
+    layout->addWidget(m_more, 0, Qt::AlignVCenter);
 
     connect(m_sidebar, &QToolButton::clicked, this, &NavigationBar::sidebarToggleRequested);
     connect(m_back, &QToolButton::clicked, this, &NavigationBar::backRequested);
@@ -326,7 +381,11 @@ void NavigationBar::retranslateUi()
             ? Localization::text(QStringLiteral("toolbar.search_engine"))
             : Localization::text(QStringLiteral("toolbar.search_with")).arg(m_selectedSearchEngineName));
     }
-    if (m_address) m_address->setPlaceholderText(Localization::text(QStringLiteral("toolbar.search_or_address")));
+    if (m_address) {
+        const QString addressLabel = Localization::text(QStringLiteral("toolbar.search_or_address"));
+        m_address->setPlaceholderText(addressLabel);
+        m_address->setAccessibleName(addressLabel);
+    }
     if (m_downloads) m_downloads->setToolTip(Localization::text(m_downloadsActive ? QStringLiteral("toolbar.downloads_active") : QStringLiteral("toolbar.downloads")));
     if (m_settings) m_settings->setToolTip(Localization::text(QStringLiteral("toolbar.settings")));
     if (m_newTab) m_newTab->setToolTip(Localization::text(QStringLiteral("toolbar.new_tab")));
@@ -337,6 +396,13 @@ void NavigationBar::retranslateUi()
     if (m_overflowDownloads) m_overflowDownloads->setText(Localization::text(QStringLiteral("toolbar.downloads")));
     if (m_overflowSettings) m_overflowSettings->setText(Localization::text(QStringLiteral("toolbar.settings")));
     if (m_overflowNewTab) m_overflowNewTab->setText(Localization::text(QStringLiteral("toolbar.new_tab")));
+    const QList<QToolButton *> buttons{
+        m_sidebar, m_back, m_forward, m_reload, m_security,
+        m_searchEngine, m_downloads, m_settings, m_newTab, m_more
+    };
+    for (QToolButton *button : buttons) {
+        if (button) button->setAccessibleName(button->toolTip());
+    }
 }
 
 QString NavigationBar::address() const
@@ -364,6 +430,7 @@ void NavigationBar::setLoading(bool loading)
     m_reload->setText(QString());
     m_reload->setIcon(QIcon(loading ? QStringLiteral(":/icons/stop.svg") : QStringLiteral(":/icons/refresh.svg")));
     m_reload->setToolTip(Localization::text(loading ? QStringLiteral("toolbar.stop_loading") : QStringLiteral("toolbar.reload")));
+    m_reload->setAccessibleName(m_reload->toolTip());
     if (m_overflowReload) {
         m_overflowReload->setText(Localization::text(loading ? QStringLiteral("toolbar.stop_loading") : QStringLiteral("toolbar.reload")));
         m_overflowReload->setIcon(QIcon(loading ? QStringLiteral(":/icons/stop.svg") : QStringLiteral(":/icons/refresh.svg")));
@@ -385,6 +452,7 @@ void NavigationBar::setDownloadsActive(bool active)
     m_downloads->style()->unpolish(m_downloads);
     m_downloads->style()->polish(m_downloads);
     m_downloads->setToolTip(Localization::text(active ? QStringLiteral("toolbar.downloads_active") : QStringLiteral("toolbar.downloads")));
+    m_downloads->setAccessibleName(m_downloads->toolTip());
 }
 
 void NavigationBar::setDownloadProgress(qint64 receivedBytes,
@@ -415,6 +483,7 @@ void NavigationBar::setDownloadProgress(qint64 receivedBytes,
             .arg(Localization::text(QStringLiteral("downloads.active_count")).arg(activeCount));
     }
     m_downloads->setToolTip(tooltip);
+    m_downloads->setAccessibleName(tooltip);
     m_downloads->style()->unpolish(m_downloads);
     m_downloads->style()->polish(m_downloads);
     m_downloads->update();
@@ -504,6 +573,15 @@ QJsonObject NavigationBar::layoutDiagnostics() const
         && rect().contains(trailing->geometry())
         && m_addressFrame->width() >= m_addressFrame->minimumWidth()
         && m_addressFrame->geometry().right() < trailing->geometry().left();
+    const QList<const QToolButton *> toolbarButtons{
+        m_sidebar, m_back, m_forward, m_reload, m_downloads, m_settings, m_newTab, m_more
+    };
+    const QList<const QToolButton *> addressButtons{m_security, m_searchEngine};
+    const auto consistentSize = [](const QList<const QToolButton *> &buttons, int expected) {
+        return std::all_of(buttons.cbegin(), buttons.cend(), [expected](const QToolButton *button) {
+            return button && button->size() == QSize(expected, expected);
+        });
+    };
     return QJsonObject{
         {QStringLiteral("mode"), mode},
         {QStringLiteral("width"), width()},
@@ -511,6 +589,21 @@ QJsonObject NavigationBar::layoutDiagnostics() const
         {QStringLiteral("leftGroup"), geometryObject(m_leftGroup)},
         {QStringLiteral("rightGroup"), geometryObject(m_rightGroup)},
         {QStringLiteral("overflow"), geometryObject(m_more)},
+        {QStringLiteral("addressHeight"), m_addressFrame ? m_addressFrame->height() : 0},
+        {QStringLiteral("identityDivider"), geometryObject(m_identityDivider)},
+        {QStringLiteral("toolbarButtonsConsistent"),
+         consistentSize(toolbarButtons, DesignTokens::toolbarButtonSize)},
+        {QStringLiteral("addressButtonsConsistent"),
+         consistentSize(addressButtons, DesignTokens::addressButtonSize)},
+        {QStringLiteral("overflowUsesIcon"),
+         m_more && !m_more->icon().isNull() && m_more->text().isEmpty()},
+        {QStringLiteral("addressFocused"), m_addressFocused},
+        {QStringLiteral("loading"), m_loading},
+        {QStringLiteral("loadProgress"), m_loadProgress},
+        {QStringLiteral("securityTone"),
+         m_security ? m_security->property("securityTone").toString() : QString()},
+        {QStringLiteral("privacyRestricted"),
+         m_security && m_security->property("privacyRestricted").toBool()},
         {QStringLiteral("expectedVisibility"), expectedVisibility},
         {QStringLiteral("geometryInside"), geometryInside},
         {QStringLiteral("invariant"), expectedVisibility && geometryInside}
@@ -541,6 +634,20 @@ void NavigationBar::updateSecurityIndicator()
             + Localization::text(QStringLiteral("privacy.restrictions_count")).arg(m_privacyRestrictionCount);
     }
     m_security->setToolTip(tooltip);
+    m_security->setAccessibleName(tooltip);
+    QString securityTone = QStringLiteral("neutral");
+    if (insecure && m_showInsecureWarning) {
+        securityTone = QStringLiteral("warning");
+    } else if (m_securityStatusId == QStringLiteral("onion-over-tor")
+               || m_securityStatusId == QStringLiteral("https-over-tor")
+               || m_securityStatusId == QStringLiteral("http-over-tor")) {
+        securityTone = QStringLiteral("tor");
+    } else if (m_privacyRestrictionCount > 0) {
+        securityTone = QStringLiteral("protected");
+    } else if (m_securityStatusId == QStringLiteral("https-direct")) {
+        securityTone = QStringLiteral("secure");
+    }
+    m_security->setProperty("securityTone", securityTone);
     m_security->setProperty("privacyRestricted", m_privacyRestrictionCount > 0);
     m_security->setProperty("insecureConnection", insecure && m_showInsecureWarning);
     m_security->style()->unpolish(m_security);
@@ -585,6 +692,7 @@ void NavigationBar::setSearchEngine(const SearchEngine &engine)
     m_selectedEngineSupportsSuggestions = engine.suggestionsSupported;
     m_searchEngine->setIcon(searchEngineIcon(engine));
     m_searchEngine->setToolTip(Localization::text(QStringLiteral("toolbar.search_with")).arg(engine.displayName));
+    m_searchEngine->setAccessibleName(m_searchEngine->toolTip());
     m_searchEngine->setProperty("engineChanged", true);
     m_searchEngine->style()->unpolish(m_searchEngine);
     m_searchEngine->style()->polish(m_searchEngine);
@@ -835,7 +943,7 @@ void NavigationBar::updateResponsiveLayout()
     if (m_forward->isHidden() != veryCompact) m_forward->setHidden(veryCompact);
     const int leftButtons = veryCompact ? 3 : 4;
     const int leftWidth = (DesignTokens::toolbarButtonSize * leftButtons)
-        + (4 * qMax(0, leftButtons - 1));
+        + (DesignTokens::toolbarGroupSpacing * qMax(0, leftButtons - 1));
     if (m_leftGroup->minimumWidth() != leftWidth
         || m_leftGroup->maximumWidth() != leftWidth) {
         m_leftGroup->setFixedWidth(leftWidth);
@@ -857,6 +965,7 @@ void NavigationBar::setAddressFocusState(bool focused)
 void NavigationBar::updateAddressFrameVisual()
 {
     m_addressFrame->setProperty("loading", m_loading);
+    m_addressFrame->setProperty("loadProgress", m_loadProgress);
     m_addressFrame->style()->unpolish(m_addressFrame);
     m_addressFrame->style()->polish(m_addressFrame);
     m_addressFrame->update();

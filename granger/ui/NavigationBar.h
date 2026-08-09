@@ -101,6 +101,7 @@ private:
     QIcon searchEngineIcon(const SearchEngine &engine) const;
 
     QFrame *m_addressFrame = nullptr;
+    QFrame *m_identityDivider = nullptr;
     QWidget *m_leftGroup = nullptr;
     QWidget *m_rightGroup = nullptr;
     QLineEdit *m_address = nullptr;

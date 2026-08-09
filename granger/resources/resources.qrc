@@ -20,6 +20,7 @@
         <file alias="home.svg">icons/home.svg</file>
         <file alias="lock.svg">icons/lock.svg</file>
         <file alias="network.svg">icons/network.svg</file>
+        <file alias="overflow.svg">icons/overflow.svg</file>
         <file alias="plus.svg">icons/plus.svg</file>
         <file alias="pause.svg">icons/pause.svg</file>
         <file alias="play.svg">icons/play.svg</file>

@@ -43,6 +43,10 @@ public:
     inline static constexpr int fontSizeSection = 18;
     inline static constexpr int fontSizePageTitle = 32;
     inline static constexpr int toolbarHeight = 56;
+    inline static constexpr int toolbarHorizontalPadding = 10;
+    inline static constexpr int toolbarVerticalPadding = 6;
+    inline static constexpr int toolbarContentSpacing = 6;
+    inline static constexpr int toolbarGroupSpacing = 4;
     inline static constexpr int sidebarCollapsedWidth = 64;
     inline static constexpr int sidebarExpandedWidth = 256;
     inline static constexpr int sidebarOuterPadding = 4;
@@ -60,6 +64,11 @@ public:
         sidebarSpaceRowHeight * sidebarSpaceListMaxRows
         + sidebarSectionSpacing * (sidebarSpaceListMaxRows - 1);
     inline static constexpr int toolbarButtonSize = 36;
+    inline static constexpr int addressBarHeight = 42;
+    inline static constexpr int addressBarContentHeight = addressBarHeight - 2;
+    inline static constexpr int addressBarHorizontalPadding = 6;
+    inline static constexpr int addressBarControlSpacing = 4;
+    inline static constexpr int addressIdentityDividerHeight = 18;
     inline static constexpr int addressButtonSize = 30;
     inline static constexpr int iconSize = 20;
     inline static constexpr int searchEngineToolbarIconSize = 19;
@@ -155,6 +164,8 @@ public:
             {"__FONT_PAGE_TITLE__", "32px"},
             {"__RADIUS_SM__", "6px"}, {"__CONTROL_RADIUS__", "9px"},
             {"__RADIUS_LG__", "12px"}, {"__POPUP_RADIUS__", "14px"},
+            {"__ADDRESS_BAR_HEIGHT__", "42px"},
+            {"__ADDRESS_BAR_CONTENT_HEIGHT__", "40px"},
             {"__CONTENT_MAX__", "1160px"},
             {"__CONTROL_HEIGHT_SM__", "32px"},
             {"__CONTROL_HEIGHT__", "40px"}, {"__SCROLLBAR_SIZE__", "8px"},

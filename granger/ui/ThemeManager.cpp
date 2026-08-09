@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QPalette>
 
+#include "granger/ui/AnimationPolicy.h"
 #include "granger/ui/DesignTokens.h"
 #include "granger/ui/ScrollBarController.h"
 
@@ -36,6 +37,10 @@ void ThemeManager::apply(QApplication &app) const
                      color(DesignTokens::textDisabledColor));
     app.setPalette(palette);
     app.setStyleSheet(styleSheet());
+    const bool animateChrome = !AnimationPolicy::reducedMotion();
+    QApplication::setEffectEnabled(Qt::UI_AnimateMenu, animateChrome);
+    QApplication::setEffectEnabled(Qt::UI_FadeMenu, animateChrome);
+    QApplication::setEffectEnabled(Qt::UI_FadeTooltip, animateChrome);
     ScrollBarController::install(app);
 }
 
@@ -101,10 +106,11 @@ QString ThemeManager::styleSheet() const
         }
 
         QFrame#AddressBarFrame {
+            min-height: __ADDRESS_BAR_CONTENT_HEIGHT__;
+            max-height: __ADDRESS_BAR_CONTENT_HEIGHT__;
             background: __FIELD_BG__;
             border: 1px solid __BORDER__;
             border-radius: __POPUP_RADIUS__;
-            min-height: 34px;
         }
 
         QFrame#AddressBarFrame:hover {
@@ -488,24 +494,33 @@ QString ThemeManager::styleSheet() const
 
         QToolButton#ToolbarButton:hover {
             background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
         }
 
         QToolButton#ToolbarButton:pressed,
         QToolButton#ToolbarButton[activeDownload="true"] {
             background: __ACTIVE_BG__;
-            border-color: __BORDER__;
+            border-color: __BORDER_STRONG__;
         }
 
         QToolButton#ToolbarButton:focus,
         QToolButton#NewTabButton:focus,
         QToolButton#AddressButton:focus,
+        QToolButton#SearchEngineButton:focus,
         QToolButton#CloseTabButton:focus,
         QToolButton#DialogCloseButton:focus {
             border: 1px solid __FOCUS__;
         }
 
+        QToolButton#ToolbarButton:disabled {
+            color: __DISABLED__;
+            background: transparent;
+            border-color: transparent;
+        }
+
         QFrame#AddressBarFrame {
-            min-height: 40px;
+            min-height: __ADDRESS_BAR_CONTENT_HEIGHT__;
+            max-height: __ADDRESS_BAR_CONTENT_HEIGHT__;
             background: __FIELD_BG__;
             border: 1px solid __BORDER_SUBTLE__;
             border-radius: 12px;
@@ -525,10 +540,90 @@ QString ThemeManager::styleSheet() const
         QLineEdit#AddressLine {
             padding: 0 6px;
             font-size: 14px;
+            selection-color: #ffffff;
+            selection-background-color: __ACCENT__;
         }
 
-        QToolButton#AddressButton {
+        QToolButton#AddressButton,
+        QToolButton#SearchEngineButton {
+            background: transparent;
+            border: 1px solid transparent;
             border-radius: __RADIUS_SM__;
+        }
+
+        QToolButton#AddressButton:hover,
+        QToolButton#SearchEngineButton:hover {
+            background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
+        }
+
+        QToolButton#AddressButton:pressed,
+        QToolButton#SearchEngineButton:pressed,
+        QToolButton#SearchEngineButton[engineChanged="true"] {
+            background: __ACTIVE_BG__;
+            border-color: __BORDER_STRONG__;
+        }
+
+        QToolButton#AddressButton::menu-indicator,
+        QToolButton#SearchEngineButton::menu-indicator {
+            image: none;
+            width: 0;
+        }
+
+        QToolButton#AddressButton[securityTone="warning"] {
+            background: rgba(224,171,85,0.12);
+            border-color: rgba(224,171,85,0.52);
+        }
+
+        QToolButton#AddressButton[securityTone="tor"] {
+            background: __ACCENT_SOFT__;
+            border-color: rgba(217,86,97,0.28);
+        }
+
+        QToolButton#AddressButton[securityTone="protected"] {
+            background: rgba(80,186,138,0.10);
+            border-color: rgba(80,186,138,0.26);
+        }
+
+        QToolButton#AddressButton[securityTone="secure"] {
+            background: rgba(104,167,216,0.08);
+        }
+
+        QFrame#AddressIdentityDivider {
+            background: __BORDER__;
+            border: 0;
+        }
+
+        QToolTip {
+            color: __TEXT__;
+            background: __POPUP_BG__;
+            border: 1px solid __BORDER__;
+            border-radius: __RADIUS_SM__;
+            padding: 6px 8px;
+            opacity: 246;
+        }
+
+        QAbstractItemView#AddressSuggestionPopup {
+            color: __TEXT__;
+            background: __POPUP_BG__;
+            border: 1px solid __BORDER__;
+            border-radius: __POPUP_RADIUS__;
+            padding: 6px;
+            outline: 0;
+            selection-color: __TEXT__;
+            selection-background-color: __HOVER_BG__;
+        }
+
+        QAbstractItemView#AddressSuggestionPopup::item {
+            min-height: 34px;
+            padding: 0 10px;
+            border: 1px solid transparent;
+            border-radius: __CONTROL_RADIUS__;
+        }
+
+        QAbstractItemView#AddressSuggestionPopup::item:selected {
+            background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
         }
     )");
 
