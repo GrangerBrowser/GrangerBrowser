@@ -7,6 +7,38 @@ namespace granger {
 class DesignTokens final {
 public:
     inline static constexpr const char *windowBackgroundColor = "#0e0f12";
+    inline static constexpr const char *toolbarBackgroundColor = "#141519";
+    inline static constexpr const char *sidebarBackgroundColor = "#111216";
+    inline static constexpr const char *surfaceBackgroundColor = "#181a20";
+    inline static constexpr const char *elevatedBackgroundColor = "#202229";
+    inline static constexpr const char *controlBackgroundColor = "#1b1d23";
+    inline static constexpr const char *hoverBackgroundColor = "#262831";
+    inline static constexpr const char *activeBackgroundColor = "#2e3039";
+    inline static constexpr const char *textPrimaryColor = "#f2f3f5";
+    inline static constexpr const char *textSecondaryColor = "#b5b8c2";
+    inline static constexpr const char *textMutedColor = "#7e838f";
+    inline static constexpr const char *textDisabledColor = "#646873";
+    inline static constexpr const char *borderSubtleColor = "#292b33";
+    inline static constexpr const char *borderDefaultColor = "#383a44";
+    inline static constexpr const char *borderStrongColor = "#4d505b";
+    inline static constexpr const char *focusColor = "#ed747d";
+    inline static constexpr const char *accentColor = "#d95661";
+    inline static constexpr const char *accentHoverColor = "#e96872";
+    inline static constexpr const char *accentSoftColor = "rgba(217,86,97,0.14)";
+    inline static constexpr const char *warningColor = "#e0ab55";
+    inline static constexpr const char *errorColor = "#e45d68";
+    inline static constexpr const char *successColor = "#50ba8a";
+    inline static constexpr const char *infoColor = "#68a7d8";
+    inline static constexpr const char *popupShadow = "0 14px 36px rgba(0,0,0,0.38)";
+    inline static constexpr const char *cardShadow = "0 8px 24px rgba(0,0,0,0.24)";
+
+    inline static constexpr const char *uiFontFamily =
+        "\"Segoe UI Variable\", \"Segoe UI\", sans-serif";
+    inline static constexpr int fontSizeCaption = 11;
+    inline static constexpr int fontSizeBody = 13;
+    inline static constexpr int fontSizeControl = 13;
+    inline static constexpr int fontSizeSection = 18;
+    inline static constexpr int fontSizePageTitle = 32;
     inline static constexpr int toolbarHeight = 56;
     inline static constexpr int sidebarCollapsedWidth = 64;
     inline static constexpr int sidebarExpandedWidth = 256;
@@ -47,6 +79,7 @@ public:
     inline static constexpr int spacingLg = 16;
     inline static constexpr int spacingXl = 20;
     inline static constexpr int spacing2Xl = 24;
+    inline static constexpr int spacing3Xl = 32;
 
     inline static constexpr int hoverDurationMs = 110;
     inline static constexpr int pressedDurationMs = 80;
@@ -65,18 +98,34 @@ public:
     static QString apply(QString text)
     {
         const struct Token { const char *name; const char *value; } tokens[] = {
-            {"__WINDOW_BG__", "#0e0f12"}, {"__TOOLBAR_BG__", "#141519"},
-            {"__SIDEBAR_BG__", "#111216"}, {"__SURFACE_BG__", "#181a20"},
-            {"__POPUP_BG__", "#202229"}, {"__FIELD_BG__", "#1b1d23"},
-            {"__HOVER_BG__", "#262831"}, {"__ACTIVE_BG__", "#2e3039"},
-            {"__TEXT__", "#f2f3f5"}, {"__SECONDARY__", "#b5b8c2"},
-            {"__MUTED__", "#7e838f"}, {"__DISABLED__", "#646873"},
-            {"__BORDER_SUBTLE__", "#292b33"}, {"__BORDER__", "#383a44"},
-            {"__FOCUS__", "#ed747d"}, {"__ACCENT__", "#d95661"},
-            {"__ACCENT_HOVER__", "#e96872"},
-            {"__ACCENT_SOFT__", "rgba(217,86,97,0.14)"},
-            {"__WARNING__", "#e0ab55"}, {"__ERROR__", "#e45d68"},
-            {"__SUCCESS__", "#50ba8a"}, {"__INFO__", "#68a7d8"},
+            {"__WINDOW_BG__", windowBackgroundColor},
+            {"__TOOLBAR_BG__", toolbarBackgroundColor},
+            {"__SIDEBAR_BG__", sidebarBackgroundColor},
+            {"__SURFACE_BG__", surfaceBackgroundColor},
+            {"__POPUP_BG__", elevatedBackgroundColor},
+            {"__FIELD_BG__", controlBackgroundColor},
+            {"__HOVER_BG__", hoverBackgroundColor},
+            {"__ACTIVE_BG__", activeBackgroundColor},
+            {"__TEXT__", textPrimaryColor},
+            {"__SECONDARY__", textSecondaryColor},
+            {"__MUTED__", textMutedColor},
+            {"__DISABLED__", textDisabledColor},
+            {"__BORDER_SUBTLE__", borderSubtleColor},
+            {"__BORDER__", borderDefaultColor},
+            {"__BORDER_STRONG__", borderStrongColor},
+            {"__FOCUS__", focusColor},
+            {"__ACCENT__", accentColor},
+            {"__ACCENT_HOVER__", accentHoverColor},
+            {"__ACCENT_SOFT__", accentSoftColor},
+            {"__WARNING__", warningColor},
+            {"__ERROR__", errorColor},
+            {"__SUCCESS__", successColor},
+            {"__INFO__", infoColor},
+            {"__POPUP_SHADOW__", popupShadow}, {"__CARD_SHADOW__", cardShadow},
+            {"__FONT_UI__", uiFontFamily},
+            {"__FONT_CAPTION__", "11px"}, {"__FONT_BODY__", "13px"},
+            {"__FONT_CONTROL__", "13px"}, {"__FONT_SECTION__", "18px"},
+            {"__FONT_PAGE_TITLE__", "32px"},
             {"__RADIUS_SM__", "6px"}, {"__CONTROL_RADIUS__", "9px"},
             {"__RADIUS_LG__", "12px"}, {"__POPUP_RADIUS__", "14px"},
             {"__CONTENT_MAX__", "1160px"},
@@ -87,6 +136,7 @@ public:
             {"__SPACING_XS__", "4px"}, {"__SPACING_SM__", "8px"},
             {"__SPACING_MD__", "12px"}, {"__SPACING_LG__", "16px"},
             {"__SPACING_XL__", "20px"}, {"__SPACING_2XL__", "24px"},
+            {"__SPACING_3XL__", "32px"},
             {"__HOVER_DURATION__", "110ms"}, {"__PRESSED_DURATION__", "80ms"},
             {"__FOCUS_DURATION__", "120ms"}, {"__POPUP_DURATION__", "150ms"},
             {"__DIALOG_DURATION__", "170ms"},

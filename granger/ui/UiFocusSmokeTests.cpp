@@ -18,6 +18,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QClipboard>
+#include <QColor>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QCursor>
@@ -387,6 +388,28 @@ int runUiFocusSmoke(QApplication &app,
     Localization::setLanguage(QStringLiteral("en"));
     ThemeManager theme;
     theme.apply(app);
+    const QString tokenProbe = DesignTokens::apply(QStringLiteral(
+        "__WINDOW_BG__|__SURFACE_BG__|__TEXT__|__ACCENT__|__BORDER_STRONG__|"
+        "__POPUP_SHADOW__|__FONT_UI__|__SPACING_3XL__"));
+    const QPalette palette = app.palette();
+    const bool tokenPaletteMatches =
+        palette.color(QPalette::Window)
+            == QColor(QString::fromLatin1(DesignTokens::windowBackgroundColor))
+        && palette.color(QPalette::Base)
+            == QColor(QString::fromLatin1(DesignTokens::controlBackgroundColor))
+        && palette.color(QPalette::Text)
+            == QColor(QString::fromLatin1(DesignTokens::textPrimaryColor))
+        && palette.color(QPalette::Highlight)
+            == QColor(QString::fromLatin1(DesignTokens::accentColor));
+    results.record(QStringLiteral("Qt and internal pages share one resolved design-token palette"),
+                   tokenPaletteMatches
+                       && !tokenProbe.contains(QStringLiteral("__"))
+                       && DesignTokens::spacing3Xl == 32
+                       && app.styleSheet().contains(
+                           QString::fromLatin1(DesignTokens::windowBackgroundColor))
+                       && app.styleSheet().contains(
+                           QString::fromLatin1(DesignTokens::accentColor)),
+                   tokenProbe);
     auto *window = new MainWindow(settings, theme);
     window->resize(1180, 720);
     window->showNormal();

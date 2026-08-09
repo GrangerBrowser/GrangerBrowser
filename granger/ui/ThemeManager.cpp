@@ -15,19 +15,24 @@ ThemeManager::ThemeManager(QObject *parent)
 
 void ThemeManager::apply(QApplication &app) const
 {
+    const auto color = [](const char *value) {
+        return QColor(QString::fromLatin1(value));
+    };
     QPalette palette;
-    palette.setColor(QPalette::Window, QColor(QStringLiteral("#0e0f12")));
-    palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#f2f3f5")));
-    palette.setColor(QPalette::Base, QColor(QStringLiteral("#1b1d23")));
-    palette.setColor(QPalette::AlternateBase, QColor(QStringLiteral("#181a20")));
-    palette.setColor(QPalette::Text, QColor(QStringLiteral("#f2f3f5")));
-    palette.setColor(QPalette::PlaceholderText, QColor(QStringLiteral("#7e838f")));
-    palette.setColor(QPalette::Button, QColor(QStringLiteral("#1b1d23")));
-    palette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#f2f3f5")));
-    palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#d95661")));
-    palette.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#ffffff")));
-    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(QStringLiteral("#646873")));
-    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(QStringLiteral("#646873")));
+    palette.setColor(QPalette::Window, color(DesignTokens::windowBackgroundColor));
+    palette.setColor(QPalette::WindowText, color(DesignTokens::textPrimaryColor));
+    palette.setColor(QPalette::Base, color(DesignTokens::controlBackgroundColor));
+    palette.setColor(QPalette::AlternateBase, color(DesignTokens::surfaceBackgroundColor));
+    palette.setColor(QPalette::Text, color(DesignTokens::textPrimaryColor));
+    palette.setColor(QPalette::PlaceholderText, color(DesignTokens::textMutedColor));
+    palette.setColor(QPalette::Button, color(DesignTokens::controlBackgroundColor));
+    palette.setColor(QPalette::ButtonText, color(DesignTokens::textPrimaryColor));
+    palette.setColor(QPalette::Highlight, color(DesignTokens::accentColor));
+    palette.setColor(QPalette::HighlightedText, QColor(Qt::white));
+    palette.setColor(QPalette::Disabled, QPalette::Text,
+                     color(DesignTokens::textDisabledColor));
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText,
+                     color(DesignTokens::textDisabledColor));
     app.setPalette(palette);
     app.setStyleSheet(styleSheet());
 }
