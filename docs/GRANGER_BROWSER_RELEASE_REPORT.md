@@ -287,8 +287,8 @@ release\Granger Browser\GrangerBrowser.exe
 | Параметр | Значение |
 | --- | --- |
 | Version | 0.4.0 |
-| Size | 9 456 128 bytes |
-| SHA-256 | `2863CFCE9E8E5EDCB0EBA538CE0F475A3D96188BE6166A9F6C7A8F5D2991ACBD` |
+| Size | 9 510 400 bytes |
+| SHA-256 | `E25B441909A09074FA251D42C389CD29BAD4AF450F8DEA5EB4DD640D3F682DBD` |
 | ProductName | Granger Browser |
 | FileDescription | Granger Browser privacy browser |
 | OriginalFilename | GrangerBrowser.exe |
@@ -357,7 +357,12 @@ previous directories отсутствуют.
 - legacy source сохраняется после успешной миграции как rollback copy и не
   удаляется автоматически.
 
-## 11. GitHub import и стабилизация Sidebar
+## 11. GitHub import и стабилизация Sidebar (промежуточная итерация)
+
+Числа и артефакты этой промежуточной итерации сохранены для истории. Итоговые
+результаты после дополнительной проверки физического letterboxing приведены в
+разделе 12 и заменяют значения `288 px`, `124/124` и ранние screenshot evidence
+ниже.
 
 ### Репозиторий и границы этапа
 
@@ -479,3 +484,152 @@ Windows/GPU/driver; он не заменяет матрицу всех физи�
 поисковые ответы зависят от exit/network policy (Google anti-bot и Mojeek 403 уже
 задокументированы выше). EXE остаётся без цифровой подписи. Pull Request должен
 быть просмотрен и объединён владельцем вручную.
+
+## 12. Финальная приёмка физического letterboxing и Sidebar
+
+### Выбранная privacy-модель
+
+Физический Tor-letterboxing сохранён. `BrowserTab::updateLetterbox()`,
+стандартизация viewport и связанные privacy-механизмы не отключались. Внешняя
+страница не растягивается до всего content host: поля вокруг `QWebEngineView`
+являются ожидаемой частью защиты от fingerprinting и стандартизации размера
+viewport. Это не заявление об анонимности.
+
+Размер не задан одним `800x700`. Общая
+`FingerprintViewportPolicy::standardizedSize()` выбирает наибольшие ширину и
+высоту, помещающиеся в текущий host, по сетке `200x100` logical px. Для host
+меньше одного bucket используется доступный размер. Один владелец политики
+используется и runtime-кодом, и regression tests.
+
+### Воспроизведённые причины
+
+1. Динамические секции Sidebar участвовали в распределении лишней вертикальной
+   высоты, поэтому Tabs/Spaces и нижняя навигация могли визуально растягиваться.
+2. `setFixedSize(policyTarget)` у центрированного `QWebEngineView` передавал
+   minimum size вверх по layout и мог увеличивать главное окно вместо создания
+   внутренних полей.
+3. Expanded Sidebar имел ширину `288` logical px и отнимал у защищённого
+   viewport лишний bucket. Итоговая ширина уменьшена до `256` logical px;
+   compact rail остаётся `64` px.
+4. При раннем восстановлении вкладки WebEngine мог получить начальную геометрию
+   около `100x30`. После замены fixed size на один maximum size центрирующий
+   `QVBoxLayout` продолжал брать устаревший `sizeHint`, поэтому viewport не
+   восстанавливался сам. Это был layout-дефект, а не допустимый letterbox.
+
+### Исправление без ослабления privacy
+
+`LetterboxedWebView` сообщает layout явный preferred size, выбранный действующей
+policy. Minimum остаётся `0x0`, maximum равен policy target, а
+`Qt::AlignCenter` стабильно центрирует поверхность. Поэтому target может занять
+свой bucket, но не заставляет родительское окно расти. При отключении
+letterboxing preferred size очищается; при включении
+`synchronizeViewportGeometry()` повторно применяет policy после show, смены
+вкладки и завершения перехода Sidebar.
+
+Добавлен regression, который намеренно сжимает защищённый WebEngine viewport до
+`100x30`, затем проверяет восстановление до host-derived bucket и точное
+центрирование. Отдельные проверки запрещают один постоянный размер для hidden и
+expanded состояний и подтверждают кратность policy buckets.
+
+### Подтверждённая геометрия
+
+При logical content host `1536x737`/`1472x737`/`1280x737` получены:
+
+| Sidebar | Policy viewport | Поля L/R | Поля T/B |
+| --- | --- | --- | --- |
+| Hidden | `1400x700` | `68/68` | `18/19` |
+| Compact rail | `1400x700` | `36/36` | `18/19` |
+| Expanded | `1200x700` | `40/40` | `18/19` |
+
+На реальном packaged Release при системном масштабе 125%:
+
+| Sidebar | Physical host | Physical WebView | Поля L/R | Поля T/B |
+| --- | --- | --- | --- | --- |
+| Compact rail | `1840x921` | `1750x875` (`1400x700` logical) | `45/45` | `23/23` |
+| Expanded | `1600x921` | `1500x875` (`1200x700` logical) | `50/50` | `23/23` |
+
+После 20 быстрых переключений expanded geometry полностью совпала с исходной.
+Scrollbar находится у правой границы самого `QWebEngineView`, как и требуется.
+
+### Коммиты этапа
+
+| Commit | Назначение |
+| --- | --- |
+| `d5ed302` | не позволять динамическим секциям Sidebar растягиваться |
+| `1bff984` | стабилизировать policy letterboxing во всех состояниях Sidebar |
+| `51bdd93` | уменьшить expanded Sidebar и выровнять spacing |
+| `5ebf45f` | исключить рост окна из-за minimum size WebView |
+| `bf4012a` | добавить пропорциональные и viewport regression tests |
+| `4aeac26` | восстанавливать ранний маленький letterboxed viewport |
+
+Основные изменённые владельцы: `granger/browser/BrowserTab.cpp`,
+`granger/privacy/PrivacyTypes.*`, `granger/tabs/TabManager.*`,
+`granger/ui/DesignTokens.h` и `granger/ui/UiFocusSmokeTests.cpp`. Tor manager,
+SOCKS/DNS routing, bridges, blocker и privacy profiles в этом этапе не менялись.
+
+### Финальные проверки
+
+- clean Qt 6.11.1 Release build и package acceptance: успешно;
+- Product `123/123`, UI/focus `137/137`, Privacy `142/142`;
+- Feature `115/115`, Privacy visual `7/7`;
+- Bridges `22/22`, Strategies `8/8`, QR `5/5`, New tab `15/15`;
+- exact effective DPR `1.0`, `1.5` и `2.0`: по `137/137`, включая recovery
+  раннего viewport, без overlap и horizontal overflow;
+- paint warnings `0`, orphan browser/WebEngine processes `0`;
+- DuckDuckGo загрузил реальные результаты по адресу
+  `https://duckduckgo.com/?q=granger+browser&ia=web`;
+- Google вернул внешний anti-abuse challenge; он не выдан за успешную загрузку;
+- Release содержит только `Granger Browser` и `build-report.json`, без staging и
+  previous package directories.
+
+### Финальные screenshots
+
+Hidden, compact rail и expanded Sidebar:
+
+![Sidebar hidden](screenshots/sidebar-layout-stability/sidebar-hidden.png)
+
+![Sidebar compact rail](screenshots/sidebar-layout-stability/sidebar-rail.png)
+
+![Sidebar expanded](screenshots/sidebar-layout-stability/sidebar-expanded.png)
+
+Физический letterboxing hidden/rail/expanded и результат toggle stress:
+
+![Letterbox hidden](screenshots/sidebar-layout-stability/letterbox-hidden.png)
+
+![Letterbox rail](screenshots/sidebar-layout-stability/letterbox-rail.png)
+
+![Letterbox expanded](screenshots/sidebar-layout-stability/letterbox-expanded.png)
+
+![Letterbox toggle stress](screenshots/sidebar-layout-stability/letterbox-toggle-stress.png)
+
+Реальная DuckDuckGo-страница в compact и expanded состояниях:
+
+![DuckDuckGo compact rail](screenshots/sidebar-layout-stability/duckduckgo-rail.png)
+
+![DuckDuckGo expanded](screenshots/sidebar-layout-stability/duckduckgo-expanded.png)
+
+![DuckDuckGo after toggle stress](screenshots/sidebar-layout-stability/duckduckgo-after-toggle-stress.png)
+
+Exact effective DPI 100%, 150% и 200%:
+
+![Sidebar at 100 percent DPI](screenshots/sidebar-layout-stability/sidebar-100.png)
+
+![Sidebar at 150 percent DPI](screenshots/sidebar-layout-stability/sidebar-150.png)
+
+![Sidebar at 200 percent DPI](screenshots/sidebar-layout-stability/sidebar-200.png)
+
+### Канонический артефакт
+
+```text
+release\Granger Browser\GrangerBrowser.exe
+```
+
+- размер: `9 510 400` bytes;
+- SHA-256: `E25B441909A09074FA251D42C389CD29BAD4AF450F8DEA5EB4DD640D3F682DBD`;
+- `release/build-report.json`: `OK=true`, Python runtime artifacts `0`;
+- пользовательские каталоги не очищались и не мигрировались в рамках этой
+  приёмки; automated runs использовали изолированные data/settings roots.
+
+Остающиеся ограничения: Qt WebEngine сохраняет process-wide proxy model;
+pixel evidence относится к текущим Windows/GPU/driver; EXE не подписан цифровой
+подписью; сетевой ответ внешних сайтов зависит от exit и их anti-abuse policy.
