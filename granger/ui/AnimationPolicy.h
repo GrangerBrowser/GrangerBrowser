@@ -15,6 +15,7 @@ enum class AnimationKind {
     TabReorder,
     SpaceSwitch,
     DownloadUi,
+    Scrollbar,
     Sidebar,
     DevTools,
     Fullscreen

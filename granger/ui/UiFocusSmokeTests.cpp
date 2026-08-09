@@ -29,6 +29,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QGraphicsOpacityEffect>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -44,6 +45,7 @@
 #include <QPointer>
 #include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QTcpServer>
@@ -410,6 +412,37 @@ int runUiFocusSmoke(QApplication &app,
                        && app.styleSheet().contains(
                            QString::fromLatin1(DesignTokens::accentColor)),
                    tokenProbe);
+    QScrollArea nativeScrollProbe;
+    nativeScrollProbe.resize(120, 80);
+    nativeScrollProbe.move(-800, -800);
+    auto *nativeScrollContent = new QWidget;
+    nativeScrollContent->setMinimumSize(220, 420);
+    nativeScrollProbe.setWidget(nativeScrollContent);
+    nativeScrollProbe.show();
+    settle(80);
+    QScrollBar *nativeScrollBar = nativeScrollProbe.verticalScrollBar();
+    QEvent enterScrollBar(QEvent::Enter);
+    QApplication::sendEvent(nativeScrollBar, &enterScrollBar);
+    settle(DesignTokens::scrollbarFadeDurationMs + 40);
+    auto *scrollEffect = nativeScrollBar
+        ? qobject_cast<QGraphicsOpacityEffect *>(nativeScrollBar->graphicsEffect()) : nullptr;
+    const qreal activeScrollOpacity = scrollEffect ? scrollEffect->opacity() : -1.0;
+    QEvent leaveScrollBar(QEvent::Leave);
+    QApplication::sendEvent(nativeScrollBar, &leaveScrollBar);
+    settle(DesignTokens::scrollbarIdleDelayMs
+           + DesignTokens::scrollbarFadeDurationMs + 120);
+    const qreal idleScrollOpacity = scrollEffect ? scrollEffect->opacity() : -1.0;
+    results.record(QStringLiteral("native scrollbars share one animated active and idle policy"),
+                   nativeScrollBar && nativeScrollBar->maximum() > nativeScrollBar->minimum()
+                       && nativeScrollBar->property("minimalScrollBar").toBool()
+                       && scrollEffect
+                       && scrollEffect->objectName() == QStringLiteral("GrangerScrollBarOpacity")
+                       && activeScrollOpacity > 0.95
+                       && idleScrollOpacity <= DesignTokens::scrollbarIdleOpacity + 0.02,
+                   QStringLiteral("active=%1 idle=%2")
+                       .arg(activeScrollOpacity, 0, 'f', 2)
+                       .arg(idleScrollOpacity, 0, 'f', 2));
+    nativeScrollProbe.hide();
     auto *window = new MainWindow(settings, theme);
     window->resize(1180, 720);
     window->showNormal();
@@ -500,14 +533,18 @@ int runUiFocusSmoke(QApplication &app,
                               == QStringLiteral("Opens the official Duck.ai service.")
                        && homeLayout.value(QStringLiteral("aiNoOverlap")).toBool()
                        && homeLayout.value(QStringLiteral("aiInsideViewport")).toBool());
-    results.record(QStringLiteral("Granger Browser title uses a compositor-friendly black-red flow"),
+    const bool titleMotionMatchesPolicy = AnimationPolicy::reducedMotion()
+        ? homeLayout.value(QStringLiteral("titleAnimation")).toString()
+              == QStringLiteral("none")
+        : homeLayout.value(QStringLiteral("titleAnimation")).toString()
+                  == QStringLiteral("granger-title-flow")
+              && homeLayout.value(QStringLiteral("titleAnimationDuration")).toString()
+                  == QStringLiteral("6.8s");
+    results.record(QStringLiteral("Granger Browser title follows the shared motion policy"),
                    homeLayout.value(QStringLiteral("titleGradient")).toBool()
-                       && homeLayout.value(QStringLiteral("titleAnimation")).toString()
-                              == QStringLiteral("granger-title-flow")
-                       && homeLayout.value(QStringLiteral("titleAnimationDuration")).toString()
-                              == QStringLiteral("6.8s")
+                       && titleMotionMatchesPolicy
                        && homeLayout.value(QStringLiteral("titleBackgroundSize")).toString()
-                               == QStringLiteral("250% 100%"));
+                           == QStringLiteral("250% 100%"));
     const double titleSize = homeLayout.value(QStringLiteral("titleSize")).toDouble();
     const double titleLineHeight = homeLayout.value(QStringLiteral("titleLineHeight")).toDouble();
     const double titlePaddingBottom = homeLayout.value(QStringLiteral("titlePaddingBottom")).toDouble();
@@ -1085,8 +1122,9 @@ int runUiFocusSmoke(QApplication &app,
                 + stackGeometry.value(QStringLiteral("width")).toInt()
             == contentGeometry.value(QStringLiteral("x")).toInt()
                 + contentGeometry.value(QStringLiteral("width")).toInt();
+    const int expectedFiftyToggleSignals = AnimationPolicy::reducedMotion() ? 50 : 1;
     const bool fiftyToggleGeometryStable = fiftyTogglesSettled && tabs->sidebarPinned()
-        && geometrySettledSignals == 1
+        && geometrySettledSignals == expectedFiftyToggleSignals
         && rapidGeometryAfterFifty.value(QStringLiteral("sidebarTransitionState")).toString()
             == QStringLiteral("Open")
         && rapidGeometryAfterFifty.value(QStringLiteral("sidebarWidth")).toInt()
@@ -1312,7 +1350,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     if (protectedSettledConnection) QObject::disconnect(protectedSettledConnection);
     const QJsonObject protectedAfterFifty = window->fullscreenDiagnostics();
     const bool protectedFiftyStable = protectedFiftySettled
-        && protectedSettledSignals == 1
+        && protectedSettledSignals == expectedFiftyToggleSignals
         && protectedAfterFifty.value(QStringLiteral("viewport")).toObject()
             == railViewportBefore;
     results.record(QStringLiteral("fifty immediate Sidebar toggles settle the protected viewport once without drift"),
@@ -1829,6 +1867,25 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        && rootScrollState.value(QStringLiteral("moved")).toBool()
                        && rootScrollState.value(QStringLiteral("noHorizontalOverflow")).toBool()
                        && rootScrollState.value(QStringLiteral("scrollbarRule")).toBool());
+    const bool internalScrollActivated = waitFor([&] {
+        return evaluate(privacyTransferTab ? privacyTransferTab->page() : nullptr,
+                        QStringLiteral("document.documentElement.dataset.scrollActive==='true'"))
+            .toBool();
+    }, 1000);
+    settle(DesignTokens::scrollbarIdleDelayMs + 120);
+    const bool internalScrollReturnedIdle = evaluate(
+        privacyTransferTab ? privacyTransferTab->page() : nullptr,
+        QStringLiteral("document.documentElement.dataset.scrollActive==='false'"))
+        .toBool();
+    const bool internalScrollPolicyPresent = evaluate(
+        privacyTransferTab ? privacyTransferTab->page() : nullptr,
+        QStringLiteral(R"JS((()=>[...document.styleSheets].some(sheet=>{
+            try{return [...sheet.cssRules].some(rule=>rule.cssText.includes('data-scroll-active'))}catch(_){return false}
+        }))())JS"))
+        .toBool();
+    results.record(QStringLiteral("internal pages use the local active and idle scrollbar policy"),
+                   internalScrollActivated && internalScrollReturnedIdle
+                       && internalScrollPolicyPresent);
     settle(120);
     capture(QStringLiteral("settingsScrollbar"), QStringLiteral("07l-settings-scrollbar.png"), window);
 

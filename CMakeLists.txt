@@ -102,6 +102,8 @@ qt_add_executable(granger_browser
     granger/ui/DownloadUi.h
     granger/ui/NavigationBar.cpp
     granger/ui/NavigationBar.h
+    granger/ui/ScrollBarController.cpp
+    granger/ui/ScrollBarController.h
     granger/ui/ThemeManager.cpp
     granger/ui/ThemeManager.h
     granger/ui/UiFocusSmokeTests.cpp

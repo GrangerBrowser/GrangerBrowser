@@ -5,6 +5,7 @@
 #include <QPalette>
 
 #include "granger/ui/DesignTokens.h"
+#include "granger/ui/ScrollBarController.h"
 
 namespace granger {
 
@@ -35,6 +36,7 @@ void ThemeManager::apply(QApplication &app) const
                      color(DesignTokens::textDisabledColor));
     app.setPalette(palette);
     app.setStyleSheet(styleSheet());
+    ScrollBarController::install(app);
 }
 
 QString ThemeManager::styleSheet() const
@@ -170,12 +172,12 @@ QString ThemeManager::styleSheet() const
 
         QScrollArea#TabScrollArea QScrollBar:vertical {
             background: transparent;
-            width: 5px;
-            margin: 0;
+            width: __SCROLLBAR_SIZE__;
+            margin: __SCROLLBAR_INSET__;
         }
 
         QScrollArea#TabScrollArea QScrollBar::handle:vertical {
-            background: __BORDER__;
+            background: __SCROLLBAR_THUMB__;
             border-radius: 2px;
             min-height: 24px;
         }
@@ -659,11 +661,12 @@ QString ThemeManager::styleSheet() const
 
         QScrollArea#SpaceScrollArea QScrollBar:vertical {
             background: transparent;
-            width: 5px;
+            width: __SCROLLBAR_SIZE__;
+            margin: __SCROLLBAR_INSET__;
         }
 
         QScrollArea#SpaceScrollArea QScrollBar::handle:vertical {
-            background: __BORDER__;
+            background: __SCROLLBAR_THUMB__;
             border-radius: 2px;
             min-height: 20px;
         }
@@ -1205,23 +1208,23 @@ QString ThemeManager::styleSheet() const
         }
 
         QScrollBar:vertical {
-            width: 9px;
-            margin: 2px;
+            width: __SCROLLBAR_SIZE__;
+            margin: __SCROLLBAR_INSET__;
             background: transparent;
         }
 
         QScrollBar::handle:vertical {
             min-height: 28px;
-            background: #555863;
-            border-radius: 4px;
+            background: __SCROLLBAR_THUMB__;
+            border-radius: 2px;
         }
 
         QScrollBar::handle:vertical:hover {
-            background: #70737e;
+            background: __SCROLLBAR_THUMB_HOVER__;
         }
 
         QScrollBar::handle:vertical:pressed {
-            background: #858994;
+            background: __SCROLLBAR_THUMB_ACTIVE__;
         }
 
         QScrollBar::add-line:vertical,
@@ -1234,15 +1237,15 @@ QString ThemeManager::styleSheet() const
         }
 
         QScrollBar:horizontal {
-            height: 9px;
-            margin: 2px;
+            height: __SCROLLBAR_SIZE__;
+            margin: __SCROLLBAR_INSET__;
             background: transparent;
         }
 
         QScrollBar::handle:horizontal {
             min-width: 28px;
-            background: #555863;
-            border-radius: 4px;
+            background: __SCROLLBAR_THUMB__;
+            border-radius: 2px;
         }
 
         QScrollBar::add-line:horizontal,

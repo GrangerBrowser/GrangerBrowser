@@ -29,6 +29,9 @@ public:
     inline static constexpr const char *errorColor = "#e45d68";
     inline static constexpr const char *successColor = "#50ba8a";
     inline static constexpr const char *infoColor = "#68a7d8";
+    inline static constexpr const char *scrollbarThumbColor = "#626671";
+    inline static constexpr const char *scrollbarThumbHoverColor = "#7b808d";
+    inline static constexpr const char *scrollbarThumbActiveColor = "#9298a6";
     inline static constexpr const char *popupShadow = "0 14px 36px rgba(0,0,0,0.38)";
     inline static constexpr const char *cardShadow = "0 8px 24px rgba(0,0,0,0.24)";
 
@@ -71,7 +74,10 @@ public:
     inline static constexpr int controlRadius = 9;
     inline static constexpr int radiusLg = 12;
     inline static constexpr int popupRadius = 14;
-    inline static constexpr int scrollbarWidth = 9;
+    inline static constexpr int scrollbarWidth = 8;
+    inline static constexpr int scrollbarInset = 2;
+    inline static constexpr int scrollbarIdleDelayMs = 850;
+    inline static constexpr qreal scrollbarIdleOpacity = 0.22;
     inline static constexpr int settingsSelectMaxHeight = 320;
     inline static constexpr int spacingXs = 4;
     inline static constexpr int spacingSm = 8;
@@ -90,6 +96,7 @@ public:
     inline static constexpr int tabReorderDurationMs = 190;
     inline static constexpr int spaceSwitchDurationMs = 220;
     inline static constexpr int downloadUiDurationMs = 210;
+    inline static constexpr int scrollbarFadeDurationMs = 140;
     inline static constexpr int sidebarDurationMs = 210;
     inline static constexpr int devToolsDurationMs = 200;
     inline static constexpr int fullscreenDurationMs = 175;
@@ -121,6 +128,9 @@ public:
             {"__ERROR__", errorColor},
             {"__SUCCESS__", successColor},
             {"__INFO__", infoColor},
+            {"__SCROLLBAR_THUMB__", scrollbarThumbColor},
+            {"__SCROLLBAR_THUMB_HOVER__", scrollbarThumbHoverColor},
+            {"__SCROLLBAR_THUMB_ACTIVE__", scrollbarThumbActiveColor},
             {"__POPUP_SHADOW__", popupShadow}, {"__CARD_SHADOW__", cardShadow},
             {"__FONT_UI__", uiFontFamily},
             {"__FONT_CAPTION__", "11px"}, {"__FONT_BODY__", "13px"},
@@ -130,7 +140,9 @@ public:
             {"__RADIUS_LG__", "12px"}, {"__POPUP_RADIUS__", "14px"},
             {"__CONTENT_MAX__", "1160px"},
             {"__CONTROL_HEIGHT_SM__", "32px"},
-            {"__CONTROL_HEIGHT__", "40px"}, {"__SCROLLBAR_SIZE__", "9px"},
+            {"__CONTROL_HEIGHT__", "40px"}, {"__SCROLLBAR_SIZE__", "8px"},
+            {"__SCROLLBAR_INSET__", "2px"},
+            {"__SCROLLBAR_IDLE_DELAY_MS__", "850"},
             {"__SETTINGS_SELECT_MAX_HEIGHT__", "320px"},
             {"__CONTROL_HEIGHT_LG__", "44px"},
             {"__SPACING_XS__", "4px"}, {"__SPACING_SM__", "8px"},

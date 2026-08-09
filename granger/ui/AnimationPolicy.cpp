@@ -41,6 +41,7 @@ int AnimationPolicy::duration(AnimationKind kind)
     case AnimationKind::TabReorder: return DesignTokens::tabReorderDurationMs;
     case AnimationKind::SpaceSwitch: return DesignTokens::spaceSwitchDurationMs;
     case AnimationKind::DownloadUi: return DesignTokens::downloadUiDurationMs;
+    case AnimationKind::Scrollbar: return DesignTokens::scrollbarFadeDurationMs;
     case AnimationKind::Sidebar: return DesignTokens::sidebarDurationMs;
     case AnimationKind::DevTools: return DesignTokens::devToolsDurationMs;
     case AnimationKind::Fullscreen: return DesignTokens::fullscreenDurationMs;
