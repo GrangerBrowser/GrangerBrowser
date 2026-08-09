@@ -1859,6 +1859,36 @@ int runFeatureSmokeTests(QApplication &app,
                            .arg(replacementRequested)
                            .arg(allTabsClosed));
 
+        const QDateTime historyNow = QDateTime::currentDateTime();
+        const auto historyFixtureItem = [](const QString &title, const QString &url,
+                                           const QDateTime &visitedAt) {
+            return QJsonObject{
+                {QStringLiteral("title"), title},
+                {QStringLiteral("url"), url},
+                {QStringLiteral("visitedAt"),
+                 visitedAt.toUTC().toString(Qt::ISODateWithMs)}
+            };
+        };
+        const QJsonArray historyFixture{
+            historyFixtureItem(QStringLiteral("GitHub"),
+                               QStringLiteral("https://github.com/granger-browser"),
+                               historyNow),
+            historyFixtureItem(QStringLiteral("DuckDuckGo"),
+                               QStringLiteral("https://duckduckgo.com/?q=privacy"),
+                               historyNow.addDays(-1)),
+            historyFixtureItem(QStringLiteral("Reference"),
+                               QStringLiteral("https://example.com/archive"),
+                               historyNow.addDays(-8))
+        };
+        const bool historyFixtureSeeded = writeFile(
+            AppPaths::stateFile(QStringLiteral("history.json")),
+            QJsonDocument(QJsonObject{
+                {QStringLiteral("version"), 1},
+                {QStringLiteral("history"), historyFixture}
+            }).toJson(QJsonDocument::Indented));
+        results.record(QStringLiteral("history visual fixture contains three local date groups"),
+                       historyFixtureSeeded && historyFixture.size() == 3);
+
         MainWindow window(settings, theme);
         BrowserTab *normal = window.currentTabForDiagnostics();
         QWebEngineProfile *normalProfile = normal && normal->page()
@@ -2306,24 +2336,42 @@ int runFeatureSmokeTests(QApplication &app,
 	                        menus:document.querySelectorAll('details.container-menu').length,
 	                        activeRows:rows.filter(row=>row.classList.contains('active')
 	                            && row.getAttribute('aria-current')==='true').length,
+	                        defaultRows:rows.filter(row=>row.dataset.spaceKind==='default'
+	                            && !!row.querySelector('.space-state.default')).length,
+	                        activeBadges:rows.filter(row=>!!row.querySelector('.space-state.active')).length,
 	                        badges:rows.map(row=>row.querySelectorAll('.container-badges span').length),
 	                        actions:[...document.querySelectorAll('details.container-menu')]
 	                            .map(menu=>menu.querySelectorAll('[role=menuitem]').length),
+	                        customDanger:rows.filter(row=>row.dataset.spaceKind==='custom')
+	                            .map(row=>row.querySelectorAll('[role=menuitem].destructive').length),
+	                        defaultDanger:rows.find(row=>row.dataset.spaceKind==='default')
+	                            ?.querySelectorAll('[role=menuitem].destructive').length??-1,
+	                        complete:rows.every(row=>!!row.querySelector('.container-visual img')
+	                            &&!!row.querySelector('.container-title-line strong')
+	                            &&!!row.querySelector('.container-copy>p')
+	                            &&!!row.querySelector('.container-badges .persistence')
+	                            &&!!row.querySelector('details.container-menu')),
 	                        assignments:!!assignments,
 	                        overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth
 	                    };
                 })())JS")).toMap();
             results.record(
-	                QStringLiteral("container settings uses compact rows without persistent edit forms"),
+	                QStringLiteral("Space Manager uses complete compact cards with truthful states"),
 	                settingsSpaceReady
-	                    && containerLayout.value(QStringLiteral("rows")).toInt() == 2
+	                    && containerLayout.value(QStringLiteral("rows")).toInt() == 3
 	                    && containerLayout.value(QStringLiteral("oldForms")).toInt() == 0
-	                    && containerLayout.value(QStringLiteral("menus")).toInt() == 2
-	                    && containerLayout.value(QStringLiteral("activeRows")).toInt() == 0
+	                    && containerLayout.value(QStringLiteral("menus")).toInt() == 3
+	                    && containerLayout.value(QStringLiteral("activeRows")).toInt() == 1
+	                    && containerLayout.value(QStringLiteral("defaultRows")).toInt() == 1
+	                    && containerLayout.value(QStringLiteral("activeBadges")).toInt() == 1
 	                    && containerLayout.value(QStringLiteral("badges")).toList()
-	                       == QVariantList{3, 3}
+	                       == QVariantList{3, 3, 3}
 	                    && containerLayout.value(QStringLiteral("actions")).toList()
-	                       == QVariantList{7, 7}
+	                       == QVariantList{5, 1, 5}
+	                    && containerLayout.value(QStringLiteral("customDanger")).toList()
+	                       == QVariantList{2, 2}
+	                    && containerLayout.value(QStringLiteral("defaultDanger")).toInt() == 0
+	                    && containerLayout.value(QStringLiteral("complete")).toBool()
 	                    && containerLayout.value(QStringLiteral("assignments")).toBool()
 	                    && !containerLayout.value(QStringLiteral("overflow")).toBool(),
                 QString::fromUtf8(QJsonDocument::fromVariant(containerLayout)
@@ -2420,6 +2468,7 @@ int runFeatureSmokeTests(QApplication &app,
                 window.currentTabForDiagnostics()
                     ? window.currentTabForDiagnostics()->page() : nullptr,
                 QStringLiteral("document.querySelector('details.container-menu')?.removeAttribute('open')"));
+            settleEvents(180);
             recordCapture(results, captures, QStringLiteral("containerSettings"),
                           containerSettingsCapture,
                           containerSettingsReady
@@ -2651,6 +2700,56 @@ int runFeatureSmokeTests(QApplication &app,
             recordCapture(results, captures, QStringLiteral("pampPrivacy"),
                           pampPrivacyCapture,
                           pampReady && captureWindow(&window, pampPrivacyCapture));
+
+            window.openAddressForDiagnostics(QStringLiteral("about:history"));
+            const bool historyReady = waitUntil([&] {
+                BrowserTab *tab = window.currentTabForDiagnostics();
+                return tab && !tab->isLoading()
+                    && tab->displayAddress() == QStringLiteral("about:history")
+                    && evaluatePage(tab->page(),
+                                    QStringLiteral("document.querySelectorAll('.history-group').length>=3"))
+                           .toBool();
+            });
+            const QVariantMap historyLayout = evaluatePage(
+                window.currentTabForDiagnostics()
+                    ? window.currentTabForDiagnostics()->page() : nullptr,
+                QStringLiteral(R"JS((()=>{
+                    const groups=[...document.querySelectorAll('.history-group')];
+                    const rows=[...document.querySelectorAll('.history-row')];
+                    const labels=groups.map(group=>group.querySelector('.history-date')?.textContent.trim());
+                    return {
+                        groups:groups.length,
+                        rows:rows.length,
+                        today:labels.includes('Today'),
+                        yesterday:labels.includes('Yesterday'),
+                        complete:rows.every(row=>!!row.querySelector('.history-site-icon')
+                            &&!!row.querySelector('.history-title')
+                            &&!!row.querySelector('.history-location')
+                            &&!!row.querySelector('time[datetime]')
+                            &&row.querySelector('.history-link')?.href.startsWith(
+                                'https://granger.local/__action/history/open?')),
+                        rawIso:[...document.querySelectorAll('.history-time')]
+                            .some(time=>time.textContent.includes('T')),
+                        overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth
+                    };
+                })())JS")).toMap();
+            results.record(
+                QStringLiteral("History groups local dates into compact complete rows"),
+                historyReady
+                    && historyLayout.value(QStringLiteral("groups")).toInt() >= 3
+                    && historyLayout.value(QStringLiteral("rows")).toInt() >= 3
+                    && historyLayout.value(QStringLiteral("today")).toBool()
+                    && historyLayout.value(QStringLiteral("yesterday")).toBool()
+                    && historyLayout.value(QStringLiteral("complete")).toBool()
+                    && !historyLayout.value(QStringLiteral("rawIso")).toBool()
+                    && !historyLayout.value(QStringLiteral("overflow")).toBool(),
+                QString::fromUtf8(QJsonDocument::fromVariant(historyLayout)
+                                      .toJson(QJsonDocument::Compact)));
+            const QString historyCapture = QDir(captureDirectory).filePath(
+                QStringLiteral("05d-history.png"));
+            settleEvents(250);
+            recordCapture(results, captures, QStringLiteral("history"), historyCapture,
+                          historyReady && captureWindow(&window, historyCapture));
 
             window.openAddressForDiagnostics(QStringLiteral("about:settings?category=danger"));
             const bool dangerReady = waitUntil([&] {

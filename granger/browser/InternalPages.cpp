@@ -341,6 +341,9 @@ position:absolute;right:3px;bottom:3px;width:10px;height:10px;border:2px solid v
 .settings-page .container-copy{min-width:0}
 .settings-page .container-title-line{display:flex;align-items:center;gap:10px;min-width:0}
 .settings-page .container-title-line strong{min-width:0;overflow:hidden;color:var(--ds-text);font-size:15px;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .space-state{display:inline-flex;align-items:center;min-height:20px;padding:2px 6px;border:1px solid var(--ds-border-subtle);border-radius:999px;color:var(--ds-text-muted);font-size:9px;font-weight:700;line-height:1;text-transform:uppercase;white-space:nowrap}
+.settings-page .space-state.default{border-color:color-mix(in srgb,var(--space-accent) 34%,var(--ds-border-subtle));color:var(--ds-text-secondary)}
+.settings-page .space-state.active{border-color:color-mix(in srgb,var(--space-accent) 58%,var(--ds-border));background:color-mix(in srgb,var(--space-accent) 12%,transparent);color:var(--ds-text)}
 .settings-page .container-copy>p{margin:3px 0 7px;color:var(--ds-text-secondary);font-size:12px;line-height:1.4}
 .settings-page .container-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .settings-page .container-badges span{
@@ -370,6 +373,7 @@ border:1px solid transparent;border-radius:var(--ds-radius-md);color:var(--ds-te
 outline:0;border-color:var(--ds-border-subtle);background:var(--ds-bg-hover)
 }
 .settings-page .container-menu-popover a.destructive{color:#ff9ba4}
+.settings-page .container-menu-popover a.danger-final{margin-top:2px}
 .settings-page .container-menu-popover img{width:17px;height:17px;opacity:.86}
 .settings-page .container-menu-popover .menu-separator{display:block;height:1px;margin:5px 6px;background:var(--ds-border-subtle)}
 .settings-page .settings-detail{
@@ -1365,10 +1369,42 @@ QString InternalPages::bookmarks(const InternalPageContext &context)
 
 QString InternalPages::history(const InternalPageContext &context)
 {
-    const QString body = messageBlock(context.message)
-        + QStringLiteral("<div class=\"row\"><a class=\"button danger\" href=\"https://granger.local/__action/history/clear\">%1</a></div><section>%2</section>")
-              .arg(e(t("history.clear")), context.historyHtml.isEmpty() ? QStringLiteral("<p>%1</p>").arg(e(t("history.none"))) : context.historyHtml);
-    return chrome(t("page.history.title"), t("page.history.subtitle"), body);
+    QString body = messageBlock(context.message);
+    if (context.historyHtml.isEmpty()) {
+        body += QStringLiteral(
+            "<section class=\"history-empty empty-state\"><div class=\"empty-state-icon\" "
+            "aria-hidden=\"true\">&#8634;</div><h2>%1</h2></section>")
+                    .arg(e(t("history.none")));
+    } else {
+        body += QStringLiteral(
+            "<div class=\"history-toolbar\"><a class=\"button danger\" "
+            "href=\"https://granger.local/__action/history/clear\">%1</a></div>"
+            "<div class=\"history-timeline\">%2</div>")
+                    .arg(e(t("history.clear")), context.historyHtml);
+    }
+    QString html = chrome(t("page.history.title"), t("page.history.subtitle"), body);
+    html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
+.history-toolbar{display:flex;justify-content:flex-end;margin:0 0 24px;padding:0 0 18px;border-bottom:1px solid var(--ds-border-subtle)}
+.history-timeline{display:grid;gap:28px}
+.history-group{min-width:0}
+.history-date{margin:0 0 10px;color:var(--ds-text-secondary);font-size:13px;font-weight:650}
+.history-list{overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-lg);background:var(--ds-bg-surface)}
+.history-row{min-width:0;border-bottom:1px solid var(--ds-border-subtle)}
+.history-row:last-child{border-bottom:0}
+.history-link{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:12px;align-items:center;min-height:62px;padding:10px 14px;color:var(--ds-text);text-decoration:none;transition:background-color var(--ds-fast) ease}
+.history-link:hover{background:var(--ds-bg-hover)}
+.history-link:focus-visible{position:relative;z-index:1;outline:2px solid var(--ds-focus);outline-offset:-2px}
+.history-site-icon{display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-accent-soft);color:var(--ds-text-secondary);font-size:13px;font-weight:700;text-transform:uppercase}
+.history-copy{display:grid;gap:2px;min-width:0}
+.history-title{min-width:0;overflow:hidden;color:var(--ds-text);font-size:13px;font-weight:620;text-overflow:ellipsis;white-space:nowrap}
+.history-location{min-width:0;overflow:hidden;color:var(--ds-text-muted);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.history-time{padding-left:12px;color:var(--ds-text-muted);font-size:11px;white-space:nowrap}
+.history-empty{min-height:180px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-lg);background:var(--ds-bg-surface)}
+.history-empty h2{margin:0;font-size:16px}
+@media(max-width:560px){.history-toolbar{justify-content:stretch}.history-toolbar .button{width:100%}.history-link{grid-template-columns:34px minmax(0,1fr);gap:10px;padding:10px 11px}.history-time{grid-column:2;padding:0}.history-site-icon{width:32px;height:32px}}
+@media(prefers-reduced-motion:reduce){.history-link{transition:none!important}}
+</style>)CSS"));
+    return html;
 }
 
 QString InternalPages::siteInfo(const InternalPageContext &context)

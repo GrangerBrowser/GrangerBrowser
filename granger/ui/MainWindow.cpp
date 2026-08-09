@@ -847,6 +847,18 @@ QString nowIso()
     return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
 }
 
+QLocale interfaceLocale()
+{
+    const QString language = Localization::language();
+    if (language == QStringLiteral("ru")) {
+        return QLocale(QLocale::Russian, QLocale::Russia);
+    }
+    if (language == QStringLiteral("kk")) {
+        return QLocale(QLocale::Kazakh, QLocale::Kazakhstan);
+    }
+    return QLocale(QLocale::English, QLocale::UnitedStates);
+}
+
 QString formatBytes(qint64 value)
 {
     if (value < 0) {
@@ -5455,11 +5467,12 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
     }
     if (path == QStringLiteral("/containers/open")) {
         const QString id = query.queryItemValue(QStringLiteral("id"));
-        if (m_containers.container(id).id.isEmpty()) {
+        const SpaceDefinition space = m_containers.space(id);
+        if (space.id.isEmpty()) {
             refreshContainers(Localization::text(
                 QStringLiteral("containers.not_found")));
         } else {
-            openContainerTab(id);
+            openSpaceTab(space.id);
         }
         return;
     }
@@ -6419,7 +6432,8 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
         || path == QStringLiteral("/history/clear")) {
         m_history.clear();
         saveHistory();
-        loadInternalPage(tab, QStringLiteral("about:history"), QString(), QStringLiteral("Browsing history cleared."));
+        loadInternalPage(tab, QStringLiteral("about:history"), QString(),
+                         Localization::text(QStringLiteral("history.cleared")));
         return;
     }
 
@@ -8455,14 +8469,64 @@ void MainWindow::recordHistory(BrowserTab *tab)
 QString MainWindow::historyHtml() const
 {
     QString html;
+    QString openGroup;
+    const QDate today = QDate::currentDate();
+    const QLocale locale = interfaceLocale();
     for (const HistoryItem &item : m_history) {
+        QDateTime visited = QDateTime::fromString(item.visitedAt, Qt::ISODateWithMs);
+        if (!visited.isValid()) visited = QDateTime::fromString(item.visitedAt, Qt::ISODate);
+        if (visited.isValid()) visited = visited.toLocalTime();
+
+        const QDate visitedDate = visited.date();
+        const QString groupKey = visitedDate.isValid()
+            ? visitedDate.toString(Qt::ISODate) : QStringLiteral("unknown");
+        if (groupKey != openGroup) {
+            if (!openGroup.isEmpty()) html += QStringLiteral("</div></section>");
+            openGroup = groupKey;
+            QString groupLabel;
+            if (!visitedDate.isValid()) {
+                groupLabel = Localization::text(QStringLiteral("history.unknown_date"));
+            } else if (visitedDate == today) {
+                groupLabel = Localization::text(QStringLiteral("history.today"));
+            } else if (visitedDate == today.addDays(-1)) {
+                groupLabel = Localization::text(QStringLiteral("history.yesterday"));
+            } else {
+                groupLabel = locale.toString(visitedDate, QLocale::LongFormat);
+            }
+            const QString groupId = QStringLiteral("history-date-%1").arg(groupKey);
+            html += QStringLiteral(
+                "<section class=\"history-group\" aria-labelledby=\"%1\">"
+                "<h2 class=\"history-date\" id=\"%1\">%2</h2>"
+                "<div class=\"history-list\" role=\"list\">")
+                        .arg(groupId.toHtmlEscaped(), groupLabel.toHtmlEscaped());
+        }
+
         QUrlQuery query;
         query.addQueryItem(QStringLiteral("url"), item.url);
-        html += QStringLiteral("<article class=\"history\"><a href=\"%1\"><strong>%2</strong></a><div class=\"url\">%3</div><p>%4</p></article>")
+        const QUrl itemUrl(item.url);
+        QString location = itemUrl.host();
+        if (location.isEmpty()) location = item.url;
+        const QString title = item.title.trimmed().isEmpty() ? item.url : item.title.trimmed();
+        QString monogram = location.trimmed().left(1).toUpper();
+        if (monogram.isEmpty()) monogram = title.left(1).toUpper();
+        const QString timeLabel = visited.isValid()
+            ? locale.toString(visited.time(), QLocale::ShortFormat) : item.visitedAt;
+        const QString accessibleLabel = QStringLiteral("%1, %2, %3")
+                                            .arg(title, location, timeLabel);
+        html += QStringLiteral(
+            "<article class=\"history-row\" role=\"listitem\">"
+            "<a class=\"history-link\" href=\"%1\" aria-label=\"%2\">"
+            "<span class=\"history-site-icon\" aria-hidden=\"true\">%3</span>"
+            "<span class=\"history-copy\"><strong class=\"history-title\">%4</strong>"
+            "<span class=\"history-location\">%5</span></span>"
+            "<time class=\"history-time\" datetime=\"%6\">%7</time>"
+            "</a></article>")
                     .arg(actionUrl(QStringLiteral("history/open"), query),
-                         (item.title.isEmpty() ? item.url : item.title).toHtmlEscaped(),
-                         item.url.toHtmlEscaped(), item.visitedAt.toHtmlEscaped());
+                         accessibleLabel.toHtmlEscaped(), monogram.toHtmlEscaped(),
+                         title.toHtmlEscaped(), location.toHtmlEscaped(),
+                         item.visitedAt.toHtmlEscaped(), timeLabel.toHtmlEscaped());
     }
+    if (!openGroup.isEmpty()) html += QStringLiteral("</div></section>");
     return html;
 }
 
@@ -10024,17 +10088,7 @@ syncOrder();
 
 QString MainWindow::containersSettingsHtml() const
 {
-    const QVector<ContainerDefinition> containers = m_containers.containers();
-    if (containers.isEmpty()) {
-        return QStringLiteral(
-            "<section class=\"empty-state\"><div class=\"empty-state-icon\">+</div>"
-            "<h3>%1</h3><p>%2</p>"
-            "<a class=\"button primary\" href=\"https://granger.local/__action/containers/show-create\">%3</a>"
-            "</section>")
-            .arg(Localization::text(QStringLiteral("containers.empty")).toHtmlEscaped(),
-                 Localization::text(QStringLiteral("containers.empty_description")).toHtmlEscaped(),
-                 Localization::text(QStringLiteral("containers.create_first")).toHtmlEscaped());
-    }
+    const QVector<SpaceDefinition> spaces = m_containers.spaces();
     const QVector<ContainerSiteRule> rules = m_containers.siteRules();
     const auto actionIcon = [this](const QString &resource) {
         return embeddedImageDataUrl(resource, QByteArrayLiteral("image/svg+xml")).toHtmlEscaped();
@@ -10044,81 +10098,115 @@ QString MainWindow::containersSettingsHtml() const
     const QString rulesIcon = actionIcon(QStringLiteral(":/icons/site-controls.svg"));
     const QString clearIcon = actionIcon(QStringLiteral(":/icons/refresh.svg"));
     const QString deleteIcon = actionIcon(QStringLiteral(":/icons/close.svg"));
+    const auto menuItem = [](const QString &href, const QString &icon,
+                             const QString &label, const QString &className = QString()) {
+        const QString classAttribute = className.isEmpty()
+            ? QString() : QStringLiteral(" class=\"%1\"").arg(className.toHtmlEscaped());
+        return QStringLiteral(
+            "<a%1 role=\"menuitem\" href=\"%2\"><img src=\"%3\" alt=\"\" "
+            "aria-hidden=\"true\"><span>%4</span></a>")
+                .arg(classAttribute, href.toHtmlEscaped(), icon, label.toHtmlEscaped());
+    };
     QString html = QStringLiteral("<div class=\"container-list\" role=\"list\">");
-    for (const ContainerDefinition &container : containers) {
-        const QString id = container.id.toHtmlEscaped();
-        const bool active = m_tabs && m_tabs->activeSpaceId() == container.id;
+    for (const SpaceDefinition &space : spaces) {
+        const bool isDefault = space.id == ContainerManager::defaultSpaceId();
+        const bool active = m_tabs && m_tabs->activeSpaceId() == space.id;
+        const QString displayName = isDefault
+            ? Localization::text(QStringLiteral("spaces.default"))
+            : containerDisplayName(space);
         const QString visual = QStringLiteral(
             "<span class=\"container-visual\"><img src=\"%1\" alt=\"\">"
             "<span class=\"container-swatch\" style=\"background:%2\"></span></span>")
                                    .arg(embeddedImageDataUrl(
-                                            containerIconResource(container.icon),
+                                            containerIconResource(space.icon),
                                             QByteArrayLiteral("image/svg+xml")).toHtmlEscaped(),
-                                        container.color.toHtmlEscaped());
+                                        space.color.toHtmlEscaped());
         int openTabs = 0;
         if (m_tabs) {
             for (QWidget *page : m_tabs->pages()) {
-                const auto *openTab = qobject_cast<BrowserTab *>(page);
-                if (openTab && openTab->containerId() == container.id) ++openTabs;
+                if (m_tabs->tabSpace(page) == space.id) ++openTabs;
             }
         }
         int ruleCount = 0;
         for (const ContainerSiteRule &rule : rules) {
-            if (rule.containerId == container.id) ++ruleCount;
+            if (!isDefault && rule.containerId == space.id) ++ruleCount;
         }
-        const QString description = container.description.trimmed().isEmpty()
-            ? Localization::text(QStringLiteral("containers.no_description"))
-            : container.description.trimmed();
+        const QString description = isDefault
+            ? Localization::text(QStringLiteral("spaces.default_description"))
+            : (space.description.trimmed().isEmpty()
+                   ? Localization::text(QStringLiteral("containers.no_description"))
+                   : space.description.trimmed());
         const QString openTabsText = containerTabBadge(openTabs);
         const QString ruleCountText = containerRuleBadge(ruleCount);
-        const QString persistenceText = Localization::text(container.temporary
+        const QString persistenceText = Localization::text(space.temporary
             ? QStringLiteral("containers.temporary")
             : QStringLiteral("containers.persistent"));
-        const QString actionImage =
-            QStringLiteral("<img src=\"%1\" alt=\"\" aria-hidden=\"true\">");
+        QString stateBadges;
+        if (isDefault) {
+            stateBadges += QStringLiteral("<span class=\"space-state default\">%1</span>")
+                               .arg(Localization::text(
+                                    QStringLiteral("containers.primary")).toHtmlEscaped());
+        }
+        if (active) {
+            stateBadges += QStringLiteral("<span class=\"space-state active\">%1</span>")
+                               .arg(Localization::text(
+                                    QStringLiteral("spaces.active")).toHtmlEscaped());
+        }
+
+        QUrlQuery openQuery;
+        openQuery.addQueryItem(QStringLiteral("id"), space.id);
+        QString menu = menuItem(actionUrl(QStringLiteral("containers/open"), openQuery),
+                                openIcon,
+                                Localization::text(QStringLiteral("containers.open_tab")));
+        if (!isDefault) {
+            QUrlQuery editQuery;
+            editQuery.addQueryItem(QStringLiteral("id"), space.id);
+            menu += menuItem(actionUrl(QStringLiteral("containers/show-edit"), editQuery),
+                             editIcon,
+                             Localization::text(QStringLiteral("containers.edit")));
+            menu += QStringLiteral(
+                        "<a role=\"menuitem\" data-open-details=\"container-site-assignments\" "
+                        "href=\"#container-site-assignments\"><img src=\"%1\" alt=\"\" "
+                        "aria-hidden=\"true\"><span>%2</span></a>")
+                        .arg(rulesIcon,
+                             Localization::text(
+                                 QStringLiteral("containers.site_assignments")).toHtmlEscaped());
+            menu += QStringLiteral("<span class=\"menu-separator\" role=\"separator\"></span>");
+            QUrlQuery clearQuery;
+            clearQuery.addQueryItem(QStringLiteral("id"), space.id);
+            menu += menuItem(actionUrl(QStringLiteral("containers/clear"), clearQuery),
+                             clearIcon,
+                             Localization::text(QStringLiteral("containers.clear_data")),
+                             QStringLiteral("destructive"));
+            QUrlQuery deleteQuery;
+            deleteQuery.addQueryItem(QStringLiteral("id"), space.id);
+            menu += menuItem(actionUrl(QStringLiteral("containers/delete"), deleteQuery),
+                             deleteIcon,
+                             Localization::text(QStringLiteral("common.delete")),
+                             QStringLiteral("destructive danger-final"));
+        }
+
+        QString rowClass = QStringLiteral("container-row");
+        if (isDefault) rowClass += QStringLiteral(" default");
+        if (active) rowClass += QStringLiteral(" active");
         html += QStringLiteral(
-            "<article class=\"container-row%1\" role=\"listitem\" style=\"--space-accent:%2\"%3>"
-            "%4<div class=\"container-copy\"><div class=\"container-title-line\"><strong>%5</strong>"
-            "</div><p>%6</p><div class=\"container-badges\"><span>%7</span><span>%8</span>"
-            "<span class=\"persistence\">%9</span></div></div>"
-            "<details class=\"container-menu\"><summary aria-label=\"%10\" title=\"%10\">&#8230;</summary>"
-            "<div class=\"container-menu-popover\" role=\"menu\">"
-            "<a role=\"menuitem\" href=\"https://granger.local/__action/containers/open?id=%11\">%12<span>%13</span></a>"
-            "<a role=\"menuitem\" href=\"https://granger.local/__action/containers/show-edit?id=%11&amp;focus=name\">%14<span>%15</span></a>"
-            "<a role=\"menuitem\" href=\"https://granger.local/__action/containers/show-edit?id=%11&amp;focus=icon\">%16<span>%17</span></a>"
-            "<a role=\"menuitem\" href=\"https://granger.local/__action/containers/show-edit?id=%11&amp;focus=color\">%18<span>%19</span></a>"
-            "<a role=\"menuitem\" data-open-details=\"container-site-assignments\" href=\"#container-site-assignments\">%20<span>%21</span></a>"
-            "<span class=\"menu-separator\" role=\"separator\"></span>"
-            "<a role=\"menuitem\" href=\"https://granger.local/__action/containers/clear?id=%11\">%22<span>%23</span></a>"
-            "<a class=\"destructive\" role=\"menuitem\" href=\"https://granger.local/__action/containers/delete?id=%11\">%24<span>%25</span></a>"
-            "</div></details></article>")
-                    .arg(active ? QStringLiteral(" active") : QString(),
-                         container.color.toHtmlEscaped(),
+            "<article class=\"%1\" role=\"listitem\" data-space-kind=\"%2\" "
+            "data-space-id=\"%3\" style=\"--space-accent:%4\"%5>"
+            "%6<div class=\"container-copy\"><div class=\"container-title-line\">"
+            "<strong>%7</strong>%8</div><p>%9</p><div class=\"container-badges\">"
+            "<span>%10</span><span>%11</span><span class=\"persistence\">%12</span>"
+            "</div></div><details class=\"container-menu\"><summary aria-label=\"%13\" "
+            "title=\"%13\">&#8230;</summary><div class=\"container-menu-popover\" "
+            "role=\"menu\">%14</div></details></article>")
+                    .arg(rowClass,
+                         isDefault ? QStringLiteral("default") : QStringLiteral("custom"),
+                         space.id.toHtmlEscaped(), space.color.toHtmlEscaped(),
                          active ? QStringLiteral(" aria-current=\"true\"") : QString(),
-                         visual,
-                         containerDisplayName(container).toHtmlEscaped(),
-                         description.toHtmlEscaped(),
-                         openTabsText.toHtmlEscaped(),
-                         ruleCountText.toHtmlEscaped(),
-                         persistenceText.toHtmlEscaped(),
+                         visual, displayName.toHtmlEscaped(), stateBadges,
+                         description.toHtmlEscaped(), openTabsText.toHtmlEscaped(),
+                         ruleCountText.toHtmlEscaped(), persistenceText.toHtmlEscaped(),
                          Localization::text(QStringLiteral("containers.actions")).toHtmlEscaped(),
-                         id,
-                         actionImage.arg(openIcon),
-                         Localization::text(QStringLiteral("containers.open_tab")).toHtmlEscaped(),
-                         actionImage.arg(editIcon),
-                         Localization::text(QStringLiteral("containers.rename")).toHtmlEscaped(),
-                         actionImage.arg(embeddedImageDataUrl(
-                             containerIconResource(container.icon),
-                             QByteArrayLiteral("image/svg+xml")).toHtmlEscaped()),
-                         Localization::text(QStringLiteral("containers.change_icon")).toHtmlEscaped(),
-                         actionImage.arg(editIcon),
-                         Localization::text(QStringLiteral("containers.change_color")).toHtmlEscaped(),
-                         actionImage.arg(rulesIcon),
-                         Localization::text(QStringLiteral("containers.site_assignments")).toHtmlEscaped(),
-                         actionImage.arg(clearIcon),
-                         Localization::text(QStringLiteral("containers.clear_data")).toHtmlEscaped(),
-                         actionImage.arg(deleteIcon),
-                         Localization::text(QStringLiteral("common.delete")).toHtmlEscaped());
+                         menu);
     }
     return html + QStringLiteral("</div>");
 }
