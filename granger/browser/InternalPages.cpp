@@ -175,6 +175,108 @@ summary:focus-visible{outline:2px solid var(--ds-focus);outline-offset:3px;borde
 .empty-state{justify-items:center;padding:46px 24px;text-align:center;border-color:var(--ds-border-subtle)}
 .empty-state-icon{border-radius:var(--ds-radius-md);background:var(--ds-accent-soft)}
 pre{border-color:var(--ds-border);border-radius:var(--ds-radius-md);background:var(--ds-bg-surface)}
+.ds-page-stack{display:grid;gap:20px;min-width:0}
+.ds-card,
+.privacy-page>.section,.site-info-page>.section,.reports-page>.section,.reports-page>form,
+.bookmark-page>.hero{
+min-width:0;margin:0;overflow:hidden;border:1px solid var(--ds-border-subtle);
+border-radius:var(--ds-radius-lg);background:var(--ds-bg-surface)
+}
+.ds-card--compact{border-radius:var(--ds-radius-md)}
+.ds-card--elevated{border-color:var(--ds-border);background:var(--ds-bg-elevated);box-shadow:var(--ds-shadow-popup)}
+.ds-selectable-row{
+transition:background-color var(--ds-fast) ease,border-color var(--ds-fast) ease,color var(--ds-fast) ease
+}
+.ds-selectable-row:hover{background:var(--ds-bg-hover)}
+.ds-selectable-row:focus-within{position:relative;z-index:1;box-shadow:inset 0 0 0 2px var(--ds-focus)}
+.ds-card-header,
+.privacy-page>.section>h2,.site-info-page>.section>h2,
+.reports-page>.section>h3,.reports-page>.section>.section-heading{
+margin:0;padding:15px 17px;border-bottom:1px solid var(--ds-border-subtle)
+}
+.ds-card-header h2,.ds-card-header h3,
+.privacy-page>.section>h2,.site-info-page>.section>h2,.reports-page>.section>h3{margin:0;font-size:16px}
+.ds-card-body{min-width:0;padding:17px}
+.ds-card-footer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 17px;border-top:1px solid var(--ds-border-subtle);background:rgba(255,255,255,.012)}
+.ds-action-bar{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap;min-width:0}
+.ds-card-list{display:grid;gap:10px;min-width:0}
+.ds-info-card{overflow:hidden}
+.ds-info-card>.info-list,
+.privacy-page>.section>.info-list,.site-info-page>.section>.info-list,
+.reports-page>.section>.info-list,.analysis-page .report-section>.info-list{
+margin:0;border:0;background:transparent
+}
+.ds-info-card .info-row,
+.privacy-page>.section>.info-list .info-row,.site-info-page>.section>.info-list .info-row,
+.reports-page>.section>.info-list .info-row,.analysis-page .report-section>.info-list .info-row{
+padding-left:17px;padding-right:17px
+}
+.ds-info-card .info-row:first-child,
+.privacy-page>.section>.info-list .info-row:first-child,.site-info-page>.section>.info-list .info-row:first-child,
+.reports-page>.section>.info-list .info-row:first-child,.analysis-page .report-section>.info-list .info-row:first-child{border-top:0}
+.ds-info-card .info-row:last-child,
+.privacy-page>.section>.info-list .info-row:last-child,.site-info-page>.section>.info-list .info-row:last-child,
+.reports-page>.section>.info-list .info-row:last-child,.analysis-page .report-section>.info-list .info-row:last-child{border-bottom:0}
+.ds-empty-card{display:grid;justify-items:center;gap:7px;min-height:150px;padding:38px 24px;text-align:center}
+.ds-empty-card p{max-width:560px;margin:0}
+.ds-disclosure-card{padding:0}
+.ds-disclosure-card>summary{min-height:48px;padding:13px 44px 13px 17px}
+.ds-disclosure-card>summary::after{right:19px;top:18px}
+.ds-disclosure-card[open]>summary{border-bottom:1px solid var(--ds-border-subtle)}
+.ds-disclosure-card[open]>summary::after{top:21px}
+.ds-disclosure-card>pre,.ds-disclosure-card>.info-list{margin:16px;border:0;background:var(--ds-bg-control)}
+.ds-disclosure-card>.info-list{overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md)}
+.status-page .ds-action-bar{justify-content:flex-start}
+.bridge-page .bridge-add-form .row{align-items:stretch}
+.bridge-page .bridge-add-form input{flex:1 1 440px;min-width:180px}
+.bridge-page .bridge-saved{margin:4px 0 0}
+.bridge-page .bridge-saved>h2{margin:0 0 12px;font-size:17px}
+.bridge-page .result,.downloads-page .result,.results-page>.result{
+min-width:0;margin:0;padding:16px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);
+background:var(--ds-bg-surface)
+}
+.bridge-page .result:hover,.downloads-page .result:hover,.results-page>.result:hover{border-color:var(--ds-border);background:var(--ds-bg-hover)}
+.bridge-page .result>strong,.downloads-page .result>strong{display:block;font-size:14px;font-weight:650}
+.bridge-page .result pre{margin:13px 0 0}
+.downloads-page .download-progress{margin:13px 0 0;background:var(--ds-bg-control)}
+.bookmark-page>.hero{padding:17px}
+.bookmark-page>.hero>h2{margin:-17px -17px 16px;padding:15px 17px;border-bottom:1px solid var(--ds-border-subtle);font-size:16px}
+.bookmark-page .row{align-items:stretch}
+.bookmark-page .row input{flex:1 1 180px;min-width:160px}
+.bookmark-page #bookmark-list{margin:0 -17px;border-top:1px solid var(--ds-border-subtle);border-bottom:1px solid var(--ds-border-subtle)}
+.bookmark-page #bookmark-list:empty{display:none}
+.bookmark-page .bookmark-row{
+margin:0;padding:14px 17px;border:0;border-bottom:1px solid var(--ds-border-subtle);border-radius:0;background:transparent
+}
+.bookmark-page .bookmark-row:last-child{border-bottom:0}
+.bookmark-page .bookmark-row:hover{background:var(--ds-bg-hover)}
+.bookmark-page .bookmark-row[draggable=true]{cursor:grab}
+.bookmark-page .bookmark-row[draggable=true]:active{cursor:grabbing}
+.bookmark-page #bookmark-list+.row{justify-content:flex-end;margin-top:15px}
+.privacy-page>.section,.site-info-page>.section,.reports-page>.section{margin:0;padding:0}
+.site-info-page>.section>p{margin:0;padding:14px 17px}
+.site-info-page>.section>p+p{padding-top:0}
+.site-info-page>.section>.info-list+.setting-row,.site-info-page>.section>.info-list+.row{border-top:1px solid var(--ds-border-subtle)}
+.reports-page>form{padding:17px}
+.reports-page>form>h3:first-of-type{margin-top:22px}
+.reports-page>.section>.section-heading h3{margin:0}
+.reports-page>.section>.section-heading p{margin:5px 0 0}
+.reports-page>.section>.log-filters{margin:0;padding:16px 17px;border-bottom:1px solid var(--ds-border-subtle)}
+.reports-page>.section>.log-table-wrap{border:0}
+.reports-page>.section>.row{margin:0;padding:14px 17px;border-top:1px solid var(--ds-border-subtle)}
+.reports-page>.section>p.muted{margin:0;padding:0 17px 16px}
+.reports-page>.section>.info-list+.row{border-top:1px solid var(--ds-border-subtle)}
+.reports-page>.section>.info-list+.row+p.muted{padding-top:14px}
+.analysis-page .metric,.analysis-page .dns-record{border-color:var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-surface)}
+.analysis-page .metric{transition:background-color var(--ds-fast) ease,border-color var(--ds-fast) ease}
+.analysis-page .metric:hover{border-color:var(--ds-border);background:var(--ds-bg-hover)}
+.analysis-page .report-section>.info-list,
+.analysis-page .evidence-list,.analysis-page .redirect-list,.analysis-page .finding-list{
+overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-lg);background:var(--ds-bg-surface)
+}
+.analysis-page .evidence-item,.analysis-page .redirect-list li,.analysis-page .finding{padding-left:16px;padding-right:16px}
+.analysis-page .evidence-item:last-child,.analysis-page .redirect-list li:last-child,.analysis-page .finding:last-child{border-bottom:0}
+.analysis-page .context-strip span{border-color:var(--ds-border-subtle);border-radius:var(--ds-radius-sm);background:var(--ds-bg-control)}
 ::-webkit-scrollbar{width:var(--ds-scrollbar-size);height:var(--ds-scrollbar-size)}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{min-height:34px;border:var(--ds-scrollbar-inset) solid transparent;border-radius:999px;background:var(--ds-scrollbar-thumb);background-clip:padding-box;transition:background-color var(--ds-fast) ease}
@@ -182,9 +284,9 @@ pre{border-color:var(--ds-border);border-radius:var(--ds-radius-md);background:v
 ::-webkit-scrollbar-thumb:active,html[data-scroll-active=true]::-webkit-scrollbar-thumb,html[data-scroll-active=true] *::-webkit-scrollbar-thumb{background:var(--ds-scrollbar-active);background-clip:padding-box}
 ::-webkit-scrollbar-button{display:none;width:0;height:0}
 ::-webkit-scrollbar-corner{background:transparent}
-@media(max-width:760px){main{padding:26px 20px 56px}main>header h1{font-size:28px}}
+@media(max-width:760px){main{padding:26px 20px 56px}main>header h1{font-size:28px}.ds-page-stack{gap:16px}.ds-card-footer{align-items:stretch;flex-direction:column}.ds-card-footer .button,.ds-card-footer button{width:100%}.reports-page>form{padding:15px}.bookmark-page>.hero{padding:15px}.bookmark-page>.hero>h2{margin:-15px -15px 14px;padding:14px 15px}.bookmark-page #bookmark-list{margin-left:-15px;margin-right:-15px}.bookmark-page .bookmark-row{padding-left:15px;padding-right:15px}}
 @media(prefers-reduced-motion:reduce){
-button,.button,input,select,textarea,input[type=checkbox],input[type=checkbox]::before,summary::after,::-webkit-scrollbar-thumb{transition:none!important}
+button,.button,input,select,textarea,input[type=checkbox],input[type=checkbox]::before,summary::after,::-webkit-scrollbar-thumb,.ds-selectable-row,.analysis-page .metric{transition:none!important}
 }
 </style>)CSS"));
     html.replace(QStringLiteral("</body>"), QStringLiteral(R"HTML(
@@ -858,9 +960,12 @@ QString InternalPages::privacy(const InternalPageContext &context)
 {
     if (!context.privacyDiagnosticsHtml.isEmpty()) {
         return chrome(t("page.privacy.title"), t("page.privacy.subtitle"),
-                      messageBlock(context.message) + context.privacyDiagnosticsHtml);
+                      messageBlock(context.message)
+                          + QStringLiteral("<div class=\"privacy-page ds-page-stack\">%1</div>")
+                                .arg(context.privacyDiagnosticsHtml));
     }
-    const QString body = messageBlock(context.message) + QStringLiteral("<section class=\"info-list\">%1%2%3%4%5%6</section>")
+    const QString body = messageBlock(context.message)
+        + QStringLiteral("<div class=\"status-page ds-page-stack\"><section class=\"ds-card ds-info-card\"><div class=\"info-list\">%1%2%3%4%5%6</div></section></div>")
         .arg(infoRow(t("label.network_mode"), s(context.networkMode)), infoRow(t("label.current_route"), s(context.currentRoute)),
              infoRow(t("label.outbound_ip"), context.currentIp), infoRow(t("label.proxy"), s(context.proxyState)),
              infoRow(t("label.tor"), s(context.torState)), infoRow(t("label.bridge"), s(context.bridgeState)));
@@ -870,7 +975,7 @@ QString InternalPages::privacy(const InternalPageContext &context)
 QString InternalPages::tor(const InternalPageContext &context)
 {
     const QString body = messageBlock(context.message)
-        + QStringLiteral("<section class=\"info-list\">%1%2%3%4%5</section><p><a class=\"button primary\" href=\"https://granger.local/__action/settings/category?id=connection\">%6</a> <a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:bridges\">%7</a></p>")
+        + QStringLiteral("<div class=\"status-page ds-page-stack\"><section class=\"ds-card ds-info-card\"><div class=\"info-list\">%1%2%3%4%5</div></section><div class=\"ds-action-bar\"><a class=\"button primary\" href=\"https://granger.local/__action/settings/category?id=connection\">%6</a><a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:bridges\">%7</a></div></div>")
               .arg(infoRow(t("label.mode"), s(context.networkMode)), infoRow(t("label.route"), s(context.currentRoute)),
                    infoRow(t("label.tor"), s(context.torState)), infoRow(t("label.bridge"), s(context.bridgeState)),
                    infoRow(t("label.outbound_ip"), context.currentIp), e(t("tor.configure_connection")), e(t("tor.manage_bridges")));
@@ -880,14 +985,18 @@ QString InternalPages::tor(const InternalPageContext &context)
 QString InternalPages::bridges(const InternalPageContext &context)
 {
     QString body = messageBlock(context.message)
-        + QStringLiteral("<section class=\"section\"><h2>%1</h2><div class=\"info-list\">%2%3%4</div></section>")
+        + QStringLiteral("<div class=\"bridge-page ds-page-stack\"><section class=\"ds-card ds-info-card\"><div class=\"ds-card-header\"><h2>%1</h2></div><div class=\"info-list\">%2%3%4</div></section>")
               .arg(e(t("label.status")), infoRow(t("label.bridge"), s(context.bridgeState)), infoRow(t("label.bootstrap"), s(context.bridgeBootstrap)),
                    infoRow(t("label.tor_executable"), context.torExecutable.isEmpty() ? t("status.not_detected") : context.torExecutable));
-    body += QStringLiteral("<section class=\"section\"><h2>%1</h2><form action=\"https://granger.local/__action/bridges/save\" method=\"get\"><div class=\"row\"><input type=\"text\" name=\"line\" placeholder=\"%2\"><button type=\"submit\">%3</button><a class=\"button secondary\" href=\"https://granger.local/__action/bridges/import-qr\">%4</a><a class=\"button primary\" href=\"https://granger.local/__action/bridges/apply\">%5</a></div></form></section>")
+    body += QStringLiteral("<section class=\"ds-card\"><div class=\"ds-card-header\"><h2>%1</h2></div><div class=\"ds-card-body\"><form class=\"bridge-add-form\" action=\"https://granger.local/__action/bridges/save\" method=\"get\"><div class=\"row\"><input type=\"text\" name=\"line\" placeholder=\"%2\"><button type=\"submit\">%3</button><a class=\"button secondary\" href=\"https://granger.local/__action/bridges/import-qr\">%4</a><a class=\"button primary\" href=\"https://granger.local/__action/bridges/apply\">%5</a></div></form></div></section>")
                 .arg(e(t("bridges.add")), e(t("bridges.paste_line")), e(t("common.save")), e(t("bridges.import_qr")), e(t("common.apply")));
-    body += QStringLiteral("<section class=\"section\"><h2>%1</h2>%2</section>").arg(e(t("bridges.saved")), context.bridgeProfilesHtml.isEmpty() ? QStringLiteral("<p>%1</p>").arg(e(t("bridges.none_saved"))) : context.bridgeProfilesHtml);
-    if (!context.bridgeError.isEmpty()) body += QStringLiteral("<details open><summary>%1</summary><pre>%2</pre></details>").arg(e(t("bridges.failure_reason")), e(context.bridgeError));
-    if (!context.bridgeTorrcSnippet.isEmpty()) body += QStringLiteral("<details><summary>%1</summary><pre>%2</pre></details>").arg(e(t("bridges.generated_torrc")), e(context.bridgeTorrcSnippet));
+    body += QStringLiteral("<section class=\"bridge-saved\"><h2>%1</h2><div class=\"ds-card-list\">%2</div></section>")
+                .arg(e(t("bridges.saved")), context.bridgeProfilesHtml.isEmpty()
+                    ? QStringLiteral("<div class=\"ds-card ds-empty-card\"><p>%1</p></div>").arg(e(t("bridges.none_saved")))
+                    : context.bridgeProfilesHtml);
+    if (!context.bridgeError.isEmpty()) body += QStringLiteral("<details class=\"ds-card ds-card--elevated ds-disclosure-card\" open><summary>%1</summary><pre>%2</pre></details>").arg(e(t("bridges.failure_reason")), e(context.bridgeError));
+    if (!context.bridgeTorrcSnippet.isEmpty()) body += QStringLiteral("<details class=\"ds-card ds-disclosure-card\"><summary>%1</summary><pre>%2</pre></details>").arg(e(t("bridges.generated_torrc")), e(context.bridgeTorrcSnippet));
+    body += QStringLiteral("</div>");
     return chrome(t("page.bridges.title"), t("page.bridges.subtitle"), body);
 }
 
@@ -1314,23 +1423,30 @@ QString InternalPages::settings(const InternalPageContext &context)
 
 QString InternalPages::network(const InternalPageContext &context)
 {
-    return chrome(t("page.network.title"), t("page.network.subtitle"), QStringLiteral("<div class=\"info-list\">%1%2%3</div>").arg(infoRow(t("label.proxy"), s(context.proxyState)), infoRow(t("label.route"), s(context.currentRoute)), infoRow(t("label.state"), s(context.routeState))));
+    return chrome(t("page.network.title"), t("page.network.subtitle"), QStringLiteral("<div class=\"status-page ds-page-stack\"><section class=\"ds-card ds-info-card\"><div class=\"info-list\">%1%2%3</div></section></div>").arg(infoRow(t("label.proxy"), s(context.proxyState)), infoRow(t("label.route"), s(context.currentRoute)), infoRow(t("label.state"), s(context.routeState))));
 }
 
 QString InternalPages::reports(const InternalPageContext &context)
 {
-    const QString legacy = QStringLiteral("<details><summary>%1</summary><div class=\"info-list\">%2%3%4</div></details>")
+    const QString legacy = QStringLiteral("<details class=\"ds-card ds-disclosure-card\"><summary>%1</summary><div class=\"info-list\">%2%3%4</div></details>")
         .arg(e(t("reports.search_artifacts")),
              infoRow(t("label.module"), context.searchImplementation),
              infoRow(t("label.results"), context.resultsPath),
              infoRow(t("label.report"), context.reportPath));
     return chrome(t("page.reports.title"), t("page.reports.subtitle"),
-                  messageBlock(context.message) + context.reportsLogsHtml + legacy);
+                  messageBlock(context.message)
+                      + QStringLiteral("<div class=\"reports-page ds-page-stack\">%1%2</div>")
+                            .arg(context.reportsLogsHtml, legacy));
 }
 
 QString InternalPages::downloads(const InternalPageContext &context)
 {
-    const QString body = messageBlock(context.message) + QStringLiteral("<div class=\"row\"><a class=\"button secondary\" href=\"https://granger.local/__action/downloads/clear\">%1</a></div><section>%2</section>").arg(e(t("downloads.clear_completed")), context.downloadsHtml.isEmpty() ? QStringLiteral("<p>%1</p>").arg(e(t("downloads.none"))) : context.downloadsHtml);
+    const QString items = context.downloadsHtml.isEmpty()
+        ? QStringLiteral("<div class=\"ds-card ds-empty-card\"><p>%1</p></div>").arg(e(t("downloads.none")))
+        : context.downloadsHtml;
+    const QString body = messageBlock(context.message)
+        + QStringLiteral("<div class=\"downloads-page ds-page-stack\"><div class=\"ds-action-bar\"><a class=\"button secondary\" href=\"https://granger.local/__action/downloads/clear\">%1</a></div><section class=\"ds-card-list\">%2</section></div>")
+              .arg(e(t("downloads.clear_completed")), items);
     return chrome(t("page.downloads.title"), t("page.downloads.subtitle"), body);
 }
 
@@ -1362,8 +1478,11 @@ QString InternalPages::cookies(const InternalPageContext &context)
 
 QString InternalPages::bookmarks(const InternalPageContext &context)
 {
-    const QString body = messageBlock(context.message) + QStringLiteral("<div class=\"row\"><a class=\"button primary\" href=\"https://granger.local/__action/bookmarks/add-current\">%1</a><a class=\"button secondary\" href=\"https://granger.local/__action/bookmarks/import\">%2</a><a class=\"button secondary\" href=\"https://granger.local/__action/bookmarks/export\">%3</a></div><section>%4</section>")
-        .arg(e(t("bookmarks.add_current")), e(t("common.import")), e(t("common.export")), context.bookmarksHtml.isEmpty() ? QStringLiteral("<p>%1</p>").arg(e(t("bookmarks.none"))) : context.bookmarksHtml);
+    const QString content = context.bookmarksHtml.isEmpty()
+        ? QStringLiteral("<div class=\"ds-card ds-empty-card\"><p>%1</p></div>").arg(e(t("bookmarks.none")))
+        : context.bookmarksHtml;
+    const QString body = messageBlock(context.message)
+        + QStringLiteral("<div class=\"bookmark-page ds-page-stack\">%1</div>").arg(content);
     return chrome(t("page.bookmarks.title"), t("page.bookmarks.subtitle"), body);
 }
 
@@ -1409,23 +1528,34 @@ QString InternalPages::history(const InternalPageContext &context)
 
 QString InternalPages::siteInfo(const InternalPageContext &context)
 {
-    return chrome(t("page.site_info.title"), t("page.site_info.subtitle"), context.siteInfoHtml);
+    return chrome(t("page.site_info.title"), t("page.site_info.subtitle"),
+                  QStringLiteral("<div class=\"site-info-page ds-page-stack\">%1</div>")
+                      .arg(context.siteInfoHtml));
 }
 
 QString InternalPages::siteAnalysis(const InternalPageContext &context)
 {
     return chrome(t("pamp.title"), t("pamp.subtitle"),
-                  messageBlock(context.message) + context.pampReportHtml);
+                  messageBlock(context.message)
+                      + QStringLiteral("<div class=\"analysis-page\">%1</div>")
+                            .arg(context.pampReportHtml));
 }
 
 QString InternalPages::searchResults(const InternalPageContext &context)
 {
-    return chrome(t("page.search_results.title"), context.resultsQuery, messageBlock(context.message) + (context.resultsHtml.isEmpty() ? QStringLiteral("<p>%1</p>").arg(e(t("search.none"))) : context.resultsHtml));
+    const QString results = context.resultsHtml.isEmpty()
+        ? QStringLiteral("<div class=\"ds-card ds-empty-card\"><p>%1</p></div>").arg(e(t("search.none")))
+        : context.resultsHtml;
+    return chrome(t("page.search_results.title"), context.resultsQuery,
+                  messageBlock(context.message)
+                      + QStringLiteral("<section class=\"results-page ds-card-list\">%1</section>")
+                            .arg(results));
 }
 
 QString InternalPages::simple(const QString &title, const QString &subtitle, const QString &body)
 {
-    return chrome(title, subtitle, body);
+    return chrome(title, subtitle,
+                  QStringLiteral("<div class=\"simple-page ds-page-stack\">%1</div>").arg(body));
 }
 
 }

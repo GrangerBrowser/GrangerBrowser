@@ -813,7 +813,7 @@ QString htmlResult(const QJsonObject &result)
     copyQuery.addQueryItem(QStringLiteral("value"), displayUrl);
     copyAction.setQuery(copyQuery);
     return QStringLiteral(R"HTML(
-<article class="result">
+<article class="result ds-card ds-card--compact">
 <a href="%1">%2</a>
 <div class="url">%1</div>
 <p>%3</p>
@@ -7876,7 +7876,7 @@ QString MainWindow::bridgeProfilesHtml() const
     QString html;
     for (const BridgeProfile &profile : m_bridges.profiles()) {
         html += QStringLiteral(R"HTML(
-<article class="result">
+<article class="result ds-card ds-card--compact">
 <strong>%1</strong>
 <div class="url">%2:%3</div>
 <p>%10: %4<br>%11: %5<br>%12: %6<br>%13: %7<br>%14: %8</p>
@@ -9796,7 +9796,7 @@ QString MainWindow::downloadsHtml() const
         const QString mime = item.mimeType.trimmed().isEmpty() ? Localization::text(QStringLiteral("common.unavailable")) : item.mimeType;
 
         html += QStringLiteral(R"HTML(
-<article class="result">
+<article class="result ds-card ds-card--compact">
 <strong>%1</strong>
 <div class="url">%2</div>
 <p class="mono">%14: %3<br>%15: %2<br>%16: %4<br>%17: %5<br>%18: %6 / %7<br>%19: %8<br>%20: %9<br>%21: %10</p>
@@ -10033,7 +10033,7 @@ QString MainWindow::bookmarksHtml(const QString &filter, const QString &editId) 
         downQuery.addQueryItem(QStringLiteral("id"), item.id);
         downQuery.addQueryItem(QStringLiteral("direction"), QStringLiteral("down"));
         html += QStringLiteral(R"HTML(
-<article class="result bookmark-row" draggable="true" data-id="%1">
+<article class="result bookmark-row ds-selectable-row" draggable="true" data-id="%1">
 <strong>%2</strong>
 <div class="url">%3</div>
 <p class="mono">%11: %4<br>%12: %5</p>
