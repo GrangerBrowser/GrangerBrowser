@@ -2652,6 +2652,219 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     results.record(QStringLiteral("Language restored after Reports and logs coverage"),
                    reportsEnglishRestored);
 
+    QUrl bookmarkFixtureAction(QStringLiteral(
+        "https://granger.local/__action/bookmarks/save"));
+    QUrlQuery bookmarkFixtureQuery;
+    bookmarkFixtureQuery.addQueryItem(QStringLiteral("title"),
+                                      QStringLiteral("UI geometry fixture"));
+    bookmarkFixtureQuery.addQueryItem(QStringLiteral("url"),
+                                      QStringLiteral("https://ui-geometry.invalid/path"));
+    bookmarkFixtureQuery.addQueryItem(QStringLiteral("folder"),
+                                      QStringLiteral("Smoke tests"));
+    bookmarkFixtureAction.setQuery(bookmarkFixtureQuery);
+    window->openAddressForDiagnostics(
+        bookmarkFixtureAction.toString(QUrl::FullyEncoded));
+    const bool bookmarkFixtureReady = waitFor([&] {
+        BrowserTab *bookmarkTab = window->currentTabForDiagnostics();
+        return bookmarkTab && !bookmarkTab->isLoading()
+            && window->currentAddressForDiagnostics().startsWith(
+                QStringLiteral("about:bookmarks"), Qt::CaseInsensitive)
+            && evaluate(bookmarkTab->page(), QStringLiteral(
+                   "!!document.querySelector('.bookmark-row.ds-selectable-row')"),
+                        QWebEngineScript::MainWorld, 1000).toBool();
+    }, 6000);
+
+    struct InternalSurfaceSpec final {
+        QString id;
+        QString address;
+        QString rootSelector;
+        int minimumSurfaces = 0;
+        int minimumActions = 0;
+        bool requiresSelectableRow = false;
+    };
+    const QVector<InternalSurfaceSpec> internalSurfaceSpecs{
+        {QStringLiteral("privacy"), QStringLiteral("about:privacy"),
+         QStringLiteral(".privacy-page"), 3, 0, false},
+        {QStringLiteral("bridges"), QStringLiteral("about:bridges"),
+         QStringLiteral(".bridge-page"), 3, 3, false},
+        {QStringLiteral("bookmarks"), QStringLiteral("about:bookmarks"),
+         QStringLiteral(".bookmark-page"), 4, 7, true},
+        {QStringLiteral("reports"), QStringLiteral("about:reports"),
+         QStringLiteral(".reports-page"), 2, 3, false}
+    };
+    const auto inspectInternalSurface = [&](const InternalSurfaceSpec &spec) {
+        window->openAddressForDiagnostics(spec.address);
+        const bool ready = waitFor([&] {
+            BrowserTab *surfaceTab = window->currentTabForDiagnostics();
+            return surfaceTab && !surfaceTab->isLoading()
+                && window->currentAddressForDiagnostics().startsWith(
+                    spec.address, Qt::CaseInsensitive)
+                && evaluate(surfaceTab->page(),
+                            QStringLiteral("!!document.querySelector('%1')")
+                                .arg(spec.rootSelector),
+                            QWebEngineScript::MainWorld, 1000).toBool();
+        }, 6000);
+        settle(140);
+        BrowserTab *surfaceTab = window->currentTabForDiagnostics();
+        QVariantMap state = evaluate(
+            surfaceTab ? surfaceTab->page() : nullptr,
+            QStringLiteral(R"JS((()=>{
+                const root=document.querySelector('%1');
+                if(!root)return {};
+                const visibleInViewport=element=>{
+                    const rect=element.getBoundingClientRect();
+                    return rect.width>0&&rect.height>0
+                        &&rect.bottom>=0&&rect.top<=innerHeight;
+                };
+                const surfaces=[...root.querySelectorAll('.ds-card,.section,.hero')];
+                const controls=[...root.querySelectorAll('a,button,input,select,textarea,summary')]
+                    .filter(visibleInViewport);
+                const resourceAttributes=[
+                    ...document.querySelectorAll('script[src],img[src],source[src],iframe[src]')
+                ].map(element=>element.getAttribute('src')).filter(Boolean);
+                resourceAttributes.push(...[...document.querySelectorAll('link[href]')]
+                    .map(element=>element.getAttribute('href')).filter(Boolean));
+                resourceAttributes.push(...[...document.querySelectorAll('video[poster]')]
+                    .map(element=>element.getAttribute('poster')).filter(Boolean));
+                const externalResources=resourceAttributes.filter(value=>{
+                    try{
+                        const url=new URL(value,document.baseURI);
+                        if(url.protocol==='data:'||url.protocol==='blob:'||url.protocol==='about:')return false;
+                        return url.protocol==='file:'||
+                            ((url.protocol==='http:'||url.protocol==='https:')&&url.hostname!=='granger.local');
+                    }catch(_){return true}
+                });
+                const styleSheets=[...document.styleSheets];
+                const remoteStyleSheets=styleSheets.filter(sheet=>{
+                    if(!sheet.href)return false;
+                    try{return new URL(sheet.href,document.baseURI).hostname!=='granger.local'}
+                    catch(_){return true}
+                });
+                let css='';
+                for(const sheet of styleSheets){
+                    try{css+=[...sheet.cssRules].map(rule=>rule.cssText).join('\n')}
+                    catch(_){}
+                }
+                const inside=element=>{
+                    const rect=element.getBoundingClientRect();
+                    return rect.left>=-1&&rect.right<=innerWidth+1
+                        &&element.scrollWidth<=Math.max(element.clientWidth,1)+1;
+                };
+                const cardTokens=surfaces.every(element=>{
+                    const style=getComputedStyle(element);
+                    return parseFloat(style.borderTopWidth)>0
+                        &&style.borderTopStyle==='solid'
+                        &&parseFloat(style.borderTopLeftRadius)>=6
+                        &&style.backgroundColor!=='rgba(0, 0, 0, 0)';
+                });
+                const cardMeasurements=surfaces.map(element=>{
+                    const style=getComputedStyle(element);
+                    return `${element.tagName}.${element.className}:`
+                        +`${style.borderTopWidth}/${style.borderTopStyle}/`
+                        +`${style.borderTopLeftRadius}/${style.backgroundColor}`;
+                }).join('|');
+                return {
+                    rootClass:root.className,
+                    viewportWidth:innerWidth,
+                    surfaceCount:surfaces.length,
+                    compactCards:root.querySelectorAll('.ds-card--compact').length,
+                    elevatedCards:root.querySelectorAll('.ds-card--elevated').length,
+                    selectableRows:root.querySelectorAll('.ds-selectable-row').length,
+                    actionCount:root.querySelectorAll('form[action],a[href*="/__action/"]').length,
+                    noNestedCards:!root.querySelector('.ds-card .ds-card'),
+                    noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1,
+                    surfacesInside:surfaces.every(inside),
+                    controlsInside:controls.every(inside),
+                    cardTokens,
+                    cardMeasurements,
+                    externalResourceCount:externalResources.length,
+                    remoteStyleSheetCount:remoteStyleSheets.length,
+                    cardLevelRules:css.includes('.ds-card--compact')
+                        &&css.includes('.ds-card--elevated')
+                        &&css.includes('.ds-selectable-row'),
+                    reducedMotionRule:css.includes('prefers-reduced-motion: reduce')
+                        &&css.includes('.ds-selectable-row')
+                        &&css.includes('transition: none !important')
+                };
+            })())JS").arg(spec.rootSelector),
+            QWebEngineScript::MainWorld, 5000).toMap();
+        state.insert(QStringLiteral("ready"), ready);
+        state.insert(QStringLiteral("windowWidth"), window->width());
+        return state;
+    };
+    const auto internalSurfacePassed = [](const InternalSurfaceSpec &spec,
+                                          const QVariantMap &state) {
+        return state.value(QStringLiteral("ready")).toBool()
+            && state.value(QStringLiteral("surfaceCount")).toInt()
+                >= spec.minimumSurfaces
+            && state.value(QStringLiteral("actionCount")).toInt()
+                >= spec.minimumActions
+            && (!spec.requiresSelectableRow
+                || state.value(QStringLiteral("selectableRows")).toInt() >= 1)
+            && state.value(QStringLiteral("noNestedCards")).toBool()
+            && state.value(QStringLiteral("noHorizontalOverflow")).toBool()
+            && state.value(QStringLiteral("surfacesInside")).toBool()
+            && state.value(QStringLiteral("controlsInside")).toBool()
+            && state.value(QStringLiteral("cardTokens")).toBool()
+            && state.value(QStringLiteral("externalResourceCount")).toInt() == 0
+            && state.value(QStringLiteral("remoteStyleSheetCount")).toInt() == 0
+            && state.value(QStringLiteral("cardLevelRules")).toBool()
+            && state.value(QStringLiteral("reducedMotionRule")).toBool();
+    };
+
+    QJsonArray internalSurfaceWideCases;
+    bool internalSurfaceWidePassed = bookmarkFixtureReady;
+    window->showMaximized();
+    settle(160);
+    for (const InternalSurfaceSpec &spec : internalSurfaceSpecs) {
+        const QVariantMap state = inspectInternalSurface(spec);
+        const bool passed = internalSurfacePassed(spec, state);
+        internalSurfaceWidePassed = internalSurfaceWidePassed && passed;
+        QJsonObject item = QJsonObject::fromVariantMap(state);
+        item.insert(QStringLiteral("id"), spec.id);
+        item.insert(QStringLiteral("passed"), passed);
+        internalSurfaceWideCases.append(item);
+        if (spec.id == QStringLiteral("privacy")) {
+            capture(QStringLiteral("internalPrivacyCards"),
+                    QStringLiteral("16-internal-privacy-cards.png"), window);
+        } else if (spec.id == QStringLiteral("bridges")) {
+            capture(QStringLiteral("internalBridgeCards"),
+                    QStringLiteral("17-internal-bridges-cards.png"), window);
+        } else if (spec.id == QStringLiteral("bookmarks")) {
+            capture(QStringLiteral("internalBookmarkCards"),
+                    QStringLiteral("18-internal-bookmarks-cards.png"), window);
+        }
+    }
+    results.record(QStringLiteral("Internal card levels stay local, semantic, and aligned at desktop width"),
+                   internalSurfaceWidePassed,
+                   QString::fromUtf8(QJsonDocument(internalSurfaceWideCases)
+                                         .toJson(QJsonDocument::Compact)));
+
+    QJsonArray internalSurfaceNarrowCases;
+    bool internalSurfaceNarrowPassed = true;
+    window->showNormal();
+    window->resize(700, 720);
+    settle(180);
+    for (const InternalSurfaceSpec &spec : internalSurfaceSpecs) {
+        const QVariantMap state = inspectInternalSurface(spec);
+        const bool passed = internalSurfacePassed(spec, state);
+        internalSurfaceNarrowPassed = internalSurfaceNarrowPassed && passed;
+        QJsonObject item = QJsonObject::fromVariantMap(state);
+        item.insert(QStringLiteral("id"), spec.id);
+        item.insert(QStringLiteral("passed"), passed);
+        internalSurfaceNarrowCases.append(item);
+        if (spec.id == QStringLiteral("bridges")) {
+            capture(QStringLiteral("internalBridgeCardsNarrow"),
+                    QStringLiteral("19-internal-bridges-narrow.png"), window);
+        }
+    }
+    results.record(QStringLiteral("Internal cards and controls stay inside the narrow viewport"),
+                   internalSurfaceNarrowPassed,
+                   QString::fromUtf8(QJsonDocument(internalSurfaceNarrowCases)
+                                         .toJson(QJsonDocument::Compact)));
+    window->showMaximized();
+    settle(180);
+
     QWebEngineCookieStore *cookieStore = BrowserProfile::instance()->cookieStore();
     QNetworkCookie testCookieOne;
     QNetworkCookie testCookieKeep;
