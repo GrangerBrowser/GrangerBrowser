@@ -1538,6 +1538,37 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                          && list?.getAttribute('role')==='listbox'
                          && [...list.querySelectorAll('.ds-option')].every(option=>option.getAttribute('role')==='option');
                  }),
+                 navigationGroups:document.querySelectorAll('.settings-nav-group').length,
+                 navigationLinks:document.querySelectorAll('.settings-nav a').length,
+                 navigationIcons:[...document.querySelectorAll('.settings-nav a img')].length===12
+                     &&[...document.querySelectorAll('.settings-nav a img')].every(icon=>icon.src.startsWith('data:image/svg+xml;base64,')),
+                 navigationCurrent:document.querySelectorAll('.settings-nav a[aria-current="page"]').length===1
+                     &&document.querySelector('.settings-nav a.active')?.getAttribute('aria-current')==='page',
+                 navigationLabels:[...document.querySelectorAll('.settings-nav-label')].length===4
+                     &&[...document.querySelectorAll('.settings-nav-label')].every(label=>label.textContent.trim().length>0),
+                 localNavigation:[...document.querySelectorAll('.settings-nav img')].every(icon=>!icon.src.startsWith('http')),
+                 groupedSurface:(()=>{
+                     const surface=form('/settings/privacy-security');
+                     if(!surface)return false;
+                     const style=getComputedStyle(surface);
+                     return style.borderTopStyle==='solid'
+                         &&parseFloat(style.borderTopWidth)>0
+                         &&parseFloat(style.borderRadius)<=8
+                         &&style.backgroundColor!==getComputedStyle(document.body).backgroundColor;
+                 })(),
+                 groupedSurfaceMetrics:(()=>{
+                     const surface=form('/settings/privacy-security');
+                     if(!surface)return {present:false};
+                     const style=getComputedStyle(surface);
+                     return {
+                         present:true,
+                         background:style.backgroundColor,
+                         bodyBackground:getComputedStyle(document.body).backgroundColor,
+                         borderStyle:style.borderTopStyle,
+                         borderWidth:style.borderTopWidth,
+                         radius:style.borderRadius
+                     };
+                 })(),
                  siteRulesLayout:detailMetrics('site-rules'),
                  sitePermissionsLayout:detailMetrics('site-permissions'),
                  noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1
@@ -1564,6 +1595,27 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        && settingsLayout.value(QStringLiteral("enhanced")).toBool()
                        && settingsLayout.value(QStringLiteral("nativeHidden")).toBool()
                        && settingsLayout.value(QStringLiteral("accessible")).toBool());
+    const QJsonObject settingsNavigationDetails{
+        {QStringLiteral("groups"), settingsLayout.value(QStringLiteral("navigationGroups")).toInt()},
+        {QStringLiteral("links"), settingsLayout.value(QStringLiteral("navigationLinks")).toInt()},
+        {QStringLiteral("icons"), settingsLayout.value(QStringLiteral("navigationIcons")).toBool()},
+        {QStringLiteral("current"), settingsLayout.value(QStringLiteral("navigationCurrent")).toBool()},
+        {QStringLiteral("labels"), settingsLayout.value(QStringLiteral("navigationLabels")).toBool()},
+        {QStringLiteral("local"), settingsLayout.value(QStringLiteral("localNavigation")).toBool()},
+        {QStringLiteral("surface"), settingsLayout.value(QStringLiteral("groupedSurface")).toBool()},
+        {QStringLiteral("surfaceMetrics"), QJsonObject::fromVariantMap(
+             settingsLayout.value(QStringLiteral("groupedSurfaceMetrics")).toMap())}
+    };
+    results.record(QStringLiteral("Settings navigation is grouped, local, and exposes the active category"),
+                   settingsNavigationDetails.value(QStringLiteral("groups")).toInt() == 4
+                       && settingsNavigationDetails.value(QStringLiteral("links")).toInt() == 12
+                       && settingsNavigationDetails.value(QStringLiteral("icons")).toBool()
+                       && settingsNavigationDetails.value(QStringLiteral("current")).toBool()
+                       && settingsNavigationDetails.value(QStringLiteral("labels")).toBool()
+                       && settingsNavigationDetails.value(QStringLiteral("local")).toBool()
+                       && settingsNavigationDetails.value(QStringLiteral("surface")).toBool(),
+                   QString::fromUtf8(QJsonDocument(settingsNavigationDetails)
+                                         .toJson(QJsonDocument::Compact)));
     const QVariantMap siteRulesLayout =
         settingsLayout.value(QStringLiteral("siteRulesLayout")).toMap();
     const QVariantMap sitePermissionsLayout =
@@ -1600,8 +1652,10 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     const bool generalSettingsReady = waitFor([&] {
         BrowserTab *generalTab = window->currentTabForDiagnostics();
         return generalTab && !generalTab->isLoading()
+            && window->currentAddressForDiagnostics().contains(
+                QStringLiteral("category=general"), Qt::CaseInsensitive)
             && evaluate(generalTab->page(), QStringLiteral(
-                   "!!document.querySelector('select.language-select[name=language][data-ds-enhanced=true]')&&!!document.querySelector('.language-select-control .ds-select-trigger')"),
+                   "!!document.querySelector('select.language-select[name=language][data-ds-enhanced=true]')&&!!document.querySelector('.language-select-control .ds-select-trigger')&&document.querySelector('.settings-nav a.active')?.href.includes('id=general')"),
                         QWebEngineScript::MainWorld, 1000).toBool();
     });
     BrowserTab *generalSettingsTab = window->currentTabForDiagnostics();
@@ -1633,6 +1687,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                         && languageSelectorState.value(QStringLiteral("expanded")).toString()
                             == QStringLiteral("false")
                         && languageSelectorState.value(QStringLiteral("noHorizontalOverflow")).toBool());
+    settle(120);
     capture(QStringLiteral("languageEnglish"), QStringLiteral("07c-settings-general-en.png"), window);
 
     const QVariantMap customSelectInput = evaluate(
@@ -1934,6 +1989,9 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                             })())JS"), QWebEngineScript::MainWorld, 1000).toBool();
         }, 3000);
         if (triggerReady) {
+            // Let the programmatic root scroll finish before opening. Otherwise its queued
+            // scroll event can correctly close the popup after the test has observed it.
+            settle(120);
             evaluate(permissionTab ? permissionTab->page() : nullptr,
                      QStringLiteral(R"JS((()=>{
                          const trigger=document.querySelector('select[name="permission"]')?.closest('.ds-select')?.querySelector('.ds-select-trigger');
@@ -2098,6 +2156,11 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                         QWebEngineScript::MainWorld, 1000).toBool();
     }, 5000);
     BrowserTab *narrowSettingsTab = window->currentTabForDiagnostics();
+    evaluate(narrowSettingsTab ? narrowSettingsTab->page() : nullptr,
+             QStringLiteral("window.scrollTo(0,0)"));
+    settle(120);
+    capture(QStringLiteral("settingsNarrowNavigation"),
+            QStringLiteral("07o-settings-narrow-navigation-kk.png"), window);
     evaluate(narrowSettingsTab ? narrowSettingsTab->page() : nullptr,
              QStringLiteral("(()=>{const d=document.getElementById('privacy-config');if(d){d.open=true;d.scrollIntoView({block:'center'})}})()"));
     settle(140);

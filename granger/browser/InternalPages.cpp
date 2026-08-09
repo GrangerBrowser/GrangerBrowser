@@ -3,6 +3,8 @@
 #include "granger/i18n/Localization.h"
 #include "granger/ui/DesignTokens.h"
 
+#include <QFile>
+#include <QHash>
 #include <QPair>
 #include <QUrl>
 #include <QVector>
@@ -227,18 +229,27 @@ body.settings-page{background:var(--ds-bg-app)}
 .settings-page main{width:min(100%,1180px);max-width:1180px;padding:40px 36px 76px}
 .settings-page main>header{margin-bottom:30px}
 .settings-page main>header h1{font-size:32px}
-.settings-page .settings-shell{display:grid;grid-template-columns:210px minmax(0,1fr);gap:44px;align-items:start}
+.settings-page .settings-shell{display:grid;grid-template-columns:224px minmax(0,1fr);gap:38px;align-items:start}
 .settings-page .settings-nav{
-position:sticky;top:20px;display:flex;flex-direction:column;gap:3px;min-width:0;padding:6px 18px 6px 0;
+position:sticky;top:20px;display:flex;flex-direction:column;gap:18px;min-width:0;padding:4px 16px 4px 0;
 border-right:1px solid var(--ds-border-subtle)
 }
+.settings-page .settings-nav-group{display:grid;gap:3px;min-width:0}
+.settings-page .settings-nav-label{
+min-height:20px;padding:0 11px;color:var(--ds-text-muted);font-size:10px;font-weight:650;line-height:20px
+}
 .settings-page .settings-nav a{
-position:relative;display:flex;align-items:center;min-height:38px;padding:8px 11px;border:1px solid transparent;
+position:relative;display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;align-items:center;
+min-height:38px;padding:8px 10px;border:1px solid transparent;
 border-radius:var(--ds-radius-md);color:var(--ds-text-secondary);font-size:13px;font-weight:550;text-decoration:none;
 transition:background-color var(--ds-fast) ease,color var(--ds-fast) ease,border-color var(--ds-fast) ease
 }
+.settings-page .settings-nav-icon{display:grid;place-items:center;width:18px;height:18px}
+.settings-page .settings-nav-icon img{display:block;width:17px;height:17px;object-fit:contain;opacity:.68}
+.settings-page .settings-nav-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .settings-page .settings-nav a:hover{border-color:transparent;background:var(--ds-bg-hover);color:var(--ds-text)}
 .settings-page .settings-nav a.active{background:var(--ds-accent-soft);color:var(--ds-text);box-shadow:none}
+.settings-page .settings-nav a.active .settings-nav-icon img{opacity:1}
 .settings-page .settings-nav a.active::before{
 content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:2px;border-radius:2px;background:var(--ds-accent-hover)
 }
@@ -248,6 +259,28 @@ content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:2px;border-rad
 .settings-page .settings-panel>details,.settings-page .settings-panel>.settings-subsection{margin-top:32px}
 .settings-page .settings-panel form>h3{margin:30px 0 4px;padding-top:22px;border-top:1px solid var(--ds-border-subtle)}
 .settings-page .settings-panel form>h3:first-child{margin-top:0;padding-top:0;border-top:0}
+.settings-page .settings-panel>form{
+min-width:0;padding:2px 18px 18px;border:1px solid var(--ds-border-subtle);border-radius:8px;
+background:var(--ds-bg-surface)
+}
+.settings-page .settings-panel>form+form{margin-top:18px}
+.settings-page .settings-panel>form>h3{
+margin:0 -18px 4px;padding:17px 18px 14px;border-top:1px solid var(--ds-border-subtle);
+border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:15px
+}
+.settings-page .settings-panel>form>h3:first-child{border-top:0}
+.settings-page .settings-panel>form>h3:not(:first-child){margin-top:16px}
+.settings-page .settings-panel>form>h3+p{margin:10px 2px 13px}
+.settings-page .settings-panel>form>.setting-row:first-child{border-top:0}
+.settings-page .settings-panel>form>p:last-child:has(button,.button){
+margin:18px -18px -18px;padding:15px 18px;border-top:1px solid var(--ds-border-subtle);
+border-radius:0 0 8px 8px;background:rgba(255,255,255,.012)
+}
+.settings-page .settings-panel>.info-list{
+overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:8px;
+background:var(--ds-bg-surface)
+}
+.settings-page .settings-panel>.info-list .info-row{padding-left:16px;padding-right:16px}
 .settings-page .setting-row{
 display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,330px);gap:28px;align-items:center;
 min-height:66px;padding:13px 2px;border-bottom:1px solid var(--ds-border-subtle)
@@ -354,7 +387,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .engine-option.selected{background:var(--ds-accent-soft)}
 @keyframes dsPopupIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
 @media(max-width:920px){
-.settings-page .settings-shell{grid-template-columns:180px minmax(0,1fr);gap:28px}
+.settings-page .settings-shell{grid-template-columns:194px minmax(0,1fr);gap:26px}
 .settings-page .setting-row{grid-template-columns:1fr;gap:9px;align-items:start;padding:15px 2px}
 .settings-page .setting-row .control{justify-content:flex-start;width:100%}
 .settings-page .setting-row .control>.ds-select,.settings-page .setting-row .control>input{width:100%}
@@ -365,10 +398,13 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page main>header h1{font-size:28px}
 .settings-page .settings-shell{grid-template-columns:1fr;gap:18px}
 .settings-page .settings-nav{
-position:static;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:0 0 14px;
+position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;min-width:0;padding:0 0 12px;
 border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 }
-.settings-page .settings-nav a{min-height:36px;padding:7px 9px;font-size:12px}
+.settings-page .settings-nav-group{display:contents}
+.settings-page .settings-nav-label{display:none}
+.settings-page .settings-nav a{grid-template-columns:16px minmax(0,1fr);min-height:36px;padding:7px 9px;font-size:12px}
+.settings-page .settings-nav-icon{width:16px;height:16px}.settings-page .settings-nav-icon img{width:15px;height:15px}
 .settings-page .settings-nav a.active::before{left:10px;right:10px;top:auto;bottom:-1px;width:auto;height:2px}
 .settings-page .settings-heading-actions{flex-direction:column;gap:16px}
 .settings-page .settings-heading-actions>.button{width:auto;max-width:100%;align-self:flex-start}
@@ -376,7 +412,10 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .site-rule-grid .rule-target{grid-column:1}
 }
 @media(max-width:480px){
-.settings-page .settings-nav{grid-template-columns:repeat(2,minmax(0,1fr))}
+.settings-page .settings-nav{grid-template-columns:1fr}
+.settings-page .settings-nav a{grid-template-columns:16px auto}
+.settings-page .settings-panel>form{padding-left:14px;padding-right:14px}
+.settings-page .settings-panel>form>h3{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}
 .settings-page .container-row{grid-template-columns:40px minmax(0,1fr) 36px;gap:10px}
 .settings-page .container-badges{gap:4px}
 }
@@ -700,10 +739,37 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
     return DesignTokens::apply(html);
 }
 
-QString categoryLink(const QString &id, const QString &label, const QString &active)
+QString localSvgDataUrl(const QString &resourcePath)
 {
-    return QStringLiteral("<a class=\"%1\" href=\"https://granger.local/__action/settings/category?id=%2\">%3</a>")
-        .arg(id == active ? QStringLiteral("active") : QString(), e(id), e(label));
+    static QHash<QString, QString> cache;
+    const auto cached = cache.constFind(resourcePath);
+    if (cached != cache.constEnd()) return cached.value();
+    QFile file(resourcePath);
+    const QString dataUrl = file.open(QIODevice::ReadOnly)
+        ? QStringLiteral("data:image/svg+xml;base64,%1")
+              .arg(QString::fromLatin1(file.readAll().toBase64()))
+        : QString();
+    cache.insert(resourcePath, dataUrl);
+    return dataUrl;
+}
+
+QString categoryLink(const QString &id, const QString &label, const QString &active,
+                     const QString &iconResource)
+{
+    const bool selected = id == active;
+    const QString current = selected ? QStringLiteral(" aria-current=\"page\"") : QString();
+    const QString iconDataUrl = localSvgDataUrl(iconResource);
+    const QString icon = iconDataUrl.isEmpty()
+        ? QString()
+        : QStringLiteral("<img src=\"%1\" alt=\"\" aria-hidden=\"true\">").arg(e(iconDataUrl));
+    return QStringLiteral("<a class=\"%1\" href=\"https://granger.local/__action/settings/category?id=%2\"%3><span class=\"settings-nav-icon\">%4</span><span class=\"settings-nav-copy\">%5</span></a>")
+        .arg(selected ? QStringLiteral("active") : QString(), e(id), current, icon, e(label));
+}
+
+QString settingsNavGroup(const QString &label, const QString &links)
+{
+    return QStringLiteral("<section class=\"settings-nav-group\" role=\"group\" aria-label=\"%1\"><div class=\"settings-nav-label\">%1</div>%2</section>")
+        .arg(e(label), links);
 }
 
 QString homePage(const InternalPageContext &context, const QString &query)
@@ -824,19 +890,38 @@ QString InternalPages::bridges(const InternalPageContext &context)
 QString InternalPages::settings(const InternalPageContext &context)
 {
     const QString category = context.settingsCategory.isEmpty() ? QStringLiteral("general") : context.settingsCategory;
-    QString nav;
-    nav += categoryLink(QStringLiteral("general"), t("settings.category.general"), category);
-    nav += categoryLink(QStringLiteral("search"), t("settings.category.search"), category);
-    nav += categoryLink(QStringLiteral("privacy"), t("settings.category.privacy"), category);
-    nav += categoryLink(QStringLiteral("containers"), t("settings.category.containers"), category);
-    nav += categoryLink(QStringLiteral("isolated"), t("settings.category.isolated"), category);
-    nav += categoryLink(QStringLiteral("pamp"), t("settings.category.pamp"), category);
-    nav += categoryLink(QStringLiteral("connection"), t("settings.category.connection"), category);
-    nav += categoryLink(QStringLiteral("downloads"), t("settings.category.downloads"), category);
-    nav += categoryLink(QStringLiteral("reports"), t("settings.category.reports"), category);
-    nav += categoryLink(QStringLiteral("advanced"), t("settings.category.advanced"), category);
-    nav += categoryLink(QStringLiteral("danger"), t("settings.category.danger"), category);
-    nav += categoryLink(QStringLiteral("about"), t("settings.category.about"), category);
+    QString browserLinks;
+    browserLinks += categoryLink(QStringLiteral("general"), t("settings.category.general"), category,
+                                 QStringLiteral(":/icons/settings.svg"));
+    browserLinks += categoryLink(QStringLiteral("search"), t("settings.category.search"), category,
+                                 QStringLiteral(":/icons/search.svg"));
+    browserLinks += categoryLink(QStringLiteral("downloads"), t("settings.category.downloads"), category,
+                                 QStringLiteral(":/icons/downloads.svg"));
+    QString privacyLinks;
+    privacyLinks += categoryLink(QStringLiteral("privacy"), t("settings.category.privacy"), category,
+                                 QStringLiteral(":/icons/privacy.svg"));
+    privacyLinks += categoryLink(QStringLiteral("containers"), t("settings.category.containers"), category,
+                                 QStringLiteral(":/icons/container-circle.svg"));
+    privacyLinks += categoryLink(QStringLiteral("isolated"), t("settings.category.isolated"), category,
+                                 QStringLiteral(":/icons/lock.svg"));
+    privacyLinks += categoryLink(QStringLiteral("pamp"), t("settings.category.pamp"), category,
+                                 QStringLiteral(":/icons/shield.svg"));
+    QString networkLinks;
+    networkLinks += categoryLink(QStringLiteral("connection"), t("settings.category.connection"), category,
+                                 QStringLiteral(":/icons/tor.svg"));
+    QString systemLinks;
+    systemLinks += categoryLink(QStringLiteral("reports"), t("settings.category.reports"), category,
+                                QStringLiteral(":/icons/reports.svg"));
+    systemLinks += categoryLink(QStringLiteral("advanced"), t("settings.category.advanced"), category,
+                                QStringLiteral(":/icons/site-controls.svg"));
+    systemLinks += categoryLink(QStringLiteral("danger"), t("settings.category.danger"), category,
+                                QStringLiteral(":/icons/stop.svg"));
+    systemLinks += categoryLink(QStringLiteral("about"), t("settings.category.about"), category,
+                                QStringLiteral(":/icons/browser.svg"));
+    const QString nav = settingsNavGroup(t("settings.nav.browser"), browserLinks)
+        + settingsNavGroup(t("settings.nav.privacy"), privacyLinks)
+        + settingsNavGroup(t("settings.nav.network"), networkLinks)
+        + settingsNavGroup(t("settings.nav.system"), systemLinks);
 
     QString panel;
     if (category == QStringLiteral("search")) {
