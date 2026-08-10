@@ -634,15 +634,15 @@ QString ThemeManager::styleSheet() const
             border-right: 1px solid __BORDER_SUBTLE__;
         }
 
-        QWidget#SpaceList,
+        QWidget#SpaceSwitcher,
         QWidget#SidebarTopArea,
-        QWidget#BottomNavigation,
-        QScrollArea#SpaceScrollArea,
-        QScrollArea#SpaceScrollArea > QWidget > QWidget {
+        QWidget#BottomNavigation {
             background: transparent;
         }
 
-        QToolButton#SpaceButton,
+        QToolButton#SpaceSwitcherCurrent,
+        QToolButton#SpaceSwitcherPrevious,
+        QToolButton#SpaceSwitcherNext,
         QToolButton#TabsHeaderButton,
         QToolButton[sidebarAction="true"] {
             background: transparent;
@@ -655,7 +655,9 @@ QString ThemeManager::styleSheet() const
             font-weight: 500;
         }
 
-        QToolButton#SpaceButton:hover,
+        QToolButton#SpaceSwitcherCurrent:hover,
+        QToolButton#SpaceSwitcherPrevious:hover,
+        QToolButton#SpaceSwitcherNext:hover,
         QToolButton#TabsHeaderButton:hover,
         QToolButton[sidebarAction="true"]:hover {
             background: __HOVER_BG__;
@@ -663,27 +665,42 @@ QString ThemeManager::styleSheet() const
             color: __TEXT__;
         }
 
-        QToolButton#SpaceButton:focus,
+        QToolButton#SpaceSwitcherCurrent:focus,
+        QToolButton#SpaceSwitcherPrevious:focus,
+        QToolButton#SpaceSwitcherNext:focus,
         QToolButton#TabsHeaderButton:focus,
         QToolButton[sidebarAction="true"]:focus {
             border-color: __FOCUS__;
         }
 
-        QToolButton#SpaceButton[active="true"] {
+        QToolButton#SpaceSwitcherCurrent[active="true"] {
             background: __SURFACE_BG__;
             border-color: __BORDER__;
             color: __TEXT__;
             font-weight: 600;
         }
 
-        QToolButton#SpaceButton[active="true"]:hover {
+        QToolButton#SpaceSwitcherCurrent[active="true"]:hover {
             background: __ACTIVE_BG__;
             border-color: __BORDER_STRONG__;
         }
 
-        QToolButton#SpaceButton[dropTarget="true"] {
+        QToolButton#SpaceSwitcherCurrent[dropTarget="true"] {
             background: rgba(217,86,97,0.22);
             border-color: __ACCENT__;
+        }
+
+        QToolButton#SpaceSwitcherPrevious,
+        QToolButton#SpaceSwitcherNext {
+            padding: 0;
+            color: __MUTED__;
+        }
+
+        QToolButton#SpaceSwitcherPrevious:disabled,
+        QToolButton#SpaceSwitcherNext:disabled {
+            background: transparent;
+            border-color: transparent;
+            color: __MUTED__;
         }
 
         QToolButton#TabsHeaderButton {
@@ -693,9 +710,61 @@ QString ThemeManager::styleSheet() const
         }
 
         QToolButton#TabsHeaderButton::menu-indicator,
-        QToolButton#SpaceButton::menu-indicator {
+        QToolButton#SpaceSwitcherCurrent::menu-indicator {
             image: none;
             width: 0;
+        }
+
+        QMenu#SpaceSwitcherMenu {
+            min-width: 224px;
+            background: __POPUP_BG__;
+            border: 1px solid __BORDER__;
+            border-radius: __POPUP_RADIUS__;
+            padding: 6px;
+            icon-size: 20px;
+        }
+
+        QMenu#SpaceSwitcherMenu::item {
+            min-height: 24px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: __CONTROL_RADIUS__;
+            padding: 6px 28px 6px 10px;
+            color: __TEXT__;
+        }
+
+        QMenu#SpaceSwitcherMenu::item:selected {
+            background: __HOVER_BG__;
+            border-color: __BORDER_SUBTLE__;
+        }
+
+        QMenu#SpaceSwitcherMenu::item:checked {
+            background: __ACTIVE_BG__;
+            border-color: __BORDER__;
+            color: #ffffff;
+        }
+
+        QMenu#SpaceSwitcherMenu::item:disabled {
+            color: __MUTED__;
+            font-weight: 650;
+        }
+
+        QMenu#SpaceSwitcherMenu::indicator {
+            width: 6px;
+            height: 6px;
+            margin-left: 9px;
+            border-radius: 3px;
+            background: transparent;
+        }
+
+        QMenu#SpaceSwitcherMenu::indicator:checked {
+            background: __ACCENT__;
+        }
+
+        QMenu#SpaceSwitcherMenu::separator {
+            height: 1px;
+            background: __BORDER__;
+            margin: 5px 8px;
         }
 
         QToolButton#NewTabButton {
@@ -784,27 +853,6 @@ QString ThemeManager::styleSheet() const
         }
 
         QLabel#TabPinned {
-            background: transparent;
-        }
-
-        QScrollArea#SpaceScrollArea QScrollBar:vertical {
-            background: transparent;
-            width: __SCROLLBAR_SIZE__;
-            margin: __SCROLLBAR_INSET__;
-        }
-
-        QScrollArea#SpaceScrollArea QScrollBar::handle:vertical {
-            background: __SCROLLBAR_THUMB__;
-            border-radius: 2px;
-            min-height: 20px;
-        }
-
-        QScrollArea#SpaceScrollArea QScrollBar::add-line:vertical,
-        QScrollArea#SpaceScrollArea QScrollBar::sub-line:vertical,
-        QScrollArea#SpaceScrollArea QScrollBar::add-page:vertical,
-        QScrollArea#SpaceScrollArea QScrollBar::sub-page:vertical {
-            width: 0;
-            height: 0;
             background: transparent;
         }
 
@@ -1442,13 +1490,13 @@ QString ThemeManager::styleSheet() const
             background: __BORDER_SUBTLE__;
         }
 
-        QToolButton#SpaceButton[expanded="true"],
+        QToolButton#SpaceSwitcherCurrent[expanded="true"],
         QToolButton#TabsHeaderButton[expanded="true"] {
             padding-left: 9px;
             padding-right: 42px;
         }
 
-        QToolButton#SpaceButton[expanded="false"] {
+        QToolButton#SpaceSwitcherCurrent[expanded="false"] {
             padding-left: 0;
             padding-right: 0;
         }

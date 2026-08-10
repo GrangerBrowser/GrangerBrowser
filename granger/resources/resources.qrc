@@ -38,6 +38,7 @@
         <file alias="copy.svg">icons/copy.svg</file>
         <file alias="check.svg">icons/check.svg</file>
         <file alias="chevron-down.svg">icons/chevron-down.svg</file>
+        <file alias="chevron-left.svg">icons/chevron-left.svg</file>
         <file alias="chevron-right.svg">icons/chevron-right.svg</file>
         <file alias="site-onion.svg">icons/site-onion.svg</file>
         <file alias="container-circle.svg">icons/container-circle.svg</file>

@@ -68,6 +68,7 @@
 #include <QVariantMap>
 #include <QWebEnginePage>
 #include <QWebEngineProfile>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <functional>
@@ -1564,7 +1565,7 @@ int runFeatureSmokeTests(QApplication &app,
         sidebarStress.resize(920, 680);
         sidebarStress.setAnimationsEnabled(false);
         QVector<SpaceDefinition> stressSpaces;
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < 25; ++i) {
             const QString id = i == 0 ? ContainerManager::defaultSpaceId()
                                       : QStringLiteral("sidebar-space-%1").arg(i);
             stressSpaces.append(SpaceDefinition{
@@ -1577,17 +1578,55 @@ int runFeatureSmokeTests(QApplication &app,
         sidebarStress.setSpaces(stressSpaces);
         sidebarStress.setSidebarPinned(true);
         sidebarStress.show();
+        settleEvents(40);
+
+        bool spaceScaleGeometryStable = true;
+        QJsonArray spaceScaleDiagnostics;
+        for (const int spaceCount : {1, 4, 10, 25}) {
+            sidebarStress.setSpaces(stressSpaces.mid(0, spaceCount));
+            settleEvents(20);
+            QWidget *switcher = sidebarStress.findChild<QWidget *>(
+                QStringLiteral("SpaceSwitcher"));
+            QMenu *menu = sidebarStress.findChild<QMenu *>(
+                QStringLiteral("SpaceSwitcherMenu"));
+            const bool countStable = switcher && menu
+                && switcher->height() == DesignTokens::sidebarSpaceSwitcherHeight
+                && menu->property("spaceCount").toInt() == spaceCount
+                && sidebarStress.findChildren<QToolButton *>(
+                    QStringLiteral("SpaceButton")).isEmpty();
+            spaceScaleGeometryStable = spaceScaleGeometryStable && countStable;
+            spaceScaleDiagnostics.append(QJsonObject{
+                {QStringLiteral("spaces"), spaceCount},
+                {QStringLiteral("switcherHeight"), switcher ? switcher->height() : -1},
+                {QStringLiteral("menuSpaces"), menu
+                    ? menu->property("spaceCount").toInt() : -1},
+                {QStringLiteral("passed"), countStable}
+            });
+        }
+        results.record(QStringLiteral("one, four, ten, and twenty-five Spaces keep one switcher row"),
+                       spaceScaleGeometryStable,
+                       QString::fromUtf8(QJsonDocument(spaceScaleDiagnostics)
+                                             .toJson(QJsonDocument::Compact)));
+        sidebarStress.setSpaces(stressSpaces);
+        settleEvents(20);
+
         QVector<QWidget *> defaultStressPages;
+        QHash<QString, QWidget *> activePageBySpace;
         for (int i = 0; i < 20; ++i) {
             auto *page = new QWidget;
             page->setProperty("granger.spaceId", ContainerManager::defaultSpaceId());
             sidebarStress.addTab(page, QStringLiteral("Sidebar tab %1").arg(i + 1));
             defaultStressPages.append(page);
+            activePageBySpace.insert(ContainerManager::defaultSpaceId(), page);
         }
-        auto *alternateStressPage = new QWidget;
-        alternateStressPage->setProperty("granger.spaceId",
-                                         QStringLiteral("sidebar-space-1"));
-        sidebarStress.addTab(alternateStressPage, QStringLiteral("Alternate Space tab"));
+        QWidget *alternateStressPage = nullptr;
+        for (int i = 1; i < stressSpaces.size(); ++i) {
+            auto *page = new QWidget;
+            page->setProperty("granger.spaceId", stressSpaces.at(i).id);
+            sidebarStress.addTab(page, QStringLiteral("Space %1 tab").arg(i));
+            activePageBySpace.insert(stressSpaces.at(i).id, page);
+            if (i == 1) alternateStressPage = page;
+        }
         sidebarStress.setActiveSpace(ContainerManager::defaultSpaceId(), false);
         settleEvents(40);
 
@@ -1602,29 +1641,268 @@ int runFeatureSmokeTests(QApplication &app,
         auto *reservedSpace = sidebarStress.findChild<QWidget *>(
             QStringLiteral("SidebarReservedSpace"));
         QWidget *sidebarWidget = sidebarStress.sidebarWidget();
-        const QList<QToolButton *> spaceButtons = sidebarStress.findChildren<QToolButton *>(
-            QStringLiteral("SpaceButton"));
+        QWidget *spaceSwitcher = sidebarStress.findChild<QWidget *>(
+            QStringLiteral("SpaceSwitcher"));
+        auto *previousSpaceButton = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SpaceSwitcherPrevious"));
+        auto *currentSpaceButton = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SpaceSwitcherCurrent"));
+        auto *nextSpaceButton = sidebarStress.findChild<QToolButton *>(
+            QStringLiteral("SpaceSwitcherNext"));
+        QMenu *spaceMenu = sidebarStress.findChild<QMenu *>(
+            QStringLiteral("SpaceSwitcherMenu"));
         const QString defaultDisplayName = Localization::text(
             QStringLiteral("spaces.default"));
-        int defaultNameRows = 0;
-        for (const QToolButton *button : spaceButtons) {
-            if (button->text().contains(defaultDisplayName)) ++defaultNameRows;
-        }
         results.record(QStringLiteral("Sidebar separates the Space switcher from the tab section"),
-                       tabsHeader && tabScroll && spaceButtons.size() == 10
-                           && defaultNameRows == 1
-                           && !tabsHeader->text().contains(defaultDisplayName)
-                           && tabsHeader->text().startsWith(Localization::text(
-                               QStringLiteral("spaces.tabs_header")))
+                       tabsHeader && tabScroll && spaceSwitcher && previousSpaceButton
+                            && currentSpaceButton && nextSpaceButton && spaceMenu
+                            && spaceSwitcher->height()
+                                == DesignTokens::sidebarSpaceSwitcherHeight
+                            && previousSpaceButton->isVisible()
+                            && nextSpaceButton->isVisible()
+                            && currentSpaceButton->text().contains(defaultDisplayName)
+                            && currentSpaceButton->property("sidebarCount").toString()
+                                == QStringLiteral("20")
+                            && currentSpaceButton->property("active").toBool()
+                            && !tabsHeader->text().contains(defaultDisplayName)
+                            && tabsHeader->text().startsWith(Localization::text(
+                                QStringLiteral("spaces.tabs_header")))
                            && tabsHeader->property("sidebarCount").toString()
                                == QStringLiteral("20")
                            && tabsHeader->accessibleName() == Localization::text(
                                QStringLiteral("spaces.tabs_header")),
                        tabsHeader
-                           ? QStringLiteral("label=%1; count=%2")
-                                 .arg(tabsHeader->text(),
-                                      tabsHeader->property("sidebarCount").toString())
+                            ? QStringLiteral("label=%1; tabs=%2; space=%3; spaces=%4")
+                                  .arg(tabsHeader->text(),
+                                       tabsHeader->property("sidebarCount").toString(),
+                                       currentSpaceButton
+                                           ? currentSpaceButton->accessibleName()
+                                           : QStringLiteral("missing"))
+                                  .arg(spaceMenu
+                                           ? spaceMenu->property("spaceCount").toInt() : -1)
                             : QStringLiteral("missing header"));
+
+        if (nextSpaceButton) nextSpaceButton->click();
+        const bool nextButtonSwitched = sidebarStress.activeSpaceId()
+            == QStringLiteral("sidebar-space-1")
+            && sidebarStress.currentWidget() == alternateStressPage;
+        if (previousSpaceButton) previousSpaceButton->click();
+        const bool previousButtonSwitched = sidebarStress.activeSpaceId()
+            == ContainerManager::defaultSpaceId()
+            && sidebarStress.currentWidget()
+                == activePageBySpace.value(ContainerManager::defaultSpaceId());
+        results.record(QStringLiteral("Space switcher arrows preserve each Space's active tab"),
+                       nextButtonSwitched && previousButtonSwitched);
+
+        if (currentSpaceButton) {
+            const QPoint local = currentSpaceButton->rect().center();
+            const QPoint global = currentSpaceButton->mapToGlobal(local);
+            QWheelEvent wheelNext(QPointF(local), QPointF(global), QPoint(), QPoint(0, -120),
+                                  Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(currentSpaceButton, &wheelNext);
+            QWheelEvent wheelPrevious(QPointF(local), QPointF(global), QPoint(), QPoint(0, 120),
+                                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            const bool verticalWheelNext = sidebarStress.activeSpaceId()
+                == QStringLiteral("sidebar-space-1");
+            QApplication::sendEvent(currentSpaceButton, &wheelPrevious);
+            QWheelEvent horizontalNext(QPointF(local), QPointF(global), QPoint(), QPoint(-120, 0),
+                                       Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            const bool verticalWheelPrevious = sidebarStress.activeSpaceId()
+                == ContainerManager::defaultSpaceId();
+            QApplication::sendEvent(currentSpaceButton, &horizontalNext);
+            QWheelEvent horizontalPrevious(QPointF(local), QPointF(global), QPoint(), QPoint(120, 0),
+                                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            const bool horizontalWheelNext = sidebarStress.activeSpaceId()
+                == QStringLiteral("sidebar-space-1");
+            QApplication::sendEvent(currentSpaceButton, &horizontalPrevious);
+            results.record(QStringLiteral("Space switcher accepts vertical and horizontal wheel deltas"),
+                           verticalWheelNext && verticalWheelPrevious
+                               && horizontalWheelNext
+                               && sidebarStress.activeSpaceId()
+                                   == ContainerManager::defaultSpaceId());
+
+            QKeyEvent rightKey(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+            QApplication::sendEvent(currentSpaceButton, &rightKey);
+            const bool keyboardNext = sidebarStress.activeSpaceId()
+                == QStringLiteral("sidebar-space-1");
+            QKeyEvent leftKey(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier);
+            QApplication::sendEvent(currentSpaceButton, &leftKey);
+            results.record(QStringLiteral("Space switcher supports keyboard-relative activation"),
+                           keyboardNext && sidebarStress.activeSpaceId()
+                               == ContainerManager::defaultSpaceId());
+        }
+
+        sidebarStress.setActiveSpace(QStringLiteral("sidebar-space-1"), false);
+        settleEvents(20);
+        const QString longSpaceName = stressSpaces.at(1).name;
+        const bool longNamePresentation = currentSpaceButton
+            && currentSpaceButton->accessibleName() == longSpaceName
+            && currentSpaceButton->toolTip().contains(longSpaceName)
+            && currentSpaceButton->text() != longSpaceName
+            && currentSpaceButton->fontMetrics().horizontalAdvance(currentSpaceButton->text())
+                <= currentSpaceButton->width();
+        results.record(QStringLiteral("long Space names elide visually without losing accessible text"),
+                       longNamePresentation,
+                       currentSpaceButton
+                           ? QStringLiteral("visible=%1; accessible=%2; width=%3")
+                                 .arg(currentSpaceButton->text(),
+                                      currentSpaceButton->accessibleName())
+                                 .arg(currentSpaceButton->width())
+                           : QStringLiteral("missing switcher"));
+        sidebarStress.setActiveSpace(ContainerManager::defaultSpaceId(), false);
+
+        if (currentSpaceButton) currentSpaceButton->click();
+        const bool allSpacesMenuOpened = waitUntil([&] {
+            return spaceMenu && spaceMenu->isVisible();
+        });
+        QList<QAction *> allSpaceActions;
+        if (spaceMenu) {
+            for (QAction *action : spaceMenu->actions()) {
+                if (action && !action->data().toString().isEmpty()) {
+                    allSpaceActions.append(action);
+                }
+            }
+        }
+        int checkedSpaceActions = 0;
+        for (const QAction *action : std::as_const(allSpaceActions)) {
+            if (action && action->isChecked()) ++checkedSpaceActions;
+        }
+        QScreen *spaceMenuScreen = spaceMenu
+            ? QApplication::screenAt(spaceMenu->frameGeometry().center()) : nullptr;
+        const bool menuInsideScreen = spaceMenu && spaceMenuScreen
+            && spaceMenuScreen->availableGeometry().contains(spaceMenu->frameGeometry())
+            && spaceMenu->frameGeometry().height()
+                <= DesignTokens::sidebarSpaceMenuMaxHeight;
+        if (spaceMenu) {
+            QKeyEvent homeKey(QEvent::KeyPress, Qt::Key_Home, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &homeKey);
+        }
+        const bool menuHomeWorks = spaceMenu && !allSpaceActions.isEmpty()
+            && spaceMenu->activeAction() == allSpaceActions.first();
+        if (spaceMenu) {
+            QKeyEvent endKey(QEvent::KeyPress, Qt::Key_End, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &endKey);
+        }
+        const bool menuEndWorks = spaceMenu && !allSpaceActions.isEmpty()
+            && spaceMenu->activeAction() == allSpaceActions.last();
+        if (spaceMenu && !allSpaceActions.isEmpty()) {
+            spaceMenu->setActiveAction(allSpaceActions.last());
+            QKeyEvent activateLast(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &activateLast);
+        }
+        const bool menuSelectedLast = waitUntil([&] {
+            return spaceMenu && !spaceMenu->isVisible()
+                && sidebarStress.activeSpaceId() == stressSpaces.last().id;
+        });
+        results.record(QStringLiteral("all-Spaces menu exposes twenty-five choices inside the screen"),
+                       allSpacesMenuOpened && allSpaceActions.size() == 25
+                           && checkedSpaceActions == 1 && menuInsideScreen
+                           && menuHomeWorks && menuEndWorks && menuSelectedLast,
+                       QStringLiteral("opened=%1; actions=%2; checked=%3; inside=%4; home=%5; end=%6; active=%7; menu=%8; screen=%9")
+                           .arg(allSpacesMenuOpened).arg(allSpaceActions.size())
+                           .arg(checkedSpaceActions).arg(menuInsideScreen)
+                           .arg(menuHomeWorks).arg(menuEndWorks)
+                           .arg(sidebarStress.activeSpaceId())
+                           .arg(spaceMenu ? QStringLiteral("%1,%2 %3x%4")
+                               .arg(spaceMenu->frameGeometry().x())
+                               .arg(spaceMenu->frameGeometry().y())
+                               .arg(spaceMenu->frameGeometry().width())
+                               .arg(spaceMenu->frameGeometry().height()) : QStringLiteral("missing"))
+                           .arg(spaceMenuScreen ? QStringLiteral("%1,%2 %3x%4")
+                               .arg(spaceMenuScreen->availableGeometry().x())
+                               .arg(spaceMenuScreen->availableGeometry().y())
+                               .arg(spaceMenuScreen->availableGeometry().width())
+                               .arg(spaceMenuScreen->availableGeometry().height()) : QStringLiteral("missing")));
+
+        sidebarStress.setActiveSpace(ContainerManager::defaultSpaceId(), false);
+        if (currentSpaceButton) currentSpaceButton->click();
+        const bool menuReopened = waitUntil([&] { return spaceMenu && spaceMenu->isVisible(); });
+        if (spaceMenu) {
+            QKeyEvent escapeKey(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &escapeKey);
+        }
+        results.record(QStringLiteral("Escape closes the all-Spaces menu"),
+                       menuReopened && waitUntil([&] {
+                           return spaceMenu && !spaceMenu->isVisible();
+                       }));
+
+        QWidget *dragSourcePage = activePageBySpace.value(ContainerManager::defaultSpaceId());
+        QString dragMoveTarget;
+        QWidget *dragMovePage = nullptr;
+        const QMetaObject::Connection dragMoveConnection = QObject::connect(
+            &sidebarStress, &TabManager::tabMoveToSpaceRequested, &sidebarStress,
+            [&dragMoveTarget, &dragMovePage](QWidget *page, const QString &spaceId) {
+                dragMovePage = page;
+                dragMoveTarget = spaceId;
+            });
+        if (currentSpaceButton) currentSpaceButton->click();
+        const bool dragMenuReady = waitUntil([&] { return spaceMenu && spaceMenu->isVisible(); });
+        QAction *dragTargetAction = nullptr;
+        if (spaceMenu) {
+            for (QAction *action : spaceMenu->actions()) {
+                if (action && action->data().toString() == QStringLiteral("sidebar-space-2")) {
+                    dragTargetAction = action;
+                    break;
+                }
+            }
+        }
+        if (spaceMenu && dragTargetAction && dragSourcePage) {
+            QMimeData tabMime;
+            tabMime.setData(QStringLiteral("application/x-granger-tab-id"),
+                            sidebarStress.tabStableId(dragSourcePage).toUtf8());
+            const QPoint actionPoint = spaceMenu->actionGeometry(dragTargetAction).center();
+            QDragEnterEvent enterEvent(actionPoint, Qt::MoveAction, &tabMime,
+                                       Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &enterEvent);
+            QDragMoveEvent moveEvent(actionPoint, Qt::MoveAction, &tabMime,
+                                     Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &moveEvent);
+            QDropEvent dropEvent(QPointF(actionPoint), Qt::MoveAction, &tabMime,
+                                 Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(spaceMenu, &dropEvent);
+        }
+        QObject::disconnect(dragMoveConnection);
+        results.record(QStringLiteral("tab drag through the all-Spaces menu keeps the existing move signal"),
+                       dragMenuReady && dragMovePage == dragSourcePage
+                           && dragMoveTarget == QStringLiteral("sidebar-space-2"));
+
+        sidebarStress.setActiveSpace(ContainerManager::defaultSpaceId(), false);
+        const int tabsBeforeSpaceStress = sidebarStress.count();
+        const QVector<QWidget *> pagesBeforeSpaceStress = sidebarStress.pages();
+        QSet<QWidget *> uniqueSpacePages;
+        bool ownershipStable = true;
+        for (QWidget *page : pagesBeforeSpaceStress) {
+            uniqueSpacePages.insert(page);
+            ownershipStable = ownershipStable && page
+                && sidebarStress.tabSpace(page)
+                    == page->property("granger.spaceId").toString();
+        }
+        for (int i = 0; i < 50; ++i) {
+            const SpaceDefinition &target = stressSpaces.at((i * 7) % stressSpaces.size());
+            sidebarStress.setActiveSpace(target.id, false);
+            ownershipStable = ownershipStable
+                && sidebarStress.activeSpaceId() == target.id
+                && sidebarStress.currentWidget() == activePageBySpace.value(target.id)
+                && sidebarStress.visibleTabCount()
+                    == (target.id == ContainerManager::defaultSpaceId() ? 20 : 1);
+        }
+        ownershipStable = ownershipStable
+            && sidebarStress.count() == tabsBeforeSpaceStress
+            && sidebarStress.pages().size() == tabsBeforeSpaceStress
+            && uniqueSpacePages.size() == tabsBeforeSpaceStress;
+        results.record(QStringLiteral("fifty Space switches preserve tab ownership and last-active selection"),
+                       ownershipStable,
+                       QStringLiteral("tabs=%1/%2; unique=%3; active=%4")
+                           .arg(sidebarStress.count()).arg(tabsBeforeSpaceStress)
+                           .arg(uniqueSpacePages.size()).arg(sidebarStress.activeSpaceId()));
+        sidebarStress.setActiveSpace(ContainerManager::defaultSpaceId(), false);
+        for (int i = 2; i < stressSpaces.size(); ++i) {
+            if (QWidget *page = activePageBySpace.value(stressSpaces.at(i).id)) {
+                sidebarStress.closePage(page);
+            }
+        }
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        settleEvents(20);
 
         QList<QToolButton *> bottomActions;
         if (bottomNavigation) {

@@ -51,7 +51,9 @@ public:
     inline static constexpr int sidebarExpandedWidth = 256;
     inline static constexpr int sidebarOuterPadding = 4;
     inline static constexpr int sidebarSectionSpacing = 4;
-    inline static constexpr int sidebarSpaceRowHeight = 36;
+    inline static constexpr int sidebarSpaceSwitcherHeight = 36;
+    inline static constexpr int sidebarSpaceSwitcherArrowWidth = 30;
+    inline static constexpr int sidebarSpaceMenuMaxHeight = 520;
     inline static constexpr int sidebarCreateButtonHeight = 40;
     inline static constexpr int sidebarSectionHeaderHeight = 18;
     inline static constexpr int sidebarTabsHeaderHeight = 30;
@@ -59,10 +61,6 @@ public:
     inline static constexpr int sidebarBadgeHeight = 18;
     inline static constexpr int sidebarBadgeMinWidth = 20;
     inline static constexpr int sidebarBadgeInset = 8;
-    inline static constexpr int sidebarSpaceListMaxRows = 4;
-    inline static constexpr int sidebarSpaceListMaxHeight =
-        sidebarSpaceRowHeight * sidebarSpaceListMaxRows
-        + sidebarSectionSpacing * (sidebarSpaceListMaxRows - 1);
     inline static constexpr int toolbarButtonSize = 36;
     inline static constexpr int addressBarHeight = 42;
     inline static constexpr int addressBarContentHeight = addressBarHeight - 2;

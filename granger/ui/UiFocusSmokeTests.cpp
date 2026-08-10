@@ -1123,30 +1123,27 @@ int runUiFocusSmoke(QApplication &app,
         ? sidebar->findChild<QToolButton *>(QStringLiteral("NewTabButton")) : nullptr;
     QWidget *spacesHeader = sidebar
         ? sidebar->findChild<QWidget *>(QStringLiteral("SidebarSectionLabel")) : nullptr;
-    auto *spaceScroll = sidebar
-        ? sidebar->findChild<QScrollArea *>(QStringLiteral("SpaceScrollArea")) : nullptr;
+    QWidget *spaceSwitcher = sidebar
+        ? sidebar->findChild<QWidget *>(QStringLiteral("SpaceSwitcher")) : nullptr;
+    auto *previousSpace = sidebar
+        ? sidebar->findChild<QToolButton *>(QStringLiteral("SpaceSwitcherPrevious")) : nullptr;
+    auto *currentSpace = sidebar
+        ? sidebar->findChild<QToolButton *>(QStringLiteral("SpaceSwitcherCurrent")) : nullptr;
+    auto *nextSpace = sidebar
+        ? sidebar->findChild<QToolButton *>(QStringLiteral("SpaceSwitcherNext")) : nullptr;
+    auto *spaceMenu = tabs
+        ? tabs->findChild<QMenu *>(QStringLiteral("SpaceSwitcherMenu")) : nullptr;
     auto *tabsHeader = sidebar
         ? sidebar->findChild<QToolButton *>(QStringLiteral("TabsHeaderButton")) : nullptr;
     auto *tabScroll = sidebar
         ? sidebar->findChild<QScrollArea *>(QStringLiteral("TabScrollArea")) : nullptr;
-    QWidget *spaceList = sidebar
-        ? sidebar->findChild<QWidget *>(QStringLiteral("SpaceList")) : nullptr;
     const auto sidebarRect = [sidebar](const QWidget *widget) {
         if (!sidebar || !widget) return QRect();
         return QRect(widget->mapTo(sidebar, QPoint(0, 0)), widget->size());
     };
-    QList<QToolButton *> spaceRows = spaceList
-        ? spaceList->findChildren<QToolButton *>(QStringLiteral("SpaceButton"),
-                                                 Qt::FindDirectChildrenOnly)
-        : QList<QToolButton *>();
-    std::sort(spaceRows.begin(), spaceRows.end(), [](const QToolButton *left,
-                                                      const QToolButton *right) {
-        return left && right && left->y() < right->y();
-    });
-
     const QRect createRect = sidebarRect(newTabButton);
     const QRect spacesHeaderRect = sidebarRect(spacesHeader);
-    const QRect spacesRect = sidebarRect(spaceScroll);
+    const QRect spacesRect = sidebarRect(spaceSwitcher);
     const QRect tabsHeaderRect = sidebarRect(tabsHeader);
     const QRect compactRect = sidebarRect(compactTop);
     const QRect topRect = sidebarRect(topArea);
@@ -1157,23 +1154,39 @@ int runUiFocusSmoke(QApplication &app,
     };
     const int expectedCompactHeight = (newTabButton ? newTabButton->height() : 0)
         + (spacesHeader ? spacesHeader->height() : 0)
-        + DesignTokens::sidebarSpaceListMaxHeight
+        + DesignTokens::sidebarSpaceSwitcherHeight
         + (tabsHeader ? tabsHeader->height() : 0)
         + 3 * DesignTokens::sidebarSectionSpacing;
-    bool rowsAreCompact = spaceRows.size() == DesignTokens::sidebarSpaceListMaxRows;
-    int activeSpaceRows = 0;
-    for (const QToolButton *row : std::as_const(spaceRows)) {
-        rowsAreCompact = rowsAreCompact && row
-            && row->height() == DesignTokens::sidebarSpaceRowHeight
-            && row->property("expanded").toBool()
-            && !row->text().isEmpty()
-            && !row->toolTip().isEmpty()
-            && !row->accessibleName().isEmpty()
-            && row->property("sidebarCount").isValid()
-            && row->toolButtonStyle() == Qt::ToolButtonTextBesideIcon;
-        if (row && row->property("active").toBool()) ++activeSpaceRows;
+    QList<QAction *> spaceActions;
+    if (spaceMenu) {
+        for (QAction *action : spaceMenu->actions()) {
+            if (action && !action->data().toString().isEmpty()) spaceActions.append(action);
+        }
     }
-    rowsAreCompact = rowsAreCompact && activeSpaceRows == 1;
+    int checkedSpaceActions = 0;
+    for (const QAction *action : std::as_const(spaceActions)) {
+        if (action && action->isChecked()) ++checkedSpaceActions;
+    }
+    const bool switcherPresentationValid = spaceSwitcher && previousSpace && currentSpace
+        && nextSpace && spaceMenu
+        && spaceSwitcher->height() == DesignTokens::sidebarSpaceSwitcherHeight
+        && previousSpace->size() == QSize(DesignTokens::sidebarSpaceSwitcherArrowWidth,
+                                          DesignTokens::sidebarSpaceSwitcherHeight)
+        && nextSpace->size() == QSize(DesignTokens::sidebarSpaceSwitcherArrowWidth,
+                                      DesignTokens::sidebarSpaceSwitcherHeight)
+        && previousSpace->isVisible() && nextSpace->isVisible()
+        && !previousSpace->toolTip().isEmpty() && !nextSpace->toolTip().isEmpty()
+        && !previousSpace->accessibleName().isEmpty()
+        && !nextSpace->accessibleName().isEmpty()
+        && currentSpace->height() == DesignTokens::sidebarSpaceSwitcherHeight
+        && currentSpace->property("active").toBool()
+        && currentSpace->property("expanded").toBool()
+        && currentSpace->property("sidebarCount").isValid()
+        && currentSpace->toolButtonStyle() == Qt::ToolButtonTextBesideIcon
+        && !currentSpace->text().isEmpty() && !currentSpace->icon().isNull()
+        && !currentSpace->toolTip().isEmpty() && !currentSpace->accessibleName().isEmpty()
+        && spaceMenu->property("spaceCount").toInt() == layoutSpaces.size()
+        && spaceActions.size() == layoutSpaces.size() && checkedSpaceActions == 1;
 
     QList<QToolButton *> sidebarActions;
     if (bottomNavigation) {
@@ -1248,7 +1261,7 @@ int runUiFocusSmoke(QApplication &app,
         && tabsHeader->height() == DesignTokens::sidebarTabsHeaderHeight
         && tabsHeader->property("expanded").toBool();
     const bool compactSectionGeometry = sidebar && compactTop && topArea && bottomNavigation
-        && newTabButton && spacesHeader && spaceScroll && tabsHeader && tabScroll
+        && newTabButton && spacesHeader && spaceSwitcher && tabsHeader && tabScroll
         && sidebar->width() == DesignTokens::sidebarExpandedWidth
         && DesignTokens::sidebarExpandedWidth
             == 4 * DesignTokens::sidebarCollapsedWidth
@@ -1259,8 +1272,8 @@ int runUiFocusSmoke(QApplication &app,
         && qAbs(gapAfter(spacesRect, tabsHeaderRect)
                 - DesignTokens::sidebarSectionSpacing) <= 1
         && qAbs(compactRect.height() - expectedCompactHeight) <= 1
-        && spaceScroll->height() == DesignTokens::sidebarSpaceListMaxHeight
-        && rowsAreCompact
+        && spaceSwitcher->height() == DesignTokens::sidebarSpaceSwitcherHeight
+        && switcherPresentationValid
         && createPresentationValid
         && tabsHeaderPresentationValid
         && bottomActionsValid
@@ -1273,16 +1286,16 @@ int runUiFocusSmoke(QApplication &app,
             <= DesignTokens::sidebarOuterPadding + 1;
     results.record(QStringLiteral("Sidebar compact sections use token-derived natural geometry"),
                    compactSectionGeometry,
-                   QStringLiteral("sidebar=%1 compact=%2 expected=%3 rows=%4 gaps=%5/%6/%7")
+                   QStringLiteral("sidebar=%1 compact=%2 expected=%3 spaces=%4 gaps=%5/%6/%7")
                        .arg(sidebar ? sidebar->width() : -1)
                        .arg(compactRect.height())
                        .arg(expectedCompactHeight)
-                       .arg(spaceRows.size())
+                       .arg(spaceActions.size())
                        .arg(gapAfter(createRect, spacesHeaderRect))
                        .arg(gapAfter(spacesHeaderRect, spacesRect))
                        .arg(gapAfter(spacesRect, tabsHeaderRect))
-                       + QStringLiteral(" rowsOk=%1 createOk=%2 headerOk=%3 actions=%4/%5 tabs=%6/%7/%8 active=%9 %10")
-                             .arg(rowsAreCompact)
+                       + QStringLiteral(" switcherOk=%1 createOk=%2 headerOk=%3 actions=%4/%5 tabs=%6/%7/%8 active=%9 %10")
+                             .arg(switcherPresentationValid)
                              .arg(createPresentationValid)
                              .arg(tabsHeaderPresentationValid)
                              .arg(sidebarActions.size())
@@ -1294,6 +1307,19 @@ int runUiFocusSmoke(QApplication &app,
                              .arg(activeTabMetrics));
 
     capture(QStringLiteral("verticalTabs"), QStringLiteral("06-vertical-tabs-expanded.png"), window);
+    if (currentSpace) currentSpace->click();
+    const bool spaceMenuOpened = waitFor([&] {
+        return spaceMenu && spaceMenu->isVisible() && spaceMenu->actions().size() >= 6;
+    });
+    if (spaceMenuOpened) {
+        settle(AnimationPolicy::duration(AnimationKind::Popup) + 30);
+        capture(QStringLiteral("spaceSwitcherMenu"),
+                QStringLiteral("06a-space-switcher-menu.png"), window);
+        QKeyEvent closeSpaceMenu(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(spaceMenu, &closeSpaceMenu);
+    }
+    results.record(QStringLiteral("Space switcher exposes a keyboard-dismissible all-Spaces menu"),
+                   spaceMenuOpened && waitFor([&] { return spaceMenu && !spaceMenu->isVisible(); }));
 
     const int tabCountBeforePresentationCapture = tabs ? tabs->count() : 0;
     QVector<QPointer<QWidget>> presentationPages;
@@ -1362,7 +1388,7 @@ int runUiFocusSmoke(QApplication &app,
                        && remainingVisibleTabItems.size() == tabs->visibleTabCount());
 
     const QRect createAnchorBeforeCollapse = sidebarRect(newTabButton);
-    const QRect spacesAnchorBeforeCollapse = sidebarRect(spaceScroll);
+    const QRect spacesAnchorBeforeCollapse = sidebarRect(spaceSwitcher);
     const QRect tabsHeaderAnchorBeforeCollapse = sidebarRect(tabsHeader);
     const QRect bottomAnchorBeforeCollapse = sidebarRect(bottomNavigation);
     if (tabsHeader && tabs) {
@@ -1375,14 +1401,14 @@ int runUiFocusSmoke(QApplication &app,
         });
     const bool compactAnchorsStable = tabSectionCollapsed
         && sidebarRect(newTabButton) == createAnchorBeforeCollapse
-        && sidebarRect(spaceScroll) == spacesAnchorBeforeCollapse
+        && sidebarRect(spaceSwitcher) == spacesAnchorBeforeCollapse
         && sidebarRect(tabsHeader) == tabsHeaderAnchorBeforeCollapse
         && sidebarRect(bottomNavigation) == bottomAnchorBeforeCollapse;
     results.record(QStringLiteral("collapsing Tabs leaves compact sections and bottom navigation anchored"),
                    compactAnchorsStable,
                    QStringLiteral("create=%1/%2 spaces=%3/%4 tabs=%5/%6 bottom=%7/%8")
                        .arg(createAnchorBeforeCollapse.y()).arg(sidebarRect(newTabButton).y())
-                       .arg(spacesAnchorBeforeCollapse.y()).arg(sidebarRect(spaceScroll).y())
+                        .arg(spacesAnchorBeforeCollapse.y()).arg(sidebarRect(spaceSwitcher).y())
                        .arg(tabsHeaderAnchorBeforeCollapse.y()).arg(sidebarRect(tabsHeader).y())
                        .arg(bottomAnchorBeforeCollapse.y())
                        .arg(sidebarRect(bottomNavigation).y()));
@@ -1501,25 +1527,18 @@ int runUiFocusSmoke(QApplication &app,
                                          .toJson(QJsonDocument::Compact)));
     capture(QStringLiteral("verticalTabsCollapsed"),
             QStringLiteral("06b-vertical-tabs-collapsed.png"), window);
-    QList<QToolButton *> collapsedSpaceRows = spaceList
-        ? spaceList->findChildren<QToolButton *>(QStringLiteral("SpaceButton"),
-                                                 Qt::FindDirectChildrenOnly)
-        : QList<QToolButton *>();
-    collapsedSpaceRows.erase(std::remove_if(collapsedSpaceRows.begin(),
-                                            collapsedSpaceRows.end(),
-        [](const QToolButton *row) { return !row || !row->isVisible(); }),
-        collapsedSpaceRows.end());
     bool collapsedItemsAreIconOnly = newTabButton
         && !newTabButton->property("expanded").toBool()
         && newTabButton->toolButtonStyle() == Qt::ToolButtonIconOnly
-        && newTabButton->text().isEmpty();
-    for (const QToolButton *row : std::as_const(collapsedSpaceRows)) {
-        collapsedItemsAreIconOnly = collapsedItemsAreIconOnly && row
-            && !row->property("expanded").toBool()
-            && row->toolButtonStyle() == Qt::ToolButtonIconOnly
-            && row->text().isEmpty()
-            && !row->toolTip().isEmpty();
-    }
+        && newTabButton->text().isEmpty()
+        && spaceSwitcher && spaceSwitcher->isVisible()
+        && currentSpace && currentSpace->isVisible()
+        && !currentSpace->property("expanded").toBool()
+        && currentSpace->toolButtonStyle() == Qt::ToolButtonIconOnly
+        && currentSpace->text().isEmpty()
+        && !currentSpace->toolTip().isEmpty()
+        && previousSpace && !previousSpace->isVisible()
+        && nextSpace && !nextSpace->isVisible();
     for (const QToolButton *button : std::as_const(sidebarActions)) {
         collapsedItemsAreIconOnly = collapsedItemsAreIconOnly && button
             && !button->property("expanded").toBool()

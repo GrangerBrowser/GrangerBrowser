@@ -1,6 +1,7 @@
 #include "granger/tabs/TabManager.h"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QApplication>
 #include <QDrag>
 #include <QDragEnterEvent>
@@ -12,6 +13,8 @@
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
+#include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
@@ -24,6 +27,7 @@
 #include <QPointer>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScreen>
 #include <QSize>
 #include <QStackedLayout>
 #include <QStackedWidget>
@@ -34,6 +38,7 @@
 #include <QUrlQuery>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <functional>
 #include <algorithm>
@@ -171,6 +176,12 @@ class SidebarCountButton final : public QToolButton {
 public:
     using QToolButton::QToolButton;
 
+    void setElidedSidebarText(const QString &text)
+    {
+        m_fullText = text;
+        updateElidedText();
+    }
+
 protected:
     void paintEvent(QPaintEvent *event) override
     {
@@ -206,6 +217,36 @@ protected:
                 ? DesignTokens::textMutedColor : DesignTokens::textSecondaryColor)));
         painter.drawText(badgeRect, Qt::AlignCenter, count);
     }
+
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QToolButton::resizeEvent(event);
+        updateElidedText();
+    }
+
+    void changeEvent(QEvent *event) override
+    {
+        QToolButton::changeEvent(event);
+        if (event->type() == QEvent::FontChange
+            || event->type() == QEvent::StyleChange) {
+            updateElidedText();
+        }
+    }
+
+private:
+    void updateElidedText()
+    {
+        if (m_fullText.isNull()) return;
+        if (!property("expanded").toBool()) {
+            QToolButton::setText(QString());
+            return;
+        }
+        const int reservedWidth = 78;
+        QToolButton::setText(fontMetrics().elidedText(
+            m_fullText, Qt::ElideRight, qMax(0, width() - reservedWidth)));
+    }
+
+    QString m_fullText;
 };
 
 }
@@ -689,22 +730,59 @@ TabManager::TabManager(QWidget *parent)
     m_spacesHeader->setVisible(false);
     compactLayout->addWidget(m_spacesHeader);
 
-    m_spaceList = new QWidget(m_sidebarCompactTop);
-    m_spaceList->setObjectName(QStringLiteral("SpaceList"));
-    m_spaceListLayout = new QVBoxLayout(m_spaceList);
-    m_spaceListLayout->setContentsMargins(0, 0, 0, 0);
-    m_spaceListLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
-    m_spaceScroll = new QScrollArea(m_sidebarCompactTop);
-    m_spaceScroll->setObjectName(QStringLiteral("SpaceScrollArea"));
-    m_spaceScroll->setFrameShape(QFrame::NoFrame);
-    m_spaceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_spaceScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_spaceScroll->setFocusPolicy(Qt::NoFocus);
-    m_spaceScroll->setWidgetResizable(true);
-    m_spaceScroll->setWidget(m_spaceList);
-    m_spaceScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_spaceScroll->setMaximumHeight(DesignTokens::sidebarSpaceListMaxHeight);
-    compactLayout->addWidget(m_spaceScroll);
+    m_spaceSwitcher = new QWidget(m_sidebarCompactTop);
+    m_spaceSwitcher->setObjectName(QStringLiteral("SpaceSwitcher"));
+    m_spaceSwitcher->setFixedHeight(DesignTokens::sidebarSpaceSwitcherHeight);
+    m_spaceSwitcher->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *spaceSwitcherLayout = new QHBoxLayout(m_spaceSwitcher);
+    spaceSwitcherLayout->setContentsMargins(0, 0, 0, 0);
+    spaceSwitcherLayout->setSpacing(DesignTokens::sidebarSectionSpacing);
+
+    m_previousSpaceButton = new QToolButton(m_spaceSwitcher);
+    m_previousSpaceButton->setObjectName(QStringLiteral("SpaceSwitcherPrevious"));
+    m_previousSpaceButton->setIcon(QIcon(QStringLiteral(":/icons/chevron-left.svg")));
+    m_previousSpaceButton->setIconSize(QSize(16, 16));
+    m_previousSpaceButton->setFixedSize(DesignTokens::sidebarSpaceSwitcherArrowWidth,
+                                        DesignTokens::sidebarSpaceSwitcherHeight);
+    m_previousSpaceButton->setFocusPolicy(Qt::StrongFocus);
+    m_previousSpaceButton->installEventFilter(this);
+    spaceSwitcherLayout->addWidget(m_previousSpaceButton);
+
+    m_currentSpaceButton = new SidebarCountButton(m_spaceSwitcher);
+    m_currentSpaceButton->setObjectName(QStringLiteral("SpaceSwitcherCurrent"));
+    m_currentSpaceButton->setProperty("active", true);
+    m_currentSpaceButton->setProperty("dropTarget", false);
+    m_currentSpaceButton->setProperty("expanded", false);
+    m_currentSpaceButton->setIconSize(QSize(20, 20));
+    m_currentSpaceButton->setMinimumWidth(0);
+    m_currentSpaceButton->setFixedHeight(DesignTokens::sidebarSpaceSwitcherHeight);
+    m_currentSpaceButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_currentSpaceButton->setFocusPolicy(Qt::StrongFocus);
+    m_currentSpaceButton->setAcceptDrops(true);
+    m_currentSpaceButton->installEventFilter(this);
+    spaceSwitcherLayout->addWidget(m_currentSpaceButton, 1);
+
+    m_nextSpaceButton = new QToolButton(m_spaceSwitcher);
+    m_nextSpaceButton->setObjectName(QStringLiteral("SpaceSwitcherNext"));
+    m_nextSpaceButton->setIcon(QIcon(QStringLiteral(":/icons/chevron-right.svg")));
+    m_nextSpaceButton->setIconSize(QSize(16, 16));
+    m_nextSpaceButton->setFixedSize(DesignTokens::sidebarSpaceSwitcherArrowWidth,
+                                    DesignTokens::sidebarSpaceSwitcherHeight);
+    m_nextSpaceButton->setFocusPolicy(Qt::StrongFocus);
+    m_nextSpaceButton->installEventFilter(this);
+    spaceSwitcherLayout->addWidget(m_nextSpaceButton);
+    m_spaceSwitcher->installEventFilter(this);
+    compactLayout->addWidget(m_spaceSwitcher);
+
+    m_spaceMenu = new QMenu(this);
+    m_spaceMenu->setObjectName(QStringLiteral("SpaceSwitcherMenu"));
+    m_spaceMenu->setMaximumWidth(320);
+    m_spaceMenu->setAcceptDrops(true);
+    m_spaceMenu->installEventFilter(this);
+    connect(m_spaceMenu, &QMenu::triggered, this, [this](QAction *action) {
+        const QString spaceId = action ? action->data().toString() : QString();
+        if (!spaceId.isEmpty()) setActiveSpace(spaceId, true);
+    });
 
     m_tabsHeaderButton = new SidebarCountButton(m_sidebarCompactTop);
     m_tabsHeaderButton->setObjectName(QStringLiteral("TabsHeaderButton"));
@@ -869,6 +947,12 @@ TabManager::TabManager(QWidget *parent)
     connect(m_newTabButton, &QToolButton::clicked, this, [this] {
         if (!m_newTabButton->menu()) emit newTabRequested();
     });
+    connect(m_previousSpaceButton, &QToolButton::clicked,
+            this, [this] { activateAdjacentSpace(-1); });
+    connect(m_currentSpaceButton, &QToolButton::clicked,
+            this, &TabManager::showSpaceMenu);
+    connect(m_nextSpaceButton, &QToolButton::clicked,
+            this, [this] { activateAdjacentSpace(1); });
     connect(m_tabsHeaderButton, &QToolButton::clicked, this, [this] {
         auto it = std::find_if(m_spaces.begin(), m_spaces.end(), [this](const SpaceDefinition &space) {
             return space.id == m_activeSpaceId;
@@ -917,6 +1001,16 @@ void TabManager::retranslateUi()
     if (m_spacesHeader) {
         m_spacesHeader->setText(Localization::text(QStringLiteral("containers.title")));
     }
+    if (m_previousSpaceButton) {
+        const QString text = Localization::text(QStringLiteral("spaces.previous"));
+        m_previousSpaceButton->setToolTip(text);
+        m_previousSpaceButton->setAccessibleName(text);
+    }
+    if (m_nextSpaceButton) {
+        const QString text = Localization::text(QStringLiteral("spaces.next"));
+        m_nextSpaceButton->setToolTip(text);
+        m_nextSpaceButton->setAccessibleName(text);
+    }
     for (const TabRecord &record : std::as_const(m_tabs)) {
         if (record.item) record.item->retranslateUi();
     }
@@ -930,7 +1024,7 @@ void TabManager::retranslateUi()
         button->setAccessibleName(text);
         button->setText(m_expanded ? text : QString());
     }
-    rebuildSpaceButtons();
+    rebuildSpaceMenu();
     updateSpaceUi();
 }
 
@@ -970,88 +1064,168 @@ void TabManager::setSpaces(const QVector<SpaceDefinition> &spaces)
     });
     m_spaces = clean;
     m_activeSpaceId = normalizedSpaceId(m_activeSpaceId);
-    rebuildSpaceButtons();
+    rebuildSpaceMenu();
     syncVisibleTabs(false);
     updateSpaceUi();
 }
 
-void TabManager::rebuildSpaceButtons()
+QString TabManager::spaceDisplayName(const SpaceDefinition &space) const
 {
-    if (!m_spaceListLayout) return;
-    while (QLayoutItem *layoutItem = m_spaceListLayout->takeAt(0)) {
-        if (QWidget *widget = layoutItem->widget()) {
-            widget->hide();
-            widget->setEnabled(false);
-            widget->deleteLater();
-        }
-        delete layoutItem;
+    if (space.id == ContainerManager::defaultSpaceId()) {
+        return Localization::text(QStringLiteral("spaces.default"));
     }
-    m_spaceButtons.clear();
+    return space.name.trimmed().isEmpty() ? space.id : space.name;
+}
 
+int TabManager::spaceTabCount(const QString &spaceId) const
+{
+    int count = 0;
+    for (const TabRecord &record : std::as_const(m_tabs)) {
+        if (record.spaceId == spaceId) ++count;
+    }
+    return count;
+}
+
+QIcon TabManager::decoratedSpaceIcon(const SpaceDefinition &space, bool active) const
+{
+    const qreal dpr = devicePixelRatioF();
+    QPixmap pixmap(qMax(1, qRound(20 * dpr)), qMax(1, qRound(20 * dpr)));
+    pixmap.setDevicePixelRatio(dpr);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QIcon glyph(QStringLiteral(":/icons/container-%1.svg").arg(space.icon));
+    glyph.paint(&painter, QRect(1, 1, 17, 17), Qt::AlignCenter,
+                QIcon::Normal, active ? QIcon::On : QIcon::Off);
+    painter.setPen(QPen(QColor(QStringLiteral("#111216")), 1.0));
+    painter.setBrush(QColor(space.color));
+    painter.drawEllipse(QRectF(13.0, 13.0, 6.0, 6.0));
+    painter.end();
+    return QIcon(pixmap);
+}
+
+void TabManager::rebuildSpaceMenu()
+{
+    if (!m_spaceMenu) return;
+    m_spaceMenu->clear();
+    m_spaceMenu->setProperty("spaceCount", m_spaces.size());
+
+    QAction *title = m_spaceMenu->addAction(
+        Localization::text(QStringLiteral("spaces.all")));
+    title->setEnabled(false);
+    title->setProperty("menuSection", true);
+    m_spaceMenu->addSeparator();
+
+    QAction *activeAction = nullptr;
     for (const SpaceDefinition &space : std::as_const(m_spaces)) {
-        auto *button = new SidebarCountButton(m_spaceList);
-        button->setObjectName(QStringLiteral("SpaceButton"));
-        button->setProperty("spaceId", space.id);
-        button->setProperty("active", space.id == m_activeSpaceId);
-        button->setProperty("dropTarget", false);
-        button->setProperty("expanded", m_expanded);
-        button->setCheckable(true);
-        button->setChecked(space.id == m_activeSpaceId);
-        button->setAcceptDrops(true);
-        button->installEventFilter(this);
-        button->setFocusPolicy(Qt::StrongFocus);
-        button->setFixedHeight(DesignTokens::sidebarSpaceRowHeight);
-        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-        const qreal dpr = devicePixelRatioF();
-        QPixmap pixmap(qMax(1, qRound(20 * dpr)), qMax(1, qRound(20 * dpr)));
-        pixmap.setDevicePixelRatio(dpr);
-        pixmap.fill(Qt::transparent);
-        QPainter painter(&pixmap);
-        painter.setRenderHint(QPainter::Antialiasing);
-        const QIcon glyph(QStringLiteral(":/icons/container-%1.svg").arg(space.icon));
-        glyph.paint(&painter, QRect(1, 1, 17, 17), Qt::AlignCenter,
-                    QIcon::Normal, space.id == m_activeSpaceId ? QIcon::On : QIcon::Off);
-        painter.setPen(QPen(QColor(QStringLiteral("#111216")), 1.0));
-        painter.setBrush(QColor(space.color));
-        painter.drawEllipse(QRectF(13.0, 13.0, 6.0, 6.0));
-        painter.end();
-        button->setIcon(QIcon(pixmap));
-        button->setIconSize(QSize(20, 20));
-
-        int tabCount = 0;
-        for (const TabRecord &record : std::as_const(m_tabs)) {
-            if (record.spaceId == space.id) ++tabCount;
-        }
-        const QString displayName = space.id == ContainerManager::defaultSpaceId()
-            ? Localization::text(QStringLiteral("spaces.default")) : space.name;
-        const QString countText = QString::number(tabCount);
-        button->setProperty("sidebarCount", countText);
-        button->setProperty("sidebarCountEmpty", tabCount == 0);
-        button->setText(m_expanded ? displayName : QString());
-        button->setToolButtonStyle(m_expanded ? Qt::ToolButtonTextBesideIcon
-                                               : Qt::ToolButtonIconOnly);
-        button->setToolTip(QStringLiteral("%1\n%2")
+        const bool active = space.id == m_activeSpaceId;
+        const QString displayName = spaceDisplayName(space);
+        const int tabCount = spaceTabCount(space.id);
+        const QString menuName = m_spaceMenu->fontMetrics().elidedText(
+            displayName, Qt::ElideRight, 190);
+        QAction *action = m_spaceMenu->addAction(
+            decoratedSpaceIcon(space, active),
+            QStringLiteral("%1  (%2)").arg(menuName, QString::number(tabCount)));
+        action->setData(space.id);
+        action->setCheckable(true);
+        action->setChecked(active);
+        action->setToolTip(QStringLiteral("%1\n%2")
                                .arg(displayName,
                                     Localization::text(QStringLiteral("spaces.tab_count"))
                                         .arg(tabCount)));
-        button->setAccessibleName(displayName);
-        button->setAccessibleDescription(
-            Localization::text(QStringLiteral("spaces.tab_count")).arg(tabCount));
-        connect(button, &QToolButton::clicked, this, [this, id = space.id] {
-            setActiveSpace(id, true);
-        });
-        m_spaceListLayout->addWidget(button);
-        m_spaceButtons.insert(space.id, button);
+        action->setProperty("accessibleName", displayName);
+        action->setProperty("tabCount", tabCount);
+        if (active) activeAction = action;
     }
-    m_spaceScroll->setVisible(m_spaces.size() > 1 || m_expanded);
-    const int rowsHeight = m_spaces.size() * DesignTokens::sidebarSpaceRowHeight
-        + qMax(0, m_spaces.size() - 1) * DesignTokens::sidebarSectionSpacing;
-    const int viewportHeight = qMin(DesignTokens::sidebarSpaceListMaxHeight,
-                                    qMax(DesignTokens::sidebarSpaceRowHeight, rowsHeight));
-    m_spaceScroll->setMinimumHeight(viewportHeight);
-    m_spaceScroll->setMaximumHeight(viewportHeight);
-    m_sidebarCompactTop->updateGeometry();
+    if (activeAction) m_spaceMenu->setActiveAction(activeAction);
+}
+
+void TabManager::updateSpaceSwitcher()
+{
+    if (!m_currentSpaceButton) return;
+    const auto activeIt = std::find_if(m_spaces.cbegin(), m_spaces.cend(),
+        [this](const SpaceDefinition &space) { return space.id == m_activeSpaceId; });
+    if (activeIt == m_spaces.cend()) return;
+
+    const QString displayName = spaceDisplayName(*activeIt);
+    const int tabCount = spaceTabCount(activeIt->id);
+    const QString countDescription = Localization::text(
+        QStringLiteral("spaces.tab_count")).arg(tabCount);
+    m_currentSpaceButton->setProperty("spaceId", activeIt->id);
+    m_currentSpaceButton->setProperty("active", true);
+    m_currentSpaceButton->setProperty("expanded", m_expanded);
+    m_currentSpaceButton->setProperty("sidebarCount", QString::number(tabCount));
+    m_currentSpaceButton->setProperty("sidebarCountEmpty", tabCount == 0);
+    m_currentSpaceButton->setIcon(decoratedSpaceIcon(*activeIt, true));
+    m_currentSpaceButton->setToolButtonStyle(m_expanded
+        ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    static_cast<SidebarCountButton *>(m_currentSpaceButton)
+        ->setElidedSidebarText(displayName);
+    m_currentSpaceButton->setToolTip(QStringLiteral("%1\n%2\n%3")
+        .arg(displayName, countDescription,
+             Localization::text(QStringLiteral("spaces.open_selector"))));
+    m_currentSpaceButton->setAccessibleName(displayName);
+    m_currentSpaceButton->setAccessibleDescription(QStringLiteral("%1. %2")
+        .arg(countDescription,
+             Localization::text(QStringLiteral("spaces.open_selector"))));
+    m_currentSpaceButton->style()->unpolish(m_currentSpaceButton);
+    m_currentSpaceButton->style()->polish(m_currentSpaceButton);
+
+    const bool multipleSpaces = m_spaces.size() > 1;
+    m_previousSpaceButton->setEnabled(multipleSpaces);
+    m_nextSpaceButton->setEnabled(multipleSpaces);
+    m_previousSpaceButton->setVisible(m_expanded);
+    m_nextSpaceButton->setVisible(m_expanded);
+    m_spaceSwitcher->updateGeometry();
+}
+
+void TabManager::activateAdjacentSpace(int direction)
+{
+    if (m_spaces.size() < 2 || direction == 0) return;
+    int current = 0;
+    for (int i = 0; i < m_spaces.size(); ++i) {
+        if (m_spaces.at(i).id == m_activeSpaceId) {
+            current = i;
+            break;
+        }
+    }
+    const int step = direction < 0 ? -1 : 1;
+    const int target = (current + step + m_spaces.size()) % m_spaces.size();
+    setActiveSpace(m_spaces.at(target).id, true);
+}
+
+void TabManager::showSpaceMenu()
+{
+    if (!m_spaceMenu || !m_currentSpaceButton) return;
+    if (m_spaceMenu->isVisible()) {
+        m_spaceMenu->close();
+        return;
+    }
+    rebuildSpaceMenu();
+    m_spaceMenu->ensurePolished();
+    QPoint position = m_currentSpaceButton->mapToGlobal(
+        QPoint(0, m_currentSpaceButton->height() + DesignTokens::sidebarSectionSpacing));
+    if (QScreen *screen = QGuiApplication::screenAt(position)) {
+        constexpr int popupInset = 8;
+        const QRect available = screen->availableGeometry().adjusted(
+            popupInset, popupInset, -popupInset, -popupInset);
+        m_spaceMenu->setMaximumHeight(qMax(180, qMin(
+            DesignTokens::sidebarSpaceMenuMaxHeight, available.height())));
+        const QSize menuSize = m_spaceMenu->sizeHint().boundedTo(
+            QSize(m_spaceMenu->maximumWidth(), m_spaceMenu->maximumHeight()));
+        const int maximumX = qMax(available.left(), available.right() - menuSize.width() + 1);
+        int y = position.y();
+        if (y + menuSize.height() > available.bottom() + 1) {
+            y = m_currentSpaceButton->mapToGlobal(QPoint(0, 0)).y()
+                - menuSize.height() - DesignTokens::sidebarSectionSpacing;
+        }
+        position.setX(qBound(available.left(), position.x(), maximumX));
+        position.setY(qBound(available.top(), y,
+            qMax(available.top(), available.bottom() - menuSize.height() + 1)));
+    } else {
+        m_spaceMenu->setMaximumHeight(QWIDGETSIZE_MAX);
+    }
+    m_spaceMenu->popup(position);
 }
 
 QString TabManager::activeSpaceId() const
@@ -1113,8 +1287,7 @@ void TabManager::updateSpaceUi(bool animateTabSection)
             break;
         }
     }
-    const QString displayName = active.id == ContainerManager::defaultSpaceId()
-        ? Localization::text(QStringLiteral("spaces.default")) : active.name;
+    const QString displayName = spaceDisplayName(active);
     const int count = visibleIndices(m_activeSpaceId).size();
     const QString sectionTitle = Localization::text(QStringLiteral("spaces.tabs_header"));
     const QString sectionDescription = Localization::text(
@@ -1136,14 +1309,7 @@ void TabManager::updateSpaceUi(bool animateTabSection)
     m_tabsHeaderButton->style()->polish(m_tabsHeaderButton);
     m_tabsHeaderButton->setVisible(m_expanded);
     setTabSectionCollapsed(active.collapsed, animateTabSection);
-    for (auto it = m_spaceButtons.begin(); it != m_spaceButtons.end(); ++it) {
-        if (!it.value()) continue;
-        const bool selected = it.key() == m_activeSpaceId;
-        it.value()->setChecked(selected);
-        it.value()->setProperty("active", selected);
-        it.value()->style()->unpolish(it.value());
-        it.value()->style()->polish(it.value());
-    }
+    updateSpaceSwitcher();
 }
 
 void TabManager::setTabSectionCollapsed(bool collapsed, bool animate)
@@ -1259,7 +1425,6 @@ int TabManager::addTab(QWidget *page, const QString &title)
     if (spaceId != m_activeSpaceId) m_activeSpaceId = spaceId;
     syncVisibleTabs(false);
     setCurrentIndex(index);
-    rebuildSpaceButtons();
     updateSpaceUi();
     return index;
 }
@@ -1286,11 +1451,11 @@ void TabManager::closeTab(int index)
 
     if (m_tabs.isEmpty()) {
         m_currentIndex = -1;
+        updateSpaceUi();
         emit allTabsClosed();
         return;
     }
 
-    rebuildSpaceButtons();
     syncVisibleTabs(false);
     if (!closedCurrent && previousCurrentPage) {
         m_currentIndex = indexOfPage(previousCurrentPage);
@@ -1425,7 +1590,6 @@ void TabManager::setTabSpace(QWidget *page, const QString &spaceId)
     if (m_tabs[index].item) m_tabs[index].item->setProperty("spaceId", target);
     rebuildTabLayout();
     syncVisibleTabs(false);
-    rebuildSpaceButtons();
     updateSpaceUi();
 }
 
@@ -1759,7 +1923,12 @@ void TabManager::beginTabDrag(TabItemWidget *item)
     m_dragScrollDirection = 0;
     if (m_dragScrollTimer) m_dragScrollTimer->stop();
     clearDropIndicator();
-    for (QToolButton *button : m_spaceButtons) setSpaceButtonDropState(button, false);
+    if (m_currentSpaceButton) {
+        m_currentSpaceButton->setProperty("dropTarget", false);
+        m_currentSpaceButton->style()->unpolish(m_currentSpaceButton);
+        m_currentSpaceButton->style()->polish(m_currentSpaceButton);
+    }
+    if (m_spaceMenu) m_spaceMenu->close();
 }
 
 void TabManager::updateDropIndicator(const QPoint &tabListPosition)
@@ -1850,14 +2019,6 @@ bool TabManager::reorderTabWithinSpace(const QString &tabId, int visibleInsertio
     return true;
 }
 
-void TabManager::setSpaceButtonDropState(QToolButton *button, bool active)
-{
-    if (!button || button->property("dropTarget").toBool() == active) return;
-    button->setProperty("dropTarget", active);
-    button->style()->unpolish(button);
-    button->style()->polish(button);
-}
-
 bool TabManager::eventFilter(QObject *watched, QEvent *event)
 {
     if (m_tabScroll && watched == m_tabScroll->viewport()
@@ -1866,36 +2027,149 @@ bool TabManager::eventFilter(QObject *watched, QEvent *event)
             m_spaceTransitionOverlay->setGeometry(m_tabScroll->viewport()->rect());
         }
     }
-    if (auto *spaceButton = qobject_cast<QToolButton *>(watched);
-        spaceButton && !spaceButton->property("spaceId").toString().isEmpty()) {
-        const QString targetSpace = spaceButton->property("spaceId").toString();
-        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
-            auto *dragEvent = static_cast<QDragMoveEvent *>(event);
-            const QString tabId = draggedTabId(dragEvent->mimeData());
-            if (!tabId.isEmpty()) {
-                for (QToolButton *button : m_spaceButtons) {
-                    setSpaceButtonDropState(button, button == spaceButton);
-                }
-                dragEvent->acceptProposedAction();
-                return true;
-            }
-        } else if (event->type() == QEvent::DragLeave) {
-            setSpaceButtonDropState(spaceButton, false);
+    const bool spaceSwitcherInput = watched == m_spaceSwitcher
+        || watched == m_previousSpaceButton
+        || watched == m_currentSpaceButton
+        || watched == m_nextSpaceButton;
+    if (spaceSwitcherInput && event->type() == QEvent::KeyPress) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        int direction = 0;
+        if (keyEvent->key() == Qt::Key_Left || keyEvent->key() == Qt::Key_Up) direction = -1;
+        if (keyEvent->key() == Qt::Key_Right || keyEvent->key() == Qt::Key_Down) direction = 1;
+        if (keyEvent->key() == Qt::Key_Home && !m_spaces.isEmpty()) {
+            setActiveSpace(m_spaces.first().id, true);
+            keyEvent->accept();
             return true;
-        } else if (event->type() == QEvent::Drop) {
-            auto *dropEvent = static_cast<QDropEvent *>(event);
-            const QString tabId = draggedTabId(dropEvent->mimeData());
-            for (QToolButton *button : m_spaceButtons) setSpaceButtonDropState(button, false);
-            const int source = indexForTabId(tabId);
-            if (source >= 0) {
-                if (m_tabs.at(source).spaceId == targetSpace) {
-                    setActiveSpace(targetSpace, true);
-                } else {
-                    emit tabMoveToSpaceRequested(m_tabs.at(source).page, targetSpace);
+        }
+        if (keyEvent->key() == Qt::Key_End && !m_spaces.isEmpty()) {
+            setActiveSpace(m_spaces.last().id, true);
+            keyEvent->accept();
+            return true;
+        }
+        if (direction != 0) {
+            activateAdjacentSpace(direction);
+            keyEvent->accept();
+            return true;
+        }
+    }
+    if (spaceSwitcherInput && event->type() == QEvent::Wheel) {
+        auto *wheelEvent = static_cast<QWheelEvent *>(event);
+        if (wheelEvent->phase() == Qt::ScrollEnd) {
+            m_spaceWheelAngleAccumulator = 0;
+            m_spaceWheelPixelAccumulator = 0;
+            wheelEvent->accept();
+            return true;
+        }
+        const QPoint angle = wheelEvent->angleDelta();
+        const QPoint pixel = wheelEvent->pixelDelta();
+        const bool useAngle = !angle.isNull();
+        const QPoint delta = useAngle ? angle : pixel;
+        const int component = qAbs(delta.x()) > qAbs(delta.y()) ? delta.x() : delta.y();
+        if (component != 0) {
+            int &accumulator = useAngle ? m_spaceWheelAngleAccumulator
+                                        : m_spaceWheelPixelAccumulator;
+            if ((accumulator < 0 && component > 0)
+                || (accumulator > 0 && component < 0)) {
+                accumulator = 0;
+            }
+            accumulator += component;
+            const int threshold = useAngle ? 120 : 40;
+            const int steps = qMin(3, qAbs(accumulator) / threshold);
+            if (steps > 0) {
+                const int direction = accumulator > 0 ? -1 : 1;
+                for (int i = 0; i < steps; ++i) activateAdjacentSpace(direction);
+                accumulator += accumulator > 0 ? -steps * threshold : steps * threshold;
+            }
+        }
+        wheelEvent->accept();
+        return true;
+    }
+    if (watched == m_spaceMenu && event->type() == QEvent::KeyPress) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent->key() == Qt::Key_Home || keyEvent->key() == Qt::Key_End) {
+            QList<QAction *> spaceActions;
+            for (QAction *action : m_spaceMenu->actions()) {
+                if (action && action->isEnabled()
+                    && !action->data().toString().isEmpty()) {
+                    spaceActions.append(action);
                 }
-                dropEvent->acceptProposedAction();
+            }
+            if (!spaceActions.isEmpty()) {
+                m_spaceMenu->setActiveAction(keyEvent->key() == Qt::Key_Home
+                    ? spaceActions.first() : spaceActions.last());
+                keyEvent->accept();
                 return true;
             }
+        }
+    }
+
+    const auto setSwitcherDropState = [this](bool active) {
+        if (!m_currentSpaceButton
+            || m_currentSpaceButton->property("dropTarget").toBool() == active) return;
+        m_currentSpaceButton->setProperty("dropTarget", active);
+        m_currentSpaceButton->style()->unpolish(m_currentSpaceButton);
+        m_currentSpaceButton->style()->polish(m_currentSpaceButton);
+    };
+    if (watched == m_currentSpaceButton
+        && (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove)) {
+        auto *dragEvent = static_cast<QDragMoveEvent *>(event);
+        const QString tabId = draggedTabId(dragEvent->mimeData());
+        if (!tabId.isEmpty()) {
+            m_draggedTabId = tabId;
+            setSwitcherDropState(true);
+            if (!m_spaceMenu->isVisible()) showSpaceMenu();
+            dragEvent->acceptProposedAction();
+            return true;
+        }
+    }
+    if (watched == m_currentSpaceButton && event->type() == QEvent::DragLeave) {
+        setSwitcherDropState(false);
+        return true;
+    }
+    if (watched == m_currentSpaceButton && event->type() == QEvent::Drop) {
+        auto *dropEvent = static_cast<QDropEvent *>(event);
+        const QString tabId = draggedTabId(dropEvent->mimeData());
+        const int source = indexForTabId(tabId);
+        setSwitcherDropState(false);
+        if (source >= 0) {
+            setActiveSpace(m_tabs.at(source).spaceId, true);
+            dropEvent->acceptProposedAction();
+            return true;
+        }
+    }
+    if (watched == m_spaceMenu
+        && (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove)) {
+        auto *dragEvent = static_cast<QDragMoveEvent *>(event);
+        const QString tabId = draggedTabId(dragEvent->mimeData());
+        if (!tabId.isEmpty()) {
+            QAction *target = m_spaceMenu->actionAt(dragEvent->position().toPoint());
+            if (target && !target->data().toString().isEmpty()) {
+                m_spaceMenu->setActiveAction(target);
+            }
+            dragEvent->acceptProposedAction();
+            return true;
+        }
+    }
+    if (watched == m_spaceMenu && event->type() == QEvent::DragLeave) {
+        setSwitcherDropState(false);
+        return true;
+    }
+    if (watched == m_spaceMenu && event->type() == QEvent::Drop) {
+        auto *dropEvent = static_cast<QDropEvent *>(event);
+        const QString tabId = draggedTabId(dropEvent->mimeData());
+        QAction *target = m_spaceMenu->actionAt(dropEvent->position().toPoint());
+        const QString targetSpace = target ? target->data().toString() : QString();
+        const int source = indexForTabId(tabId);
+        setSwitcherDropState(false);
+        if (source >= 0 && !targetSpace.isEmpty()) {
+            if (m_tabs.at(source).spaceId == targetSpace) {
+                setActiveSpace(targetSpace, true);
+            } else {
+                emit tabMoveToSpaceRequested(m_tabs.at(source).page, targetSpace);
+            }
+            m_spaceMenu->close();
+            dropEvent->acceptProposedAction();
+            return true;
         }
     }
     if (watched == m_sidebar) {
@@ -2112,7 +2386,6 @@ void TabManager::setItemsExpanded(bool expanded)
         button->style()->unpolish(button);
         button->style()->polish(button);
     }
-    rebuildSpaceButtons();
     updateSpaceUi();
 }
 

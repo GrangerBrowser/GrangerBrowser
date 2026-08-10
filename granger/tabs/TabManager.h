@@ -2,8 +2,6 @@
 
 #include "granger/containers/ContainerManager.h"
 
-#include <QHash>
-#include <QPointer>
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
@@ -135,14 +133,19 @@ private:
     void syncVisibleTabs(bool animate = false);
     void clearSpaceSwitchTransition();
     void rebuildTabLayout();
-    void rebuildSpaceButtons();
+    void rebuildSpaceMenu();
+    void updateSpaceSwitcher();
+    void activateAdjacentSpace(int direction);
+    void showSpaceMenu();
+    QString spaceDisplayName(const SpaceDefinition &space) const;
+    int spaceTabCount(const QString &spaceId) const;
+    QIcon decoratedSpaceIcon(const SpaceDefinition &space, bool active) const;
     void updateSpaceUi(bool animateTabSection = false);
     void setTabSectionCollapsed(bool collapsed, bool animate);
     void activateRelative(TabItemWidget *item, int direction);
     void beginTabDrag(TabItemWidget *item);
     void updateDropIndicator(const QPoint &tabListPosition);
     void clearDropIndicator();
-    void setSpaceButtonDropState(QToolButton *button, bool active);
     QString draggedTabId(const QMimeData *mimeData) const;
     QString normalizedSpaceId(const QString &spaceId) const;
     QToolButton *makeSidebarAction(const QString &objectName,
@@ -160,9 +163,11 @@ private:
     QWidget *m_bottomNavigation = nullptr;
     QWidget *m_contentLayer = nullptr;
     QLabel *m_spacesHeader = nullptr;
-    QWidget *m_spaceList = nullptr;
-    QScrollArea *m_spaceScroll = nullptr;
-    QVBoxLayout *m_spaceListLayout = nullptr;
+    QWidget *m_spaceSwitcher = nullptr;
+    QToolButton *m_previousSpaceButton = nullptr;
+    QToolButton *m_currentSpaceButton = nullptr;
+    QToolButton *m_nextSpaceButton = nullptr;
+    QMenu *m_spaceMenu = nullptr;
     QToolButton *m_tabsHeaderButton = nullptr;
     QWidget *m_tabList = nullptr;
     QScrollArea *m_tabScroll = nullptr;
@@ -183,11 +188,12 @@ private:
     QVariantAnimation *m_dropIndicatorAnimation = nullptr;
     QVector<TabRecord> m_tabs;
     QVector<SpaceDefinition> m_spaces;
-    QHash<QString, QPointer<QToolButton>> m_spaceButtons;
     QString m_activeSpaceId = QStringLiteral("default");
     QString m_draggedTabId;
     int m_dropVisibleIndex = -1;
     int m_dragScrollDirection = 0;
+    int m_spaceWheelAngleAccumulator = 0;
+    int m_spaceWheelPixelAccumulator = 0;
     int m_currentIndex = -1;
     int m_animationStartSidebar = 0;
     int m_animationEndSidebar = 0;
