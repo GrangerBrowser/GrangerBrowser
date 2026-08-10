@@ -68,7 +68,7 @@ The pinned Qt runtime can be installed from Qt's official repositories with
 `.\scripts\install-qt-6.11.1.ps1`; every downloaded archive is checked against
 its published SHA-1 before extraction.
 
-Temporary compiler output stays under `build\desktop`. Packaging uses `release\.staging` only while validation runs, then replaces `release\Granger Browser` and removes staging. The script never creates candidate or final-sanity directories.
+Temporary compiler output stays under `build\desktop`. Packaging uses `release\.staging` only while validation runs, then replaces `release\Granger Browser` and removes staging. A focused `release\.ui-stage` package is also temporary and is removed by the canonical build orchestrator. `package-release.ps1` rejects direct writes to the canonical directory, and the scripts never create candidate or final-sanity directories.
 
 See [BUILDING.md](BUILDING.md) for the package layout and acceptance details. The verified release record is in [docs/GRANGER_BROWSER_RELEASE_REPORT.md](docs/GRANGER_BROWSER_RELEASE_REPORT.md).
 

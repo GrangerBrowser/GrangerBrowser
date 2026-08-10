@@ -14,9 +14,10 @@ if ([string]::IsNullOrWhiteSpace($QtRoot) -or -not (Test-Path -LiteralPath $QtRo
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "release"))
 $canonical = Join-Path $releaseRoot "Granger Browser"
 $staging = Join-Path $releaseRoot ".staging"
+$uiStaging = Join-Path $releaseRoot ".ui-stage"
 $previous = Join-Path $releaseRoot ".previous"
 $resolvedProject = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
-foreach ($path in @($releaseRoot, $canonical, $staging, $previous)) {
+foreach ($path in @($releaseRoot, $canonical, $staging, $uiStaging, $previous)) {
     if (-not $path.StartsWith($resolvedProject + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw "Release path escaped the project workspace: $path"
     }
@@ -48,13 +49,26 @@ function Get-PackageProcesses {
     })
 }
 
+function Remove-StagingDirectory {
+    param([Parameter(Mandatory)][string]$PackageDirectory)
+
+    if (-not (Test-Path -LiteralPath $PackageDirectory)) { return }
+    $activeProcesses = @(Get-PackageProcesses -PackageDirectory $PackageDirectory)
+    if ($activeProcesses.Count -ne 0) {
+        $details = $activeProcesses | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }
+        throw "Temporary release is still running from $PackageDirectory`: $($details -join ', ')"
+    }
+    Remove-Item -LiteralPath $PackageDirectory -Recurse -Force
+}
+
 if ((Test-Path -LiteralPath $canonical) -and (Test-Path -LiteralPath $previous)) {
     throw "Interrupted release swap detected. Restore or remove $previous before rebuilding."
 }
 if ((Test-Path -LiteralPath $previous) -and -not (Test-Path -LiteralPath $canonical)) {
     Move-DirectoryAtomically -Source $previous -Destination $canonical
 }
-if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+Remove-StagingDirectory -PackageDirectory $staging
+Remove-StagingDirectory -PackageDirectory $uiStaging
 
 try {
     & (Join-Path $PSScriptRoot "compile-release.ps1") -QtRoot $QtRoot -BuildDirectory $BuildDirectory -Clean
@@ -113,10 +127,13 @@ try {
         ExecutableSHA256 = (Get-FileHash -LiteralPath (Join-Path $canonical "GrangerBrowser.exe") -Algorithm SHA256).Hash
         Acceptance = Join-Path $projectRoot "output/release acceptance/path with spaces/release-acceptance.json"
         PythonRuntimeArtifacts = 0
+        TemporaryStagingRemoved = (-not (Test-Path -LiteralPath $staging) -and
+            -not (Test-Path -LiteralPath $uiStaging))
         ReleaseDirectories = @((Get-ChildItem -LiteralPath $releaseRoot -Directory -Force).Name)
     } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $releaseRoot "build-report.json") -Encoding UTF8
 } catch {
-    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    Remove-StagingDirectory -PackageDirectory $staging
+    Remove-StagingDirectory -PackageDirectory $uiStaging
     throw
 }
 Write-Host "Canonical release ready: $canonical"

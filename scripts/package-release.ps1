@@ -26,6 +26,16 @@ $resolvedPackage = [IO.Path]::GetFullPath($packageRoot)
 if (-not $resolvedPackage.StartsWith($resolvedProject + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "Destination must remain inside the project workspace."
 }
+$allowedStagingDirectories = @(
+    [IO.Path]::GetFullPath((Join-Path $projectRoot "release/.staging")),
+    [IO.Path]::GetFullPath((Join-Path $projectRoot "release/.ui-stage"))
+)
+$isAllowedStagingDirectory = @($allowedStagingDirectories | Where-Object {
+    $_.Equals($resolvedPackage, [StringComparison]::OrdinalIgnoreCase)
+}).Count -ne 0
+if (-not $isAllowedStagingDirectory) {
+    throw "Destination must be release/.staging or release/.ui-stage. Use build-release.ps1 to promote the canonical release."
+}
 if (Test-Path -LiteralPath $resolvedPackage) {
     Remove-Item -LiteralPath $resolvedPackage -Recurse -Force
 }

@@ -42,6 +42,13 @@ For compile-only development work:
 
 Internally, the release orchestrator calls `package-release.ps1`. It runs `windeployqt`, adds the app-local VC143 runtime, packages Qt WebEngine resources/locales, bundles Tor, geoip data, `lyrebird`, `pt_config.json`, notices, assets, and shortcut creation, validates required files, and writes `release-manifest.json` with SHA-256 hashes.
 
+`package-release.ps1` is staging-only and rejects the canonical
+`release\Granger Browser` path. It accepts only `release\.staging`, used by the
+orchestrator, or `release\.ui-stage`, used for focused visual checks. Only
+`build-release.ps1` may promote an accepted package to the canonical release;
+it removes stale staging directories after confirming that no process is
+running from them.
+
 The optional NMEA positioning plugin is removed because it requires Qt SerialPort, which Granger Browser does not ship or use. The WinRT and polling positioning plugins remain.
 
 ## Release Layout
