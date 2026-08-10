@@ -2071,9 +2071,17 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 || Localization::language() != language) {
                 return false;
             }
-            return evaluate(languageTab->page(), QStringLiteral(
-                       "document.querySelector('select.language-select[name=language]')?.value||''"),
-                            QWebEngineScript::MainWorld, 1000).toString() == language;
+            const QVariantMap pageLanguage = evaluate(
+                languageTab->page(),
+                QStringLiteral(R"JS((()=>({
+                    title:document.querySelector('h1')?.textContent.trim()||'',
+                    selected:document.querySelector('select.language-select[name=language]')?.value||''
+                }))())JS"),
+                QWebEngineScript::MainWorld, 1000).toMap();
+            return pageLanguage.value(QStringLiteral("title")).toString()
+                       == Localization::text(QStringLiteral("page.settings.title"))
+                && (pageLanguage.value(QStringLiteral("selected")).toString().isEmpty()
+                    || pageLanguage.value(QStringLiteral("selected")).toString() == language);
         }, 5000);
     };
 
@@ -2476,6 +2484,93 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     results.record(QStringLiteral("Settings language restored after localized responsive coverage"), settingsEnglishRestored);
     window->showMaximized();
     settle(180);
+
+    QJsonObject normalizedSettingsLayouts;
+    const auto verifyNormalizedSettingsCategory = [&](const QString &categoryId,
+                                                       int minimumSurfaceCount,
+                                                       const QString &captureKey,
+                                                       const QString &captureName) {
+        window->openAddressForDiagnostics(
+            QStringLiteral("about:settings?category=%1").arg(categoryId));
+        const bool ready = waitFor([&] {
+            BrowserTab *tab = window->currentTabForDiagnostics();
+            return tab && !tab->isLoading()
+                && evaluate(tab->page(), QStringLiteral(
+                       "document.querySelector('.settings-nav a.active')?.href.includes('id=%1')")
+                                            .arg(categoryId),
+                            QWebEngineScript::MainWorld, 1000).toBool();
+        }, 6000);
+        BrowserTab *tab = window->currentTabForDiagnostics();
+        const QVariantMap geometry = evaluate(
+            tab ? tab->page() : nullptr,
+            QStringLiteral(R"JS((()=>{
+                const panel=document.querySelector('.settings-panel');
+                if(!panel)return {present:false};
+                const visible=element=>{
+                    const rect=element.getBoundingClientRect();
+                    return rect.width>0&&rect.height>0;
+                };
+                const surfaces=[...panel.children]
+                    .filter(element=>element.matches('form,.settings-surface'))
+                    .filter(visible);
+                const surfaceRects=surfaces.map(element=>element.getBoundingClientRect());
+                const controlColumns=[...panel.querySelectorAll('.setting-row .control')]
+                    .filter(visible).map(element=>element.getBoundingClientRect().left);
+                const controls=[...panel.querySelectorAll(
+                    'input:not([type="checkbox"]):not(.ds-native-select),textarea,.ds-select-trigger')]
+                    .filter(visible).map(element=>element.getBoundingClientRect());
+                const surfaceStyles=surfaces.map(element=>getComputedStyle(element));
+                const spread=values=>values.length<2?0:Math.max(...values)-Math.min(...values);
+                return {
+                    present:true,
+                    surfaceCount:surfaces.length,
+                    sameSurfaceLeft:spread(surfaceRects.map(rect=>Math.round(rect.left)))<=1,
+                    sameSurfaceWidth:spread(surfaceRects.map(rect=>Math.round(rect.width)))<=1,
+                    controlColumnSpread:spread(controlColumns.map(value=>Math.round(value))),
+                    controlHeightSpread:spread(controls.map(rect=>Math.round(rect.height))),
+                    cardsStyled:surfaceStyles.every(style=>
+                        style.borderTopStyle==='solid'
+                        &&parseFloat(style.borderTopWidth)>0
+                        &&parseFloat(style.borderRadius)>0
+                        &&style.backgroundColor!==getComputedStyle(document.body).backgroundColor),
+                    noLooseSectionHeadings:[...panel.children]
+                        .filter(element=>element.tagName==='H3').length===0,
+                    noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1,
+                    controlsInside:controls.every(rect=>rect.left>=-1&&rect.right<=innerWidth+1)
+                };
+            })())JS"), QWebEngineScript::MainWorld, 5000).toMap();
+        QJsonObject details = QJsonObject::fromVariantMap(geometry);
+        details.insert(QStringLiteral("ready"), ready);
+        details.insert(QStringLiteral("category"), categoryId);
+        normalizedSettingsLayouts.insert(categoryId, details);
+        const bool passed = ready
+            && geometry.value(QStringLiteral("present")).toBool()
+            && geometry.value(QStringLiteral("surfaceCount")).toInt() >= minimumSurfaceCount
+            && geometry.value(QStringLiteral("sameSurfaceLeft")).toBool()
+            && geometry.value(QStringLiteral("sameSurfaceWidth")).toBool()
+            && geometry.value(QStringLiteral("controlColumnSpread")).toDouble() <= 1.0
+            && geometry.value(QStringLiteral("controlHeightSpread")).toDouble() <= 2.0
+            && geometry.value(QStringLiteral("cardsStyled")).toBool()
+            && geometry.value(QStringLiteral("noLooseSectionHeadings")).toBool()
+            && geometry.value(QStringLiteral("noHorizontalOverflow")).toBool()
+            && geometry.value(QStringLiteral("controlsInside")).toBool();
+        evaluate(tab ? tab->page() : nullptr, QStringLiteral("window.scrollTo(0,0)"));
+        settle(140);
+        capture(captureKey, captureName, window);
+        return passed;
+    };
+    const bool connectionLayoutNormalized = verifyNormalizedSettingsCategory(
+        QStringLiteral("connection"), 4,
+        QStringLiteral("settingsConnection"),
+        QStringLiteral("07p-settings-connection.png"));
+    const bool advancedLayoutNormalized = verifyNormalizedSettingsCategory(
+        QStringLiteral("advanced"), 3,
+        QStringLiteral("settingsAdvanced"),
+        QStringLiteral("07q-settings-advanced.png"));
+    results.record(QStringLiteral("Tor and Advanced Settings share the normalized card geometry"),
+                   connectionLayoutNormalized && advancedLayoutNormalized,
+                   QString::fromUtf8(QJsonDocument(normalizedSettingsLayouts)
+                                         .toJson(QJsonDocument::Compact)));
 
     const bool reportsRussianActive = switchLanguage(QStringLiteral("ru"));
     window->openAddressForDiagnostics(QStringLiteral("about:settings?category=reports"));

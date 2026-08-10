@@ -355,7 +355,10 @@ transition:background-color var(--ds-fast) ease,color var(--ds-fast) ease,border
 .settings-page .settings-nav a.active::before{
 content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:2px;border-radius:2px;background:var(--ds-accent-hover)
 }
-.settings-page .settings-panel{width:100%;max-width:860px;min-width:0}
+.settings-page .settings-panel{
+--settings-content-max:860px;--settings-card-inset:18px;--settings-control-column:minmax(230px,330px);
+width:100%;max-width:var(--settings-content-max);min-width:0
+}
 .settings-page .settings-panel>h2{margin:0 0 22px;font-size:22px}
 .settings-page .settings-panel>form+h3,.settings-page .settings-panel>form+form,
 .settings-page .settings-panel>details,.settings-page .settings-panel>.settings-subsection{margin-top:32px}
@@ -366,6 +369,34 @@ min-width:0;padding:2px 18px 18px;border:1px solid var(--ds-border-subtle);borde
 background:var(--ds-bg-surface)
 }
 .settings-page .settings-panel>form+form{margin-top:18px}
+.settings-page .settings-panel>.settings-surface{
+min-width:0;overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:8px;
+background:var(--ds-bg-surface)
+}
+.settings-page .settings-panel>.settings-surface+.settings-surface{margin-top:18px}
+.settings-page .settings-surface-header{
+display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+padding:17px var(--settings-card-inset) 14px;border-bottom:1px solid var(--ds-border-subtle)
+}
+.settings-page .settings-surface-header h3{margin:0;color:var(--ds-text);font-size:15px}
+.settings-page .settings-surface-header p{margin:4px 0 0}
+.settings-page .settings-surface-body{min-width:0;padding:16px var(--settings-card-inset)}
+.settings-page .settings-surface-body.flush{padding:0}
+.settings-page .settings-surface-body>.info-list{border-top:0}
+.settings-page .settings-surface-body.flush .info-row{padding-left:var(--settings-card-inset);padding-right:var(--settings-card-inset)}
+.settings-page .settings-surface-body.flush .info-row:last-child{border-bottom:0}
+.settings-page .settings-surface>form{margin:0}
+.settings-page .settings-surface-footer{
+display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0;
+padding:15px var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
+background:rgba(255,255,255,.012)
+}
+.settings-page .settings-surface-footer .button,.settings-page .settings-surface-footer button{flex:0 1 auto}
+.settings-page .settings-strategy-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.settings-page .settings-strategy-grid .button{width:100%;min-width:0;text-align:center}
+.settings-page .settings-surface-field{display:grid;gap:7px;min-width:0}
+.settings-page .settings-surface-field>span{color:var(--ds-text-secondary);font-size:12px;font-weight:550}
+.settings-page .settings-surface-field>input{width:100%;min-width:0}
 .settings-page .settings-panel>form>h3{
 margin:0 -18px 4px;padding:17px 18px 14px;border-top:1px solid var(--ds-border-subtle);
 border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:15px
@@ -384,7 +415,7 @@ background:var(--ds-bg-surface)
 }
 .settings-page .settings-panel>.info-list .info-row{padding-left:16px;padding-right:16px}
 .settings-page .setting-row{
-display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,330px);gap:28px;align-items:center;
+display:grid;grid-template-columns:minmax(0,1fr) var(--settings-control-column);gap:28px;align-items:center;
 min-height:66px;padding:13px 2px;border-bottom:1px solid var(--ds-border-subtle)
 }
 .settings-page .setting-row:first-of-type{border-top:1px solid var(--ds-border-subtle)}
@@ -497,6 +528,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .setting-row{grid-template-columns:1fr;gap:9px;align-items:start;padding:15px 2px}
 .settings-page .setting-row .control{justify-content:flex-start;width:100%}
 .settings-page .setting-row .control>.ds-select,.settings-page .setting-row .control>input{width:100%}
+.settings-page .settings-strategy-grid{grid-template-columns:1fr}
 }
 @media(max-width:760px){
 .settings-page main{padding:24px 18px 58px}
@@ -522,6 +554,7 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .settings-nav a{grid-template-columns:16px auto}
 .settings-page .settings-panel>form{padding-left:14px;padding-right:14px}
 .settings-page .settings-panel>form>h3{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}
+.settings-page .settings-panel{--settings-card-inset:14px}
 .settings-page .container-row{grid-template-columns:40px minmax(0,1fr) 36px;gap:10px}
 .settings-page .container-badges{gap:4px}
 }
@@ -1256,8 +1289,37 @@ QString InternalPages::settings(const InternalPageContext &context)
                     .arg(e(t("pamp.title")), e(t("pamp.description")), e(t("pamp.passive_only")),
                          e(t("pamp.passive_only.description")), e(t("pamp.analyze_current")));
     } else if (category == QStringLiteral("connection")) {
-        panel = QStringLiteral("<h2>%1</h2><div class=\"info-list\">%2%3%4</div><h3>%5</h3><div class=\"row\"><a class=\"button primary\" href=\"https://granger.local/__action/connection/apply?mode=automatic\">%6</a><a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=direct\">%7</a><a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=snowflake\">%8</a></div><h3>%9</h3><form action=\"https://granger.local/__action/bridges/save\" method=\"get\"><div class=\"row\"><input type=\"text\" name=\"line\" placeholder=\"%10\"><button type=\"submit\">%11</button><a class=\"button secondary\" href=\"https://granger.local/__action/bridges/import-qr\">%12</a><a class=\"button primary\" href=\"https://granger.local/__action/bridges/apply\">%13</a><a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:bridges\">%14</a></div></form><h3>%15</h3><form action=\"https://granger.local/__action/connection/save-external\" method=\"get\"><div class=\"row\"><input type=\"url\" name=\"url\" value=\"%16\" placeholder=\"socks5://127.0.0.1:9050\"><button type=\"submit\">%17</button></div></form>")
-                    .arg(e(t("settings.category.connection")),
+        panel = QStringLiteral(
+            "<h2>%1</h2>"
+            "<section class=\"settings-surface settings-connection-status\">"
+            "<div class=\"settings-surface-header\"><h3>%2</h3></div>"
+            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%3%4%5</div></div>"
+            "</section>"
+            "<section class=\"settings-surface settings-connection-strategy\">"
+            "<div class=\"settings-surface-header\"><h3>%6</h3></div>"
+            "<div class=\"settings-surface-body\"><div class=\"settings-strategy-grid\">"
+            "<a class=\"button primary\" href=\"https://granger.local/__action/connection/apply?mode=automatic\">%7</a>"
+            "<a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=direct\">%8</a>"
+            "<a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=snowflake\">%9</a>"
+            "</div></div></section>"
+            "<section class=\"settings-surface settings-connection-bridges\">"
+            "<div class=\"settings-surface-header\"><h3>%10</h3></div>"
+            "<form action=\"https://granger.local/__action/bridges/save\" method=\"get\">"
+            "<div class=\"settings-surface-body\"><label class=\"settings-surface-field\"><span>%11</span>"
+            "<input type=\"text\" name=\"line\" placeholder=\"%11\"></label></div>"
+            "<div class=\"settings-surface-footer\"><button type=\"submit\">%12</button>"
+            "<a class=\"button secondary\" href=\"https://granger.local/__action/bridges/import-qr\">%13</a>"
+            "<a class=\"button primary\" href=\"https://granger.local/__action/bridges/apply\">%14</a>"
+            "<a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:bridges\">%15</a>"
+            "</div></form></section>"
+            "<section class=\"settings-surface settings-connection-external\">"
+            "<div class=\"settings-surface-header\"><h3>%16</h3></div>"
+            "<form action=\"https://granger.local/__action/connection/save-external\" method=\"get\">"
+            "<div class=\"settings-surface-body\"><label class=\"settings-surface-field\"><span>%16</span>"
+            "<input type=\"url\" name=\"url\" value=\"%17\" placeholder=\"socks5://127.0.0.1:9050\"></label></div>"
+            "<div class=\"settings-surface-footer\"><button type=\"submit\">%18</button></div>"
+            "</form></section>")
+                    .arg(e(t("settings.category.connection")), e(t("label.status")),
                          infoRow(t("label.route"), s(context.currentRoute), QStringLiteral("settings-route")),
                          infoRow(t("label.tor"), s(context.torState), QStringLiteral("settings-tor-state")),
                          infoRow(t("label.bootstrap"), s(context.bridgeBootstrap), QStringLiteral("settings-bootstrap")),
