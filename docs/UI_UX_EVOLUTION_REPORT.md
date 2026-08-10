@@ -1,6 +1,6 @@
 # Отчёт по UI/UX-модернизации Granger Browser
 
-Дата приёмки: 2026-08-09
+Дата приёмки: 2026-08-10
 Область работ: presentation layer существующего Qt Widgets/Qt WebEngine приложения
 Итог: packaged Release собран, запущен и прошёл полный автоматизированный и визуальный acceptance
 
@@ -13,10 +13,10 @@
 | Параметр | Значение |
 | --- | --- |
 | Repository | `https://github.com/zakhar-git/Granger-Browser.git` |
-| Ветка | `agent/ui-ux-evolution` |
-| Remote | `origin/agent/ui-ux-evolution` |
-| Базовая ветка stacked PR | `agent/sidebar-layout-stability` |
-| Draft PR | [#2 ui: evolve Granger Browser visual system](https://github.com/zakhar-git/Granger-Browser/pull/2) |
+| Ветка | `main` |
+| Remote | `origin/main` |
+| Pull Request этой итерации | не создавался |
+| Синхронизация | local `main` = `origin/main` (`0 0`) |
 | Force push | не выполнялся |
 | Merge | не выполнялся |
 
@@ -33,6 +33,12 @@
 | `0595605` | `ui(toolbar): refine browser chrome interaction states` |
 | `af21f08` | `ui(internal): unify card styling across internal pages` |
 | `e8ca40c` | `test(ui): add visual geometry regression coverage` |
+| `4b3251d` | `docs(ui): document visual evolution acceptance` |
+| `876bbee` | `fix(release): enforce canonical promotion workflow` |
+| `e56aca7` | `ui(settings): normalize settings card geometry` |
+| `2b68ad6` | `ui(settings): embed owner navigation icons` |
+| `812cc53` | `ui(spaces): add compact Space switcher` |
+| `24cf9fa` | `perf(navigation): reduce local search dispatch overhead` |
 
 Архитектурный аудит находится в
 [`UI_UX_ARCHITECTURE_AUDIT.md`](UI_UX_ARCHITECTURE_AUDIT.md). Источники
@@ -303,7 +309,7 @@ state не скрываются и не подменяются.
 - русские, английские и казахские строки не смешиваются в проверенных экранах;
 - при 100-200% DPI controls не выходят за viewport и текст не клипается.
 
-UI/focus suite вырос с `138` до `156` passing cases. Это focused engineering
+UI/focus suite вырос с `138` до `170` passing cases. Это focused engineering
 проверка, а не сертифицированный внешний screen-reader audit; такое ограничение
 зафиксировано честно.
 
@@ -395,7 +401,7 @@ DNS-through-Tor или no-direct-fallback; unsafe preconnect и direct fallback 
 
 ### Source boundary
 
-`git diff agent/sidebar-layout-stability..agent/ui-ux-evolution` не содержит
+`git diff e6ec64f..24cf9fa` по production privacy boundaries не содержит
 изменений в:
 
 - `granger/browser/BrowserTab.cpp` и `.h`;
@@ -463,9 +469,9 @@ Python в минимальном `PATH`.
 
 | Suite | Результат |
 | --- | ---: |
-| Product | `123/123` |
-| Feature | `119/119` |
-| UI/focus | `156/156` |
+| Product | `125/125` |
+| Feature | `128/128` |
+| UI/focus | `170/170` |
 | Privacy | `142/142` |
 | Privacy diagnostics | `12/12` |
 | Privacy stability | `4/4` |
@@ -504,11 +510,11 @@ factors `0.8`, `1.2`, `1.4`, `1.6`; обычный run дал native `1.25`.
 
 | Цель | Фактический DPR | Logical available screen | UI/focus |
 | --- | ---: | ---: | ---: |
-| 100% | `1.00` | `1920x1020` | `156/156` |
-| 125% | `1.25` | `1536x816` | `156/156` |
-| 150% | `1.50` | `1280x680` | `156/156` |
-| 175% | `1.75` | `1097x583` | `156/156` |
-| 200% | `2.00` | `960x510` | `156/156` |
+| 100% | `1.00` | `1920x1020` | `170/170` |
+| 125% | `1.25` | `1536x816` | `170/170` |
+| 150% | `1.50` | `1280x680` | `170/170` |
+| 175% | `1.75` | `1097x583` | `170/170` |
+| 200% | `2.00` | `960x510` | `170/170` |
 
 На каждом DPR проверено 60 responsive Settings cases. Не обнаружены horizontal
 overflow, clipped labels/icons, popup outside viewport или broken card geometry.
@@ -576,8 +582,12 @@ Granger title сохранены. Letterbox-поля визуально одно
 
 | Поле | Значение |
 | --- | --- |
-| Executable | `C:\Users\Admin\Desktop\DarkSearch\release\.ui-stage\GrangerBrowser.exe` |
-| SHA-256 | `5A08074762EB7EB4B950CEEB13D67F2855D361112EEB1106263BE57A20AD351A` |
+| Executable | `C:\Users\Admin\Desktop\DarkSearch\release\Granger Browser\GrangerBrowser.exe` |
+| SHA-256 | `120DB4EAF379E66CBC60F9B701E32F6073AD33C04DF9FDF83657F3A79DF5FE40` |
+| Size | `10,319,360 bytes` (`9.841 MiB`) |
+| Build timestamp | `2026-08-10 20:46:35 +05:00` |
+| Qt / Qt WebEngine | `6.11.1 / 6.11.1` |
+| Chromium | `140.0.7339.225` |
 | Acceptance report | `output\release acceptance\path with spaces\release-acceptance.json` |
 | Result | `OK=true` |
 | User data | сохранены; тесты использовали отдельный temporary DataRoot |
@@ -585,11 +595,22 @@ Granger title сохранены. Letterbox-поля визуально одно
 ### Полный список изменённых исходников и документов
 
 - `CMakeLists.txt`
+- `BUILDING.md`
+- `README.md`
 - `docs/UI_UX_ARCHITECTURE_AUDIT.md`
 - `docs/UI_UX_EVOLUTION_REPORT.md`
 - `granger/browser/InternalPages.cpp`
 - `granger/features/FeatureSmokeTests.cpp`
 - `granger/main.cpp`
+- `granger/search/SearchManager.cpp`
+- `granger/resources/settings-icons/danger-zone.png`
+- `granger/resources/settings-icons/isolated-tabs.png`
+- `granger/resources/settings-icons/pamp-lite.png`
+- `granger/resources/settings-icons/privacy-security.png`
+- `granger/resources/settings-icons/spaces.png`
+- `granger/resources/settings-icons/tor-connection.png`
+- `granger/resources/ui-assets-manifest.json`
+- `granger/resources/icons/chevron-left.svg`
 - `granger/resources/icons/overflow.svg`
 - `granger/resources/resources.qrc`
 - `granger/resources/translations/en.json`
@@ -602,6 +623,7 @@ Granger title сохранены. Letterbox-поля визуально одно
 - `granger/ui/DownloadUi.cpp`
 - `granger/ui/DownloadUi.h`
 - `granger/ui/MainWindow.cpp`
+- `granger/ui/MainWindow.h`
 - `granger/ui/NavigationBar.cpp`
 - `granger/ui/NavigationBar.h`
 - `granger/ui/ScrollBarController.cpp`
@@ -609,6 +631,8 @@ Granger title сохранены. Letterbox-поля визуально одно
 - `granger/ui/ThemeManager.cpp`
 - `granger/ui/UiFocusSmokeTests.cpp`
 - `scripts/test-release.ps1`
+- `scripts/build-release.ps1`
+- `scripts/package-release.ps1`
 
 Screenshot manifest:
 
