@@ -202,10 +202,16 @@ downloader, сетевой клиент или security path не создан.
 ## 6. Sidebar
 
 - Expanded Sidebar уменьшен до `256 px`, compact rail сохранён на `64 px`.
-- Spaces получают компактные rows, локальные icons, цветной marker, счётчик и
-  ясный active state.
-- В видимой области закреплено до четырёх Space rows; дальнейший список
-  прокручивается локально и не вытесняет tabs/BottomNavigation.
+- Постоянный список Spaces заменён одной строкой высотой `36 px`: previous,
+  активный Space с локальной icon/marker/count и next.
+- Click, vertical/horizontal wheel и `Left`/`Right`/`Up`/`Down` переключают
+  Space циклически; `Home`/`End` выбирают границы списка.
+- `Enter`/`Space` открывают единый all-Spaces popup из существующей модели;
+  popup ограничен `320 x 520 px`, остаётся внутри экрана и поддерживает
+  keyboard navigation, `Escape` и drag-and-drop tab в выбранный Space.
+- При `1`, `4`, `10` и `25` Spaces строка остаётся `36 px` и не вытесняет
+  tabs/BottomNavigation; длинное имя визуально elide, но полностью доступно
+  через accessible name и tooltip.
 - Tabs используют стабильную высоту `46 px`, отдельные favicon/title/close
   области, спокойный active state и ненавязчивые container/isolated indicators.
 - Collapsed mode центрирует favicon, скрывает текст без накопления geometry
@@ -224,7 +230,7 @@ downloader, сетевой клиент или security path не создан.
 - [Letterbox + expanded Sidebar](screenshots/ui-ux-evolution/stage-05/08-letterbox-expanded-after.png)
 
 Geometry regression проверяет hidden, compact и expanded режимы, 50 быстрых
-переключений и отсутствие накопленного horizontal offset.
+переключений, `25` Spaces и отсутствие накопленного horizontal offset.
 
 ## 7. Главная страница и browser chrome
 
@@ -331,6 +337,60 @@ benchmark-grade проценты. Все финальные значения н�
 - Pamp Lite fixture открылся за `154 ms`;
 - isolated profile count после закрытия вернулся к `0`.
 
+### Navigation/Tor audit 2026-08-10
+
+Focused benchmark использует только фиксированные `.invalid` fixtures, не
+записывает пользовательские URL и не выполняет сеть. Семь одинаковых запусков
+до и после изменения дали такие median значения:
+
+| Локальная стадия | До | После |
+| --- | ---: | ---: |
+| Input resolution | `82.614 us` | `1.690 us` |
+| Search URL builder | `3.219 us` | `2.888 us` |
+| Settings lookup | `0.638 us` | `0.651 us` |
+| Enter -> WebEngine `loadStarted` | `6.882 ms` | `7.067 ms` |
+
+Причина локального overhead была в создании одинаковых `QRegularExpression` и
+split/join на каждый Enter. Regex теперь process-local immutable, whitespace
+нормализуется одним `QString::simplified()`, каталог поисковиков создаётся один
+раз, internal action URL не парсится для обычного ввода, а выбранный provider
+читается только для search-навигации. URL encoding, HTTPS-First и privacy gates
+не менялись.
+
+Полный Enter -> `loadStarted` не стал статистически быстрее: несколько
+микросекунд resolver теряются внутри scheduler/WebEngine variance. Это честное
+ограничение, а не обещание ускорить Tor до direct connection.
+
+Финальный performance smoke больше не зависит от сетевого `loadStarted` для
+завершения. Он синхронно измеряет `openAddressForDiagnostics()`, подтверждает
+переданный в `BrowserTab::lastRequestedUrl()` provider и полностью декодированное
+значение query, а `loadStarted` сохраняет только как необязательную телеметрию.
+После намеренно неудачного WebTunnel apply тест восстанавливает исходный режим
+подключения, поэтому no-direct-fallback не обходится и test profile не остаётся
+изменённым. Семь последовательных запусков с чистыми профилями завершились
+успешно (`7/7`), median synchronous dispatch составил `10.972 ms`, median полного
+smoke run — `7.005 s`; прежний 30-second network-dependent timeout не повторился.
+
+Сетевой контроль на одном и том же `check.torproject.org/api/ip`, пять запусков
+на каждую route:
+
+| Route | Min | Median | Average | Max |
+| --- | ---: | ---: | ---: | ---: |
+| Direct observation | `447 ms` | `490 ms` | `525.8 ms` | `659 ms` |
+| Уже поднятый Tor route | `881 ms` | `942 ms` | `994.2 ms` | `1174 ms` |
+
+Отдельный clean automatic run поднял bundled Tor и достиг browser-verified
+route за `75.165 s`; статус был принят только после `100%` bootstrap и реального
+Tor-check (`IsTor=true`). Следовательно, заметная задержка принадлежит startup и
+внешнему Tor/network path, тогда как собственный synchronous dispatch Granger
+остаётся около нескольких миллисекунд.
+
+Request interceptor измерен на тех же фиксированных fixtures (десятки/сотни
+микросекунд на decision в зависимости от нагрузки) и не изменялся. Не отключены
+blocker, URL cleaning, route verification, profile isolation, letterboxing,
+DNS-through-Tor или no-direct-fallback; unsafe preconnect и direct fallback не
+добавлялись.
+
 ## 11. Privacy regression
 
 ### Source boundary
@@ -356,7 +416,7 @@ benchmark-grade проценты. Все финальные значения н�
 | Bridges | существующий backend | `22/22`, backend без diff |
 | Strategies | существующий backend | `8/8` |
 | Privacy tests | `142/142` | `142/142` |
-| Product tests | `123/123` | `123/123` |
+| Product tests | `123/123` | `125/125` |
 | Profile isolation | bounded profiles | bounded: `1` normal + `1` internal; transient isolated profiles release to `0` |
 | Blocker/interceptor/HTTPS/WebRTC/UA | существующие правила | production owners без diff; privacy suite passed |
 

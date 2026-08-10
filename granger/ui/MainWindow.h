@@ -98,6 +98,7 @@ public:
     QJsonObject currentPrivacyDiagnosticsForDiagnostics() const;
     QJsonObject privacyRequestDecisionForDiagnostics(const QUrl &requestUrl,
                                                      const QUrl &firstPartyUrl) const;
+    QJsonObject privacyRequestPerformanceForDiagnostics(int iterations) const;
     void activateTabForDiagnostics(int index);
     void triggerTorStatusUpdateForDiagnostics();
     QJsonObject performanceDiagnostics() const;

@@ -1700,6 +1700,7 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
     QElapsedTimer totalTimer;
     totalTimer.start();
     auto *settings = new granger::SettingsManager(&app);
+    const QString baselineConnectionMode = settings->torConnectionMode();
     auto *theme = new granger::ThemeManager(&app);
     theme->apply(app);
 
@@ -1742,6 +1743,86 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
     QTimer::singleShot(450, &app, [&] {
         result.insert(QStringLiteral("initial"), window->performanceDiagnostics());
 
+        constexpr int localBenchmarkIterations = 5000;
+        const QStringList navigationInputs{
+            QStringLiteral("granger performance baseline"),
+            QStringLiteral("example.com"),
+            QStringLiteral("https://example.com/path?a=1&b=2"),
+            QStringLiteral("C++ privacy"),
+            QStringLiteral("test query")
+        };
+        granger::SearchManager benchmarkSearch;
+        qsizetype resolutionGuard = 0;
+        QElapsedTimer inputResolutionTimer;
+        inputResolutionTimer.start();
+        for (int i = 0; i < localBenchmarkIterations; ++i) {
+            const granger::AddressResolution resolution = benchmarkSearch.resolveInput(
+                navigationInputs.at(i % navigationInputs.size()),
+                QStringLiteral("duckduckgo"));
+            resolutionGuard += int(resolution.kind);
+            resolutionGuard += resolution.url.host().size();
+            resolutionGuard += resolution.query.size();
+        }
+        result.insert(QStringLiteral("inputResolutionAverageNs"),
+                      double(inputResolutionTimer.nsecsElapsed())
+                          / double(localBenchmarkIterations));
+        result.insert(QStringLiteral("inputResolutionGuard"),
+                      double(resolutionGuard));
+
+        const QStringList engineIds = benchmarkSearch.engineIds();
+        qsizetype searchUrlGuard = 0;
+        QElapsedTimer searchUrlTimer;
+        searchUrlTimer.start();
+        for (int i = 0; i < localBenchmarkIterations; ++i) {
+            const QUrl url = benchmarkSearch.buildSearchUrl(
+                engineIds.at(i % engineIds.size()), QStringLiteral("C++ privacy benchmark"));
+            searchUrlGuard += url.toEncoded().size();
+        }
+        result.insert(QStringLiteral("searchUrlBuildAverageNs"),
+                      double(searchUrlTimer.nsecsElapsed())
+                          / double(localBenchmarkIterations));
+        result.insert(QStringLiteral("searchUrlBuildGuard"), double(searchUrlGuard));
+
+        qsizetype settingsGuard = 0;
+        QElapsedTimer settingsLookupTimer;
+        settingsLookupTimer.start();
+        for (int i = 0; i < localBenchmarkIterations; ++i) {
+            settingsGuard += settings->defaultSearchEngine().size();
+            settingsGuard += settings->torConnectionMode().size();
+        }
+        result.insert(QStringLiteral("navigationSettingsLookupAverageNs"),
+                      double(settingsLookupTimer.nsecsElapsed())
+                          / double(localBenchmarkIterations));
+        result.insert(QStringLiteral("navigationSettingsLookupGuard"),
+                      double(settingsGuard));
+        const QJsonObject privacyRequestBenchmark =
+            window->privacyRequestPerformanceForDiagnostics(1000);
+        result.insert(QStringLiteral("privacyRequestDecisionBenchmark"),
+                      privacyRequestBenchmark);
+        const auto averageNs = [&privacyRequestBenchmark](const QString &name) {
+            return privacyRequestBenchmark.value(name).toObject()
+                .value(QStringLiteral("averageNs")).toDouble();
+        };
+        const bool localNavigationBenchmarksPassed =
+            result.value(QStringLiteral("inputResolutionAverageNs")).toDouble() > 0.0
+            && result.value(QStringLiteral("inputResolutionAverageNs")).toDouble() < 25000.0
+            && result.value(QStringLiteral("searchUrlBuildAverageNs")).toDouble() > 0.0
+            && result.value(QStringLiteral("searchUrlBuildAverageNs")).toDouble() < 25000.0
+            && result.value(QStringLiteral("navigationSettingsLookupAverageNs")).toDouble() > 0.0
+            && result.value(QStringLiteral("navigationSettingsLookupAverageNs")).toDouble() < 20000.0
+            && averageNs(QStringLiteral("normalSubresource")) > 0.0
+            && averageNs(QStringLiteral("normalSubresource")) < 1000000.0
+            && averageNs(QStringLiteral("torSubresource")) > 0.0
+            && averageNs(QStringLiteral("torSubresource")) < 1000000.0
+            && averageNs(QStringLiteral("normalMainFrame")) > 0.0
+            && averageNs(QStringLiteral("normalMainFrame")) < 1000000.0
+            && averageNs(QStringLiteral("torMainFrame")) > 0.0
+            && averageNs(QStringLiteral("torMainFrame")) < 1000000.0;
+        result.insert(QStringLiteral("localNavigationBenchmarksPassed"),
+                      localNavigationBenchmarksPassed);
+        result.insert(QStringLiteral("navigationBenchmarkScope"),
+                      QStringLiteral("fixed local .invalid fixtures; no user URLs; no network requests"));
+
         QElapsedTimer settingsOpenTimer;
         settingsOpenTimer.start();
         window->openAddressForDiagnostics(QStringLiteral("about:settings?category=connection"));
@@ -1773,6 +1854,9 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
             const QString afterApplyFailure = window->currentAddressForDiagnostics();
             result.insert(QStringLiteral("categoryAfterApplyFailure"), afterApplyFailure);
             result.insert(QStringLiteral("categoryStableAfterApplyFailure"), afterApplyFailure == QStringLiteral("about:settings?category=connection"));
+            settings->setTorConnectionMode(baselineConnectionMode);
+            result.insert(QStringLiteral("connectionModeRestoredAfterApplyFailure"),
+                          settings->torConnectionMode() == baselineConnectionMode);
 
             window->openAddressForDiagnostics(QStringLiteral("https://granger.local/__action/settings/general?language=ru"));
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
@@ -1862,70 +1946,112 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
                 auto *navigationTimer = new QElapsedTimer;
                 navigationTimer->start();
                 auto connection = std::make_shared<QMetaObject::Connection>();
+                auto loadStartedObserved = std::make_shared<bool>(false);
+                result.insert(QStringLiteral("searchLoadStartedObserved"), false);
                 *connection = QObject::connect(tab, &granger::BrowserTab::loadStarted, &app,
-                                               [&, tab, navigationTimer, connection] {
+                                               [&, navigationTimer, connection,
+                                                loadStartedObserved] {
+                    *loadStartedObserved = true;
+                    result.insert(QStringLiteral("searchLoadStartedObserved"), true);
                     result.insert(QStringLiteral("searchNavigationStartUs"),
                                   double(navigationTimer->nsecsElapsed()) / 1000.0);
                     QObject::disconnect(*connection);
+                });
+                const QString expectedSearch = QStringLiteral("granger performance baseline");
+                QElapsedTimer dispatchTimer;
+                dispatchTimer.start();
+                window->openAddressForDiagnostics(expectedSearch);
+                const double dispatchCallUs = double(dispatchTimer.nsecsElapsed()) / 1000.0;
+                result.insert(QStringLiteral("searchNavigationDispatchCallUs"), dispatchCallUs);
+
+                granger::SearchManager dispatchSearch;
+                const granger::SearchEngine selectedEngine =
+                    dispatchSearch.engine(settings->defaultSearchEngine());
+                const QUrl requestedUrl = tab->lastRequestedUrl();
+                const QUrlQuery requestedQuery(requestedUrl);
+                const bool dispatchAccepted = requestedUrl.isValid()
+                    && !requestedUrl.host().isEmpty()
+                    && requestedUrl.host().compare(
+                           QUrl(selectedEngine.searchUrl).host(), Qt::CaseInsensitive) == 0
+                    && requestedQuery.allQueryItemValues(
+                           selectedEngine.queryParameter, QUrl::FullyDecoded).size() == 1
+                    && requestedQuery.queryItemValue(
+                           selectedEngine.queryParameter, QUrl::FullyDecoded) == expectedSearch;
+                result.insert(QStringLiteral("searchNavigationDispatchAccepted"),
+                              dispatchAccepted);
+                result.insert(QStringLiteral("searchNavigationProvider"),
+                              selectedEngine.id);
+
+                QTimer::singleShot(750, &app,
+                                   [&, tab, navigationTimer, connection,
+                                    loadStartedObserved, dispatchAccepted,
+                                    dispatchCallUs] {
+                    QObject::disconnect(*connection);
                     delete navigationTimer;
                     tab->stop();
-                    QTimer::singleShot(250, &app, [&] {
-                        const QJsonObject finalDiagnostics = window->performanceDiagnostics();
-                        const bool boundedObjects = finalDiagnostics.value(QStringLiteral("tabCount")).toInt() == 2
-                            && finalDiagnostics.value(QStringLiteral("browserTabObjects")).toInt() == 2
-                            && finalDiagnostics.value(QStringLiteral("webEngineViews")).toInt() == 2
-                            && finalDiagnostics.value(QStringLiteral("webEnginePages")).toInt() == 2
-                            && finalDiagnostics.value(QStringLiteral("utilityTabs")).toInt() == 1;
-                        int normalProfiles = 0;
-                        int internalProfiles = 0;
-                        int otherProfiles = 0;
-                        const QVector<QWebEngineProfile *> browserProfiles =
-                            granger::BrowserProfile::existingProfiles();
-                        for (QWebEngineProfile *profile : browserProfiles) {
-                            switch (granger::BrowserProfile::kindForProfile(profile)) {
-                            case granger::PrivacyProfileKind::Normal: ++normalProfiles; break;
-                            case granger::PrivacyProfileKind::Internal: ++internalProfiles; break;
-                            default: ++otherProfiles; break;
-                            }
+
+                    const QJsonObject finalDiagnostics = window->performanceDiagnostics();
+                    const bool boundedObjects = finalDiagnostics.value(QStringLiteral("tabCount")).toInt() == 2
+                        && finalDiagnostics.value(QStringLiteral("browserTabObjects")).toInt() == 2
+                        && finalDiagnostics.value(QStringLiteral("webEngineViews")).toInt() == 2
+                        && finalDiagnostics.value(QStringLiteral("webEnginePages")).toInt() == 2
+                        && finalDiagnostics.value(QStringLiteral("utilityTabs")).toInt() == 1;
+                    int normalProfiles = 0;
+                    int internalProfiles = 0;
+                    int otherProfiles = 0;
+                    const QVector<QWebEngineProfile *> browserProfiles =
+                        granger::BrowserProfile::existingProfiles();
+                    for (QWebEngineProfile *profile : browserProfiles) {
+                        switch (granger::BrowserProfile::kindForProfile(profile)) {
+                        case granger::PrivacyProfileKind::Normal: ++normalProfiles; break;
+                        case granger::PrivacyProfileKind::Internal: ++internalProfiles; break;
+                        default: ++otherProfiles; break;
                         }
-                        result.insert(QStringLiteral("normalProfiles"), normalProfiles);
-                        result.insert(QStringLiteral("internalProfiles"), internalProfiles);
-                        result.insert(QStringLiteral("otherProfiles"), otherProfiles);
-                        const int baselineProfiles =
-                            result.value(QStringLiteral("baselineProfileCreations")).toInt();
-                        const bool expectedProfiles = baselineProfiles == 2
-                            && granger::BrowserProfile::creationCount() == baselineProfiles
-                            && browserProfiles.size() == 2
-                            && normalProfiles == 1
-                            && internalProfiles == 1
-                            && otherProfiles == 0
-                            && finalDiagnostics.value(QStringLiteral("containerProfiles")).toInt() == 0
-                            && finalDiagnostics.value(QStringLiteral("isolatedProfiles")).toInt() == 0;
-                        const bool settingsStable = result.value(QStringLiteral("categoryStableAfterStatus")).toBool()
-                            && result.value(QStringLiteral("settingsBuildsFromStatusUpdate")).toInt() == 0
-                            && result.value(QStringLiteral("categoryStableAfterBridgeSave")).toBool()
-                            && result.value(QStringLiteral("categoryStableAfterApplyFailure")).toBool()
-                            && result.value(QStringLiteral("categoryStableAfterLanguageChange")).toBool()
-                            && result.value(QStringLiteral("languageChangedLive")).toBool()
-                            && result.value(QStringLiteral("bridgeSavedExactly")).toBool();
-                        const bool directChecksBounded = finalDiagnostics.value(QStringLiteral("routeVerificationRequests")).toInt() == 0;
-                        const bool writesDebounced = finalDiagnostics.value(QStringLiteral("sessionWrites")).toInt() <= 5;
-                        const bool navigationStable =
-                            result.value(QStringLiteral("navigationStressPassed")).toBool()
-                            && finalDiagnostics.value(QStringLiteral("navigationLayout"))
-                                   .toObject().value(QStringLiteral("invariant")).toBool();
-                        result.insert(QStringLiteral("objectsBounded"), boundedObjects);
-                        result.insert(QStringLiteral("directRouteChecksBounded"), directChecksBounded);
-                        result.insert(QStringLiteral("sessionWritesDebounced"), writesDebounced);
-                        result.insert(QStringLiteral("profileScopesBounded"), expectedProfiles);
-                        result.insert(QStringLiteral("navigationStable"), navigationStable);
-                        result.insert(QStringLiteral("profileCreations"), granger::BrowserProfile::creationCount());
-                        const bool ok = boundedObjects && expectedProfiles && settingsStable
-                            && directChecksBounded && writesDebounced && navigationStable;
-                        finish(ok, ok ? QStringLiteral("ok") : QStringLiteral("settings, navigation, object, route-check, profile, or persistence regression detected"));
-                    });
+                    }
+                    result.insert(QStringLiteral("normalProfiles"), normalProfiles);
+                    result.insert(QStringLiteral("internalProfiles"), internalProfiles);
+                    result.insert(QStringLiteral("otherProfiles"), otherProfiles);
+                    const int baselineProfiles =
+                        result.value(QStringLiteral("baselineProfileCreations")).toInt();
+                    const bool expectedProfiles = baselineProfiles == 2
+                        && granger::BrowserProfile::creationCount() == baselineProfiles
+                        && browserProfiles.size() == 2
+                        && normalProfiles == 1
+                        && internalProfiles == 1
+                        && otherProfiles == 0
+                        && finalDiagnostics.value(QStringLiteral("containerProfiles")).toInt() == 0
+                        && finalDiagnostics.value(QStringLiteral("isolatedProfiles")).toInt() == 0;
+                    const bool settingsStable = result.value(QStringLiteral("categoryStableAfterStatus")).toBool()
+                        && result.value(QStringLiteral("settingsBuildsFromStatusUpdate")).toInt() == 0
+                        && result.value(QStringLiteral("categoryStableAfterBridgeSave")).toBool()
+                        && result.value(QStringLiteral("categoryStableAfterApplyFailure")).toBool()
+                        && result.value(QStringLiteral("categoryStableAfterLanguageChange")).toBool()
+                        && result.value(QStringLiteral("languageChangedLive")).toBool()
+                        && result.value(QStringLiteral("bridgeSavedExactly")).toBool()
+                        && result.value(QStringLiteral("connectionModeRestoredAfterApplyFailure")).toBool();
+                    const bool directChecksBounded = finalDiagnostics.value(QStringLiteral("routeVerificationRequests")).toInt() == 0;
+                    const bool writesDebounced = finalDiagnostics.value(QStringLiteral("sessionWrites")).toInt() <= 5;
+                    const bool navigationStable =
+                        result.value(QStringLiteral("navigationStressPassed")).toBool()
+                        && finalDiagnostics.value(QStringLiteral("navigationLayout"))
+                               .toObject().value(QStringLiteral("invariant")).toBool();
+                    result.insert(QStringLiteral("objectsBounded"), boundedObjects);
+                    result.insert(QStringLiteral("directRouteChecksBounded"), directChecksBounded);
+                    result.insert(QStringLiteral("sessionWritesDebounced"), writesDebounced);
+                    result.insert(QStringLiteral("profileScopesBounded"), expectedProfiles);
+                    result.insert(QStringLiteral("navigationStable"), navigationStable);
+                    result.insert(QStringLiteral("profileCreations"), granger::BrowserProfile::creationCount());
+                    result.insert(QStringLiteral("searchLoadStartedObserved"),
+                                  *loadStartedObserved);
+                    const bool dispatchPassed = dispatchAccepted
+                        && dispatchCallUs > 0.0 && dispatchCallUs < 100000.0;
+                    const bool localBenchmarksPassed = result.value(
+                        QStringLiteral("localNavigationBenchmarksPassed")).toBool();
+                    const bool ok = boundedObjects && expectedProfiles && settingsStable
+                        && directChecksBounded && writesDebounced && navigationStable
+                        && localBenchmarksPassed && dispatchPassed;
+                    finish(ok, ok ? QStringLiteral("ok") : QStringLiteral("settings, navigation dispatch, local benchmark, object, route-check, profile, or persistence regression detected"));
                 });
-                window->openAddressForDiagnostics(QStringLiteral("granger performance baseline"));
             });
         });
     });
@@ -2257,6 +2383,10 @@ int runContainerPerformanceSmoke(QApplication &app,
 
 int runBrowserRouteSmoke(QApplication &app, const QString &outputPath, const QString &onionUrl)
 {
+    QElapsedTimer totalTimer;
+    totalTimer.start();
+    QElapsedTimer stageTimer;
+    stageTimer.start();
     QWebEnginePage page(granger::BrowserProfile::instance());
     QTimer timeout;
     timeout.setSingleShot(true);
@@ -2272,6 +2402,9 @@ int runBrowserRouteSmoke(QApplication &app, const QString &outputPath, const QSt
         if (!onionUrl.trimmed().isEmpty()) {
             result.insert(QStringLiteral("onionCheck"), onionCheck);
         }
+        result.insert(QStringLiteral("totalMs"), double(totalTimer.elapsed()));
+        result.insert(QStringLiteral("timingScope"),
+                      QStringLiteral("Qt WebEngine load over the already configured browser route"));
         result.insert(QStringLiteral("chromiumFlags"), QString::fromLocal8Bit(qgetenv("QTWEBENGINE_CHROMIUM_FLAGS")));
         QFile file(outputPath);
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
@@ -2338,6 +2471,7 @@ int runBrowserRouteSmoke(QApplication &app, const QString &outputPath, const QSt
         if (step == 0) {
             torCheck.insert(QStringLiteral("loaded"), ok);
             torCheck.insert(QStringLiteral("url"), page.url().toString());
+            torCheck.insert(QStringLiteral("loadMs"), double(stageTimer.elapsed()));
             if (!ok) {
                 timeout.stop();
                 writeResult(false, QStringLiteral("Tor check endpoint failed to load"));
@@ -2364,6 +2498,7 @@ int runBrowserRouteSmoke(QApplication &app, const QString &outputPath, const QSt
                     return;
                 }
                 ++step;
+                stageTimer.restart();
                 page.load(QUrl(onionUrl.trimmed()));
             });
             return;
@@ -2371,6 +2506,7 @@ int runBrowserRouteSmoke(QApplication &app, const QString &outputPath, const QSt
 
         onionCheck.insert(QStringLiteral("loaded"), ok);
         onionCheck.insert(QStringLiteral("url"), page.url().toString());
+        onionCheck.insert(QStringLiteral("loadMs"), double(stageTimer.elapsed()));
         timeout.stop();
         QTimer::singleShot(100, &app, [&, ok] {
             writeResult(ok, ok ? QStringLiteral("Browser route and onion load verified")
@@ -2856,6 +2992,8 @@ int runStrategyTestSuite(const QString &outputPath)
 
 int runAutomaticConnectionSmoke(QApplication &app, const QString &outputPath, const QString &externalSocksUrl)
 {
+    QElapsedTimer routeTimer;
+    routeTimer.start();
     auto *settings = new granger::SettingsManager(&app);
     const QString oldMode = settings->torConnectionMode();
     const QString oldProxyUrl = settings->proxyUrl();
@@ -2901,6 +3039,9 @@ int runAutomaticConnectionSmoke(QApplication &app, const QString &outputPath, co
         result.insert(QStringLiteral("routeState"), status.routeState);
         result.insert(QStringLiteral("exitIp"), status.outboundIp);
         result.insert(QStringLiteral("torrcPath"), status.torrcPath);
+        result.insert(QStringLiteral("routeReadyMs"), double(routeTimer.elapsed()));
+        result.insert(QStringLiteral("timingScope"),
+                      QStringLiteral("automatic strategy setup through browser-verified Tor route"));
         QFile file(outputPath);
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -3915,6 +4056,18 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
                granger::SearchManager::inputKindName(result.kind) + QStringLiteral(" ") + actualUrl,
                granger::SearchManager::inputKindName(test.kind) + QStringLiteral(" ") + test.expectedUrl);
     }
+    const granger::AddressResolution multilineInput = search.resolveInput(
+        QStringLiteral("one\r\n\ttwo"), QStringLiteral("duckduckgo"));
+    record(QStringLiteral("multiline search input is normalized once"),
+           multilineInput.kind == granger::AddressInputKind::Search
+               && multilineInput.query == QStringLiteral("one two"),
+           multilineInput.query, QStringLiteral("one two"));
+    const granger::AddressResolution unicodeWhitespaceInput = search.resolveInput(
+        QStringLiteral("privacy\u00a0browser"), QStringLiteral("duckduckgo"));
+    record(QStringLiteral("Unicode whitespace remains a search separator"),
+           unicodeWhitespaceInput.kind == granger::AddressInputKind::Search
+               && unicodeWhitespaceInput.query == QStringLiteral("privacy browser"),
+           unicodeWhitespaceInput.query, QStringLiteral("privacy browser"));
 
     for (const QString &route : granger::SearchManager::supportedInternalRoutes()) {
         const granger::AddressResolution result = search.resolveInput(route, QStringLiteral("google"));

@@ -1772,6 +1772,56 @@ QJsonObject MainWindow::privacyRequestDecisionForDiagnostics(
     };
 }
 
+QJsonObject MainWindow::privacyRequestPerformanceForDiagnostics(int iterations) const
+{
+    const int count = qBound(1, iterations, 50000);
+    const QUrl firstParty(QStringLiteral("https://performance.invalid/fixture"));
+    const QUrl subresource(QStringLiteral("https://static.performance.invalid/app.js"));
+    const QUrl mainFrame(QStringLiteral("https://performance.invalid/search?q=fixture"));
+
+    const auto measure = [this, count](const QUrl &requestUrl,
+                                       const QUrl &firstPartyUrl,
+                                       int resourceType,
+                                       PrivacyProfileKind profile) {
+        qsizetype decisionGuard = 0;
+        QElapsedTimer timer;
+        timer.start();
+        for (int i = 0; i < count; ++i) {
+            const PrivacyRequestDecision decision = m_privacy.requestDecision(
+                requestUrl, firstPartyUrl, firstPartyUrl, resourceType,
+                QByteArrayLiteral("GET"), profile);
+            decisionGuard += decision.headers.size();
+            decisionGuard += decision.block ? 1 : 0;
+            decisionGuard += decision.redirect.isValid() ? 1 : 0;
+        }
+        return QJsonObject{
+            {QStringLiteral("averageNs"),
+             double(timer.nsecsElapsed()) / double(count)},
+            {QStringLiteral("decisionGuard"), double(decisionGuard)}
+        };
+    };
+
+    return QJsonObject{
+        {QStringLiteral("iterations"), count},
+        {QStringLiteral("normalSubresource"),
+         measure(subresource, firstParty,
+                 int(QWebEngineUrlRequestInfo::ResourceTypeScript),
+                 PrivacyProfileKind::Normal)},
+        {QStringLiteral("torSubresource"),
+         measure(subresource, firstParty,
+                 int(QWebEngineUrlRequestInfo::ResourceTypeScript),
+                 PrivacyProfileKind::Tor)},
+        {QStringLiteral("normalMainFrame"),
+         measure(mainFrame, mainFrame,
+                 int(QWebEngineUrlRequestInfo::ResourceTypeMainFrame),
+                 PrivacyProfileKind::Normal)},
+        {QStringLiteral("torMainFrame"),
+         measure(mainFrame, mainFrame,
+                 int(QWebEngineUrlRequestInfo::ResourceTypeMainFrame),
+                 PrivacyProfileKind::Tor)}
+    };
+}
+
 void MainWindow::activateTabForDiagnostics(int index)
 {
     if (m_tabs) m_tabs->activateIndex(index);
@@ -5043,15 +5093,19 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
         return;
     }
 
-    const QString clean = input.trimmed().isEmpty() ? SearchManager::startPageUrl() : input.trimmed();
-    const QUrl actionUrl(clean);
-    if (actionUrl.scheme() == QStringLiteral("https")
-        && actionUrl.host() == QStringLiteral("granger.local")
-        && actionUrl.path().startsWith(QStringLiteral("/__action"))) {
-        handleInternalAction(tab, actionUrl);
-        return;
+    const QString trimmed = input.trimmed();
+    const QString clean = trimmed.isEmpty() ? SearchManager::startPageUrl() : trimmed;
+    if (clean.startsWith(QStringLiteral("https://granger.local/__action"),
+                         Qt::CaseInsensitive)) {
+        const QUrl actionUrl(clean, QUrl::StrictMode);
+        if (actionUrl.scheme() == QStringLiteral("https")
+            && actionUrl.host() == QStringLiteral("granger.local")
+            && actionUrl.path().startsWith(QStringLiteral("/__action"))) {
+            handleInternalAction(tab, actionUrl);
+            return;
+        }
     }
-    const AddressResolution resolution = m_search.resolveInput(clean, m_settings.defaultSearchEngine());
+    const AddressResolution resolution = m_search.resolveInput(clean, QString());
     if (resolution.kind == AddressInputKind::Internal) {
         const QString internalAddress = resolution.url.toString(QUrl::FullyEncoded);
         const QString singletonKey = internalSingletonKey(internalAddress);
@@ -5092,7 +5146,8 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
     }
 
     if (resolution.kind == AddressInputKind::Search) {
-        QUrl url = m_search.buildSearchUrl(m_settings.defaultSearchEngine(), resolution.query);
+        const QString searchEngine = m_settings.defaultSearchEngine();
+        QUrl url = m_search.buildSearchUrl(searchEngine, resolution.query);
         if (!url.isValid()) {
             tab->showErrorPageForAddress(clean,
                                          QStringLiteral("Invalid search provider"),

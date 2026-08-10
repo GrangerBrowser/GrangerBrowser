@@ -8,6 +8,33 @@
 
 namespace granger {
 
+namespace {
+
+const QVector<SearchEngine> &searchEngineCatalog()
+{
+    static const QVector<SearchEngine> engines{
+        {QStringLiteral("duckduckgo"), QStringLiteral("DuckDuckGo"), QStringLiteral(":/search-engines/duckduckgo.png"),
+         QStringLiteral("https://duckduckgo.com/?ia=web"), QStringLiteral("Search queries are sent to DuckDuckGo."), false, false, true},
+        {QStringLiteral("google"), QStringLiteral("Google"), QStringLiteral(":/search-engines/google.png"),
+         QStringLiteral("https://www.google.com/search"), QStringLiteral("Search queries are sent to Google."), false, false, true},
+        {QStringLiteral("bing"), QStringLiteral("Bing"), QStringLiteral(":/search-engines/bing.png"),
+         QStringLiteral("https://www.bing.com/search"), QStringLiteral("Search queries are sent to Microsoft Bing."), false, false, true},
+        {QStringLiteral("brave"), QStringLiteral("Brave Search"), QStringLiteral(":/search-engines/brave.png"),
+         QStringLiteral("https://search.brave.com/search"), QStringLiteral("Search queries are sent to Brave Search."), false, false, false},
+        {QStringLiteral("startpage"), QStringLiteral("Startpage"), QStringLiteral(":/search-engines/startpage.png"),
+         QStringLiteral("https://www.startpage.com/sp/search"), QStringLiteral("Search queries are sent to Startpage."), false, false, false, QStringLiteral("query")},
+        {QStringLiteral("mojeek"), QStringLiteral("Mojeek"), QStringLiteral(":/search-engines/mojeek.png"),
+         QStringLiteral("https://www.mojeek.com/search"), QStringLiteral("Search queries are sent to Mojeek."), false, false, false},
+        {QStringLiteral("yandex"), QStringLiteral("Yandex"), QStringLiteral(":/search-engines/yandex.png"),
+         QStringLiteral("https://yandex.com/search/"), QStringLiteral("Search queries are sent to Yandex."), false, false, false, QStringLiteral("text")},
+        {QStringLiteral("onion"), QStringLiteral("Onion Search"), QStringLiteral(":/search-engines/onion.png"),
+         QStringLiteral("https://ahmia.fi/search/"), QStringLiteral("Search queries are sent to Ahmia's clearnet onion index. Opening results still requires Tor."), false, false, false}
+    };
+    return engines;
+}
+
+}
+
 SearchManager::SearchManager(QObject *parent)
     : QObject(parent),
       m_defaultQuery(QStringLiteral("OSINT"))
@@ -26,29 +53,12 @@ SearchModuleStatus SearchManager::status() const
 
 QVector<SearchEngine> SearchManager::engines() const
 {
-    return {
-        {QStringLiteral("duckduckgo"), QStringLiteral("DuckDuckGo"), QStringLiteral(":/search-engines/duckduckgo.png"),
-         QStringLiteral("https://duckduckgo.com/?ia=web"), QStringLiteral("Search queries are sent to DuckDuckGo."), false, false, true},
-        {QStringLiteral("google"), QStringLiteral("Google"), QStringLiteral(":/search-engines/google.png"),
-         QStringLiteral("https://www.google.com/search"), QStringLiteral("Search queries are sent to Google."), false, false, true},
-        {QStringLiteral("bing"), QStringLiteral("Bing"), QStringLiteral(":/search-engines/bing.png"),
-         QStringLiteral("https://www.bing.com/search"), QStringLiteral("Search queries are sent to Microsoft Bing."), false, false, true},
-        {QStringLiteral("brave"), QStringLiteral("Brave Search"), QStringLiteral(":/search-engines/brave.png"),
-         QStringLiteral("https://search.brave.com/search"), QStringLiteral("Search queries are sent to Brave Search."), false, false, false},
-        {QStringLiteral("startpage"), QStringLiteral("Startpage"), QStringLiteral(":/search-engines/startpage.png"),
-         QStringLiteral("https://www.startpage.com/sp/search"), QStringLiteral("Search queries are sent to Startpage."), false, false, false, QStringLiteral("query")},
-        {QStringLiteral("mojeek"), QStringLiteral("Mojeek"), QStringLiteral(":/search-engines/mojeek.png"),
-         QStringLiteral("https://www.mojeek.com/search"), QStringLiteral("Search queries are sent to Mojeek."), false, false, false},
-        {QStringLiteral("yandex"), QStringLiteral("Yandex"), QStringLiteral(":/search-engines/yandex.png"),
-         QStringLiteral("https://yandex.com/search/"), QStringLiteral("Search queries are sent to Yandex."), false, false, false, QStringLiteral("text")},
-        {QStringLiteral("onion"), QStringLiteral("Onion Search"), QStringLiteral(":/search-engines/onion.png"),
-         QStringLiteral("https://ahmia.fi/search/"), QStringLiteral("Search queries are sent to Ahmia's clearnet onion index. Opening results still requires Tor."), false, false, false}
-    };
+    return searchEngineCatalog();
 }
 
 SearchEngine SearchManager::engine(const QString &id) const
 {
-    const QVector<SearchEngine> available = engines();
+    const QVector<SearchEngine> &available = searchEngineCatalog();
     for (const SearchEngine &candidate : available) {
         if (candidate.id.compare(id, Qt::CaseInsensitive) == 0) {
             return candidate;
@@ -60,7 +70,9 @@ SearchEngine SearchManager::engine(const QString &id) const
 QStringList SearchManager::engineIds() const
 {
     QStringList ids;
-    for (const SearchEngine &candidate : engines()) {
+    const QVector<SearchEngine> &available = searchEngineCatalog();
+    ids.reserve(available.size());
+    for (const SearchEngine &candidate : available) {
         ids.append(candidate.id);
     }
     return ids;
@@ -109,7 +121,7 @@ AddressResolution SearchManager::resolveInput(const QString &input, const QStrin
         return result;
     }
 
-    const QString firstLine = clean.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts).join(QLatin1Char(' ')).simplified();
+    const QString firstLine = clean.simplified();
     if (isSupportedInternalUrl(firstLine)) {
         result.kind = AddressInputKind::Internal;
         result.url = QUrl(Brand::canonicalInternalUrl(firstLine), QUrl::StrictMode);
@@ -130,29 +142,36 @@ AddressResolution SearchManager::resolveInput(const QString &input, const QStrin
         result.query = firstLine;
         return result;
     }
-    const QRegularExpression localhost(QStringLiteral(R"(^localhost(?::\d{1,5})?(?:/.*)?$)"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression localhost(
+        QStringLiteral(R"(^localhost(?::\d{1,5})?(?:/.*)?$)"),
+        QRegularExpression::CaseInsensitiveOption);
     if (localhost.match(firstLine).hasMatch()) {
         result.kind = AddressInputKind::Host;
         result.url = QUrl(QStringLiteral("https://") + firstLine, QUrl::StrictMode);
         return result;
     }
-    if (firstLine.contains(QRegularExpression(QStringLiteral("\\s")))) {
+    if (firstLine.contains(QLatin1Char(' '))) {
         result.kind = AddressInputKind::Search;
         result.query = firstLine;
         return result;
     }
 
-    const bool onion = firstLine.contains(QRegularExpression(QStringLiteral(R"((^|\.)[a-z2-7]{16,56}\.onion(?=[:/]|$))"),
-                                                              QRegularExpression::CaseInsensitiveOption));
+    static const QRegularExpression onionAddress(
+        QStringLiteral(R"((^|\.)[a-z2-7]{16,56}\.onion(?=[:/]|$))"),
+        QRegularExpression::CaseInsensitiveOption);
+    const bool onion = firstLine.contains(onionAddress);
     if (onion) {
         result.kind = AddressInputKind::Onion;
         result.url = QUrl(QStringLiteral("http://") + firstLine, QUrl::StrictMode);
         return result;
     }
 
-    const QRegularExpression bracketedIpv6(QStringLiteral(R"(^\[[0-9A-Fa-f:]+\](?::\d{1,5})?(?:/.*)?$)"));
-    const QRegularExpression domain(QStringLiteral(R"(^([\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+[\p{L}]{2,63}(?::\d{1,5})?(?:/.*)?$)"),
-                                    QRegularExpression::UseUnicodePropertiesOption | QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression bracketedIpv6(
+        QStringLiteral(R"(^\[[0-9A-Fa-f:]+\](?::\d{1,5})?(?:/.*)?$)"));
+    static const QRegularExpression domain(
+        QStringLiteral(R"(^([\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+[\p{L}]{2,63}(?::\d{1,5})?(?:/.*)?$)"),
+        QRegularExpression::UseUnicodePropertiesOption
+            | QRegularExpression::CaseInsensitiveOption);
     const QString hostPart = firstLine.section(QLatin1Char('/'), 0, 0).section(QLatin1Char(':'), 0, 0);
     QHostAddress ip;
     const bool ipv4 = ip.setAddress(hostPart) && ip.protocol() == QAbstractSocket::IPv4Protocol;
