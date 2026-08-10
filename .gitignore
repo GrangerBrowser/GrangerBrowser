@@ -4,6 +4,8 @@
 /output/
 /release/
 /dist/
+# Local owner asset drop; canonical tracked copies live in granger/resources/settings-icons.
+/settings_icon/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt
@@ -94,4 +96,3 @@ Desktop.ini
 # Separate local Pamp repository reviewed during the clean-room integration.
 # It has its own Git history and contains runtime reports/case data.
 /pentest/
-

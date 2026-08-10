@@ -55,6 +55,14 @@
         <file alias="container-search.svg">icons/container-search.svg</file>
         <file alias="container-shield.svg">icons/container-shield.svg</file>
     </qresource>
+    <qresource prefix="/settings-icons">
+        <file alias="danger-zone.png">settings-icons/danger-zone.png</file>
+        <file alias="isolated-tabs.png">settings-icons/isolated-tabs.png</file>
+        <file alias="pamp-lite.png">settings-icons/pamp-lite.png</file>
+        <file alias="privacy-security.png">settings-icons/privacy-security.png</file>
+        <file alias="spaces.png">settings-icons/spaces.png</file>
+        <file alias="tor-connection.png">settings-icons/tor-connection.png</file>
+    </qresource>
     <qresource prefix="/search-engines">
         <file alias="duckduckgo.png">search-engines/duckduckgo.png</file>
         <file alias="google.png">search-engines/google.png</file>

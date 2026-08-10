@@ -82,6 +82,68 @@
       "embeddedSha256": "971AA3080CB79F077043A9E5DD41D2E4166348FD6CBE80E256FF85BC1D6378E7"
     }
   ],
+  "settingsIcons": [
+    {
+      "category": "danger",
+      "source": "danger_zone.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [72, 67],
+      "sourceSha256": "17802D13BDF37D61E7884553E442D6AEC69C2F3AC9FB4EADA6190F4087EF8DE3",
+      "resource": ":/settings-icons/danger-zone.png",
+      "embeddedSize": [72, 67],
+      "embeddedSha256": "17802D13BDF37D61E7884553E442D6AEC69C2F3AC9FB4EADA6190F4087EF8DE3"
+    },
+    {
+      "category": "isolated",
+      "source": "isolated_tabs.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [65, 72],
+      "sourceSha256": "8AA442E04EF568A57C3A5CC431A9BF59F3D7378F9F0C274DB3C65C138FC1E1C8",
+      "resource": ":/settings-icons/isolated-tabs.png",
+      "embeddedSize": [65, 72],
+      "embeddedSha256": "8AA442E04EF568A57C3A5CC431A9BF59F3D7378F9F0C274DB3C65C138FC1E1C8"
+    },
+    {
+      "category": "pamp",
+      "source": "Pamp_lite.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [85, 77],
+      "sourceSha256": "F7880F4522BD1F9F6F3D88D193D6A894E819192E7A8BD0C7DE4CBD8644868721",
+      "resource": ":/settings-icons/pamp-lite.png",
+      "embeddedSize": [85, 77],
+      "embeddedSha256": "F7880F4522BD1F9F6F3D88D193D6A894E819192E7A8BD0C7DE4CBD8644868721"
+    },
+    {
+      "category": "privacy",
+      "source": "privacy_and_security.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [64, 64],
+      "sourceSha256": "450FF78225160872A2144B74526E37347EC0AF57FC82C805C5C5A89B4C5096E0",
+      "resource": ":/settings-icons/privacy-security.png",
+      "embeddedSize": [64, 64],
+      "embeddedSha256": "450FF78225160872A2144B74526E37347EC0AF57FC82C805C5C5A89B4C5096E0"
+    },
+    {
+      "category": "containers",
+      "source": "Spaces.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [75, 65],
+      "sourceSha256": "7B391D0027B17244AC02E64C59255335313E80DE7F6D547132C12416CF21BBDC",
+      "resource": ":/settings-icons/spaces.png",
+      "embeddedSize": [75, 65],
+      "embeddedSha256": "7B391D0027B17244AC02E64C59255335313E80DE7F6D547132C12416CF21BBDC"
+    },
+    {
+      "category": "connection",
+      "source": "tor_icons.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [64, 64],
+      "sourceSha256": "7FB188C617B310647D9CBE34A27E58C919B08D1D0698D4BF79DF1E03110AE057",
+      "resource": ":/settings-icons/tor-connection.png",
+      "embeddedSize": [64, 64],
+      "embeddedSha256": "7FB188C617B310647D9CBE34A27E58C919B08D1D0698D4BF79DF1E03110AE057"
+    }
+  ],
   "wallpaper": {
     "source": "emma watson.jpg",
     "sourceFormat": "JPEG",

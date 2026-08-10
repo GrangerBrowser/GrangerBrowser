@@ -378,6 +378,98 @@ int runUiFocusSmoke(QApplication &app,
                        && aiIconScales,
                    aiIconHash, aiIconAsset.value(QStringLiteral("embeddedSha256")).toString());
 
+    struct SettingsIconExpectation {
+        QString category;
+        QString source;
+        QString resource;
+        QSize size;
+        QString sha256;
+    };
+    const QVector<SettingsIconExpectation> expectedSettingsIcons{
+        {QStringLiteral("danger"), QStringLiteral("danger_zone.png"),
+         QStringLiteral(":/settings-icons/danger-zone.png"), QSize(72, 67),
+         QStringLiteral("17802D13BDF37D61E7884553E442D6AEC69C2F3AC9FB4EADA6190F4087EF8DE3")},
+        {QStringLiteral("isolated"), QStringLiteral("isolated_tabs.png"),
+         QStringLiteral(":/settings-icons/isolated-tabs.png"), QSize(65, 72),
+         QStringLiteral("8AA442E04EF568A57C3A5CC431A9BF59F3D7378F9F0C274DB3C65C138FC1E1C8")},
+        {QStringLiteral("pamp"), QStringLiteral("Pamp_lite.png"),
+         QStringLiteral(":/settings-icons/pamp-lite.png"), QSize(85, 77),
+         QStringLiteral("F7880F4522BD1F9F6F3D88D193D6A894E819192E7A8BD0C7DE4CBD8644868721")},
+        {QStringLiteral("privacy"), QStringLiteral("privacy_and_security.png"),
+         QStringLiteral(":/settings-icons/privacy-security.png"), QSize(64, 64),
+         QStringLiteral("450FF78225160872A2144B74526E37347EC0AF57FC82C805C5C5A89B4C5096E0")},
+        {QStringLiteral("containers"), QStringLiteral("Spaces.png"),
+         QStringLiteral(":/settings-icons/spaces.png"), QSize(75, 65),
+         QStringLiteral("7B391D0027B17244AC02E64C59255335313E80DE7F6D547132C12416CF21BBDC")},
+        {QStringLiteral("connection"), QStringLiteral("tor_icons.png"),
+         QStringLiteral(":/settings-icons/tor-connection.png"), QSize(64, 64),
+         QStringLiteral("7FB188C617B310647D9CBE34A27E58C919B08D1D0698D4BF79DF1E03110AE057")}
+    };
+    const QJsonArray settingsIconAssets = assetManifest.value(QStringLiteral("settingsIcons")).toArray();
+    QHash<QString, QString> expectedSettingsNavigationIconSources;
+    bool settingsIconResourcesValid = settingsIconAssets.size() == expectedSettingsIcons.size();
+    for (const SettingsIconExpectation &expected : expectedSettingsIcons) {
+        QJsonObject manifestEntry;
+        for (const QJsonValue &value : settingsIconAssets) {
+            if (value.toObject().value(QStringLiteral("category")).toString() == expected.category) {
+                manifestEntry = value.toObject();
+                break;
+            }
+        }
+        QFile resource(expected.resource);
+        const bool opened = resource.open(QIODevice::ReadOnly);
+        const QByteArray bytes = opened ? resource.readAll() : QByteArray();
+        QImage image;
+        const bool decoded = image.loadFromData(bytes, "PNG");
+        const QString actualHash = QString::fromLatin1(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex().toUpper());
+        const QIcon icon(expected.resource);
+        bool highDpiScales = !icon.isNull();
+        for (const qreal dpr : {1.0, 1.25, 1.5, 1.75, 2.0}) {
+            const QPixmap pixmap = icon.pixmap(QSize(18, 18), dpr, QIcon::Normal, QIcon::Off);
+            highDpiScales = highDpiScales && !pixmap.isNull()
+                && qAbs(pixmap.devicePixelRatio() - dpr) < 0.01;
+        }
+        const bool valid = !manifestEntry.isEmpty()
+            && manifestEntry.value(QStringLiteral("source")).toString() == expected.source
+            && manifestEntry.value(QStringLiteral("sourceFormat")).toString() == QStringLiteral("PNG")
+            && manifestEntry.value(QStringLiteral("sourceSha256")).toString() == expected.sha256
+            && manifestEntry.value(QStringLiteral("resource")).toString() == expected.resource
+            && manifestEntry.value(QStringLiteral("embeddedSha256")).toString() == expected.sha256
+            && opened && decoded && image.hasAlphaChannel() && image.size() == expected.size
+            && actualHash == expected.sha256 && highDpiScales;
+        settingsIconResourcesValid = settingsIconResourcesValid && valid;
+        expectedSettingsNavigationIconSources.insert(
+            expected.category,
+            QStringLiteral("data:image/png;base64,%1")
+                .arg(QString::fromLatin1(bytes.toBase64())));
+        results.record(QStringLiteral("owner Settings icon: %1").arg(expected.category),
+                       valid, actualHash, expected.sha256);
+    }
+    const QVector<QPair<QString, QString>> unchangedSettingsIcons{
+        {QStringLiteral("general"), QStringLiteral(":/icons/settings.svg")},
+        {QStringLiteral("search"), QStringLiteral(":/icons/search.svg")},
+        {QStringLiteral("downloads"), QStringLiteral(":/icons/downloads.svg")},
+        {QStringLiteral("reports"), QStringLiteral(":/icons/reports.svg")},
+        {QStringLiteral("advanced"), QStringLiteral(":/icons/site-controls.svg")},
+        {QStringLiteral("about"), QStringLiteral(":/icons/browser.svg")}
+    };
+    bool unchangedSettingsIconsValid = true;
+    for (const auto &entry : unchangedSettingsIcons) {
+        QFile resource(entry.second);
+        const bool opened = resource.open(QIODevice::ReadOnly);
+        const QByteArray bytes = opened ? resource.readAll() : QByteArray();
+        unchangedSettingsIconsValid = unchangedSettingsIconsValid && opened && !bytes.isEmpty();
+        expectedSettingsNavigationIconSources.insert(
+            entry.first,
+            QStringLiteral("data:image/svg+xml;base64,%1")
+                .arg(QString::fromLatin1(bytes.toBase64())));
+    }
+    results.record(QStringLiteral("six owner Settings PNG resources are compiled without replacing other icons"),
+                   settingsIconResourcesValid && unchangedSettingsIconsValid
+                       && expectedSettingsNavigationIconSources.size() == 12,
+                   QString::number(settingsIconAssets.size()), QStringLiteral("6"));
+
     SettingsManager settings;
     settings.setLanguage(QStringLiteral("en"));
     settings.setTorConnectionMode(QStringLiteral("disabled"));
@@ -1773,7 +1865,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     settle(250);
     capture(QStringLiteral("settings"), QStringLiteral("07-settings-privacy.png"), window);
     BrowserTab *settingsLayoutTab = window->currentTabForDiagnostics();
-    const QVariantMap settingsLayout = evaluate(settingsLayoutTab ? settingsLayoutTab->page() : nullptr,
+    QVariantMap settingsLayout = evaluate(settingsLayoutTab ? settingsLayoutTab->page() : nullptr,
         QStringLiteral(R"JS((()=>{
             const form=(suffix)=>document.querySelector(`form[action$="${suffix}"]`);
             const profile=document.getElementById('privacy-profiles');
@@ -1834,7 +1926,29 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                  navigationGroups:document.querySelectorAll('.settings-nav-group').length,
                  navigationLinks:document.querySelectorAll('.settings-nav a').length,
                  navigationIcons:[...document.querySelectorAll('.settings-nav a img')].length===12
-                     &&[...document.querySelectorAll('.settings-nav a img')].every(icon=>icon.src.startsWith('data:image/svg+xml;base64,')),
+                     &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/png;base64,')).length===6
+                     &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/svg+xml;base64,')).length===6,
+                 navigationIconSources:Object.fromEntries(
+                     [...document.querySelectorAll('.settings-nav a')].map(link=>[
+                         new URL(link.href).searchParams.get('id')||'',
+                         link.querySelector('img')?.src||''
+                     ])),
+                 navigationIconGeometry:(()=>{
+                     const icons=[...document.querySelectorAll('.settings-nav-icon img')];
+                     const spread=values=>Math.max(...values)-Math.min(...values);
+                     const rects=icons.map(icon=>icon.getBoundingClientRect());
+                     return icons.length===12
+                         &&icons.every(icon=>{
+                             const image=icon.getBoundingClientRect();
+                             const box=icon.parentElement.getBoundingClientRect();
+                             return icon.complete&&icon.naturalWidth>0&&icon.naturalHeight>0
+                                 &&getComputedStyle(icon).objectFit==='contain'
+                                 &&Math.abs((image.left+image.width/2)-(box.left+box.width/2))<=0.5
+                                 &&Math.abs((image.top+image.height/2)-(box.top+box.height/2))<=0.5;
+                         })
+                         &&spread(rects.map(rect=>rect.width))<=0.5
+                         &&spread(rects.map(rect=>rect.height))<=0.5;
+                 })(),
                  navigationCurrent:document.querySelectorAll('.settings-nav a[aria-current="page"]').length===1
                      &&document.querySelector('.settings-nav a.active')?.getAttribute('aria-current')==='page',
                  navigationLabels:[...document.querySelectorAll('.settings-nav-label')].length===4
@@ -1867,6 +1981,17 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                  noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1
              };
         })())JS")).toMap();
+    const QVariantMap settingsNavigationIconSources =
+        settingsLayout.take(QStringLiteral("navigationIconSources")).toMap();
+    QStringList settingsIconMappingMismatches;
+    for (auto it = expectedSettingsNavigationIconSources.constBegin();
+         it != expectedSettingsNavigationIconSources.constEnd(); ++it) {
+        if (settingsNavigationIconSources.value(it.key()).toString() != it.value()) {
+            settingsIconMappingMismatches.append(it.key());
+        }
+    }
+    const bool settingsIconMappingExact = settingsNavigationIconSources.size() == 12
+        && settingsIconMappingMismatches.isEmpty();
     results.record(QStringLiteral("Settings UI migration preserves profile and site-rule controls"),
                    settingsLayout.value(QStringLiteral("profileSection")).toBool()
                        && settingsLayout.value(QStringLiteral("activate")).toBool()
@@ -1888,13 +2013,19 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        && settingsLayout.value(QStringLiteral("enhanced")).toBool()
                        && settingsLayout.value(QStringLiteral("nativeHidden")).toBool()
                        && settingsLayout.value(QStringLiteral("accessible")).toBool());
+    results.record(QStringLiteral("Settings navigation maps six owner PNGs and preserves six existing SVGs"),
+                   settingsIconMappingExact,
+                   settingsIconMappingMismatches.join(QStringLiteral(", ")),
+                   QStringLiteral("exact 12-category resource mapping"));
     const QJsonObject settingsNavigationDetails{
         {QStringLiteral("groups"), settingsLayout.value(QStringLiteral("navigationGroups")).toInt()},
         {QStringLiteral("links"), settingsLayout.value(QStringLiteral("navigationLinks")).toInt()},
         {QStringLiteral("icons"), settingsLayout.value(QStringLiteral("navigationIcons")).toBool()},
+        {QStringLiteral("iconGeometry"), settingsLayout.value(QStringLiteral("navigationIconGeometry")).toBool()},
         {QStringLiteral("current"), settingsLayout.value(QStringLiteral("navigationCurrent")).toBool()},
         {QStringLiteral("labels"), settingsLayout.value(QStringLiteral("navigationLabels")).toBool()},
         {QStringLiteral("local"), settingsLayout.value(QStringLiteral("localNavigation")).toBool()},
+        {QStringLiteral("exactIconMapping"), settingsIconMappingExact},
         {QStringLiteral("surface"), settingsLayout.value(QStringLiteral("groupedSurface")).toBool()},
         {QStringLiteral("surfaceMetrics"), QJsonObject::fromVariantMap(
              settingsLayout.value(QStringLiteral("groupedSurfaceMetrics")).toMap())}
@@ -1903,12 +2034,21 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                    settingsNavigationDetails.value(QStringLiteral("groups")).toInt() == 4
                        && settingsNavigationDetails.value(QStringLiteral("links")).toInt() == 12
                        && settingsNavigationDetails.value(QStringLiteral("icons")).toBool()
+                       && settingsNavigationDetails.value(QStringLiteral("iconGeometry")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("current")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("labels")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("local")).toBool()
+                       && settingsNavigationDetails.value(QStringLiteral("exactIconMapping")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("surface")).toBool(),
                    QString::fromUtf8(QJsonDocument(settingsNavigationDetails)
                                          .toJson(QJsonDocument::Compact)));
+    evaluate(settingsLayoutTab ? settingsLayoutTab->page() : nullptr,
+             QStringLiteral("document.querySelector('.settings-nav a[href*=\"id=danger\"]')?.scrollIntoView({block:'center'})"));
+    settle(140);
+    capture(QStringLiteral("settingsOwnerIconsLower"),
+            QStringLiteral("07r-settings-owner-icons-lower.png"), window);
+    evaluate(settingsLayoutTab ? settingsLayoutTab->page() : nullptr,
+             QStringLiteral("window.scrollTo(0,0)"));
     const QVariantMap siteRulesLayout =
         settingsLayout.value(QStringLiteral("siteRulesLayout")).toMap();
     const QVariantMap sitePermissionsLayout =

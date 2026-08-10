@@ -878,15 +878,21 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
     return DesignTokens::apply(html);
 }
 
-QString localSvgDataUrl(const QString &resourcePath)
+QString localImageDataUrl(const QString &resourcePath)
 {
     static QHash<QString, QString> cache;
     const auto cached = cache.constFind(resourcePath);
     if (cached != cache.constEnd()) return cached.value();
+    QString mimeType;
+    if (resourcePath.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)) {
+        mimeType = QStringLiteral("image/png");
+    } else if (resourcePath.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive)) {
+        mimeType = QStringLiteral("image/svg+xml");
+    }
     QFile file(resourcePath);
-    const QString dataUrl = file.open(QIODevice::ReadOnly)
-        ? QStringLiteral("data:image/svg+xml;base64,%1")
-              .arg(QString::fromLatin1(file.readAll().toBase64()))
+    const QString dataUrl = !mimeType.isEmpty() && file.open(QIODevice::ReadOnly)
+        ? QStringLiteral("data:%1;base64,%2")
+              .arg(mimeType, QString::fromLatin1(file.readAll().toBase64()))
         : QString();
     cache.insert(resourcePath, dataUrl);
     return dataUrl;
@@ -897,7 +903,7 @@ QString categoryLink(const QString &id, const QString &label, const QString &act
 {
     const bool selected = id == active;
     const QString current = selected ? QStringLiteral(" aria-current=\"page\"") : QString();
-    const QString iconDataUrl = localSvgDataUrl(iconResource);
+    const QString iconDataUrl = localImageDataUrl(iconResource);
     const QString icon = iconDataUrl.isEmpty()
         ? QString()
         : QStringLiteral("<img src=\"%1\" alt=\"\" aria-hidden=\"true\">").arg(e(iconDataUrl));
@@ -1045,23 +1051,23 @@ QString InternalPages::settings(const InternalPageContext &context)
                                  QStringLiteral(":/icons/downloads.svg"));
     QString privacyLinks;
     privacyLinks += categoryLink(QStringLiteral("privacy"), t("settings.category.privacy"), category,
-                                 QStringLiteral(":/icons/privacy.svg"));
+                                 QStringLiteral(":/settings-icons/privacy-security.png"));
     privacyLinks += categoryLink(QStringLiteral("containers"), t("settings.category.containers"), category,
-                                 QStringLiteral(":/icons/container-circle.svg"));
+                                 QStringLiteral(":/settings-icons/spaces.png"));
     privacyLinks += categoryLink(QStringLiteral("isolated"), t("settings.category.isolated"), category,
-                                 QStringLiteral(":/icons/lock.svg"));
+                                 QStringLiteral(":/settings-icons/isolated-tabs.png"));
     privacyLinks += categoryLink(QStringLiteral("pamp"), t("settings.category.pamp"), category,
-                                 QStringLiteral(":/icons/shield.svg"));
+                                 QStringLiteral(":/settings-icons/pamp-lite.png"));
     QString networkLinks;
     networkLinks += categoryLink(QStringLiteral("connection"), t("settings.category.connection"), category,
-                                 QStringLiteral(":/icons/tor.svg"));
+                                 QStringLiteral(":/settings-icons/tor-connection.png"));
     QString systemLinks;
     systemLinks += categoryLink(QStringLiteral("reports"), t("settings.category.reports"), category,
                                 QStringLiteral(":/icons/reports.svg"));
     systemLinks += categoryLink(QStringLiteral("advanced"), t("settings.category.advanced"), category,
                                 QStringLiteral(":/icons/site-controls.svg"));
     systemLinks += categoryLink(QStringLiteral("danger"), t("settings.category.danger"), category,
-                                QStringLiteral(":/icons/stop.svg"));
+                                QStringLiteral(":/settings-icons/danger-zone.png"));
     systemLinks += categoryLink(QStringLiteral("about"), t("settings.category.about"), category,
                                 QStringLiteral(":/icons/browser.svg"));
     const QString nav = settingsNavGroup(t("settings.nav.browser"), browserLinks)
