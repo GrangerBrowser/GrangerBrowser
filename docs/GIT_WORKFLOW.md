@@ -6,8 +6,7 @@ on focused branches and proposed through pull requests.
 ## Branches
 
 - Start from an up-to-date `main`.
-- Use `agent/<scope>` for Codex-assisted work and a similarly descriptive
-  prefix for human work.
+- Use a descriptive prefix such as `feature/<scope>` or `fix/<scope>`.
 - Keep one coherent product change per branch.
 - Do not force-push `main` or rewrite its published history.
 
@@ -30,4 +29,3 @@ unmerged until the repository owner reviews them.
 Portable binaries are produced locally by `scripts/build-release.ps1`. They do
 not belong in source commits. A future tagged release may publish them through
 GitHub Releases or CI artifacts after signing and release policy are defined.
-

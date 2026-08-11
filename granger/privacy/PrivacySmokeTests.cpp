@@ -33,6 +33,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QScreen>
+#include <QSaveFile>
 #include <QTimer>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -265,7 +266,11 @@ QVariantMap evaluateFingerprintSurfaces(PrivacyPolicyManager &manager,
               bluetooth: typeof n.bluetooth, hid: typeof n.hid, usb: typeof n.usb,
               serial: typeof n.serial, midi: typeof n.requestMIDIAccess,
               webgpu: typeof n.gpu, xr: typeof n.xr,
-              topics: typeof n.browsingTopics, adAuction: typeof n.runAdAuction,
+              topics: typeof document.browsingTopics,
+              adAuction: typeof n.runAdAuction,
+              sharedStorage: typeof globalThis.sharedStorage,
+              fencedFrame: typeof globalThis.HTMLFencedFrameElement,
+              privateAggregation: typeof globalThis.privateAggregation,
               mediaCapabilities: typeof n.mediaCapabilities,
               keyboard: typeof n.keyboard, wakeLock: typeof n.wakeLock,
               storageBuckets: typeof n.storageBuckets
@@ -287,12 +292,63 @@ QVariantMap evaluateFingerprintSurfaces(PrivacyPolicyManager &manager,
             'Microsoft YaHei','Arial Nova','Sitka Text'
           ];
           const detectedFonts = systemFontCandidates.filter(name => metric(name) !== missingMetric);
+          const styleSheet = document.createElement('style');
+          styleSheet.textContent = '.granger-font-candidate{font-family:"Cascadia Code",serif!important}'
+            + '.granger-font-fallback{font-family:"__granger_missing_font__",serif!important}';
+          document.head.appendChild(styleSheet);
+          fontProbe.style.removeProperty('font-family');
+          fontProbe.className = 'granger-font-candidate';
+          const stylesheetMetric = fontProbe.offsetWidth + ',' + fontProbe.offsetHeight;
+          const range = document.createRange();
+          range.selectNodeContents(fontProbe);
+          const stylesheetRangeMetric = range.getBoundingClientRect().width;
+          fontProbe.className = 'granger-font-fallback';
+          const fallbackMetric = fontProbe.offsetWidth + ',' + fontProbe.offsetHeight;
+          const fallbackRangeMetric = range.getBoundingClientRect().width;
+          const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          const svgText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          svgText.textContent = fontProbe.textContent;
+          svgText.setAttribute('style', 'font:128px "Cascadia Code",serif');
+          svg.appendChild(svgText); document.body.appendChild(svg);
+          const svgCandidateMetric = svgText.getComputedTextLength();
+          svgText.setAttribute('style', 'font:128px "__granger_missing_font__",serif');
+          const svgFallbackMetric = svgText.getComputedTextLength();
+          range.detach(); svg.remove(); styleSheet.remove();
           fontProbe.remove();
           output.fontProbe = {
             candidates: systemFontCandidates.length,
             detected: detectedFonts.length,
-            names: detectedFonts
+            names: detectedFonts,
+            stylesheetStandardized: stylesheetMetric === fallbackMetric,
+            rangeStandardized: stylesheetRangeMetric === fallbackRangeMetric,
+            svgStandardized: svgCandidateMetric === svgFallbackMetric
           };
+          let voiceEvents = 0;
+          const speech = globalThis.speechSynthesis;
+          if (speech && typeof speech.getVoices === 'function') {
+            speech.addEventListener('voiceschanged', () => { voiceEvents += 1; });
+            const initialVoices = Array.from(speech.getVoices() || []);
+            await new Promise(resolve => setTimeout(resolve, 350));
+            const delayedVoices = Array.from(speech.getVoices() || []);
+            output.speechVoices = {
+              initial: initialVoices.length, delayed: delayedVoices.length,
+              events: voiceEvents,
+              labelsExposed: delayedVoices.some(voice => !!(voice.name || voice.voiceURI || voice.lang))
+            };
+          } else output.speechVoices = { unsupported: true };
+          let deviceEvents = 0;
+          if (n.mediaDevices && typeof n.mediaDevices.enumerateDevices === 'function') {
+            n.mediaDevices.addEventListener('devicechange', () => { deviceEvents += 1; });
+            const firstDevices = Array.from(await n.mediaDevices.enumerateDevices());
+            await new Promise(resolve => setTimeout(resolve, 50));
+            const secondDevices = Array.from(await n.mediaDevices.enumerateDevices());
+            output.mediaDevices = {
+              first: firstDevices.length, second: secondDevices.length,
+              events: deviceEvents,
+              identifiersExposed: secondDevices.some(device =>
+                !!(device.deviceId || device.groupId || device.label))
+            };
+          } else output.mediaDevices = { unsupported: true };
           if (n.userAgentData) {
             output.clientHints = {
               brands: Array.from(n.userAgentData.brands || []),
@@ -393,7 +449,37 @@ QVariantMap evaluateFingerprintSurfaces(PrivacyPolicyManager &manager,
     loop.exec();
     poll.stop();
     state->loop = nullptr;
-    return state->value.toMap();
+    QVariantMap result = state->value.toMap();
+    auto engineState = std::make_shared<JavaScriptEvaluationState>();
+    QEventLoop engineLoop;
+    engineState->loop = &engineLoop;
+    QTimer engineTimeout;
+    engineTimeout.setSingleShot(true);
+    engineTimeout.setInterval(5000);
+    QObject::connect(&engineTimeout, &QTimer::timeout, &engineLoop, &QEventLoop::quit);
+    page.runJavaScript(QStringLiteral(R"JS((() => ({
+      topics: typeof document.browsingTopics,
+      joinAdInterestGroup: typeof navigator.joinAdInterestGroup,
+      leaveAdInterestGroup: typeof navigator.leaveAdInterestGroup,
+      runAdAuction: typeof navigator.runAdAuction,
+      sharedStorage: typeof globalThis.sharedStorage,
+      fencedFrame: typeof globalThis.HTMLFencedFrameElement,
+      privateAggregation: typeof globalThis.privateAggregation,
+      attributionXhr: typeof (globalThis.XMLHttpRequest
+        && XMLHttpRequest.prototype.setAttributionReporting),
+      attributionAnchor: typeof (globalThis.HTMLAnchorElement
+        && Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype, 'attributionSrc'))
+    }))())JS"), QWebEngineScript::ApplicationWorld,
+                       [engineState](const QVariant &value) {
+        engineState->value = value;
+        engineState->completed = true;
+        if (engineState->loop) engineState->loop->quit();
+    });
+    engineTimeout.start();
+    engineLoop.exec();
+    engineState->loop = nullptr;
+    result.insert(QStringLiteral("engineAdvertisingApis"), engineState->value.toMap());
+    return result;
 }
 
 QString compact(const QJsonObject &object)
@@ -1022,6 +1108,27 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                        && torFontProbe.value(QStringLiteral("detected")).toInt() <= 3,
                    compact(QJsonObject::fromVariantMap(torFontProbe)),
                    QStringLiteral("no more than 3 of 20 system-font candidates"));
+    results.record(QStringLiteral("Strict font metrics cover stylesheet Range and SVG probes"),
+                   torFontProbe.value(QStringLiteral("stylesheetStandardized")).toBool()
+                       && torFontProbe.value(QStringLiteral("rangeStandardized")).toBool()
+                       && torFontProbe.value(QStringLiteral("svgStandardized")).toBool(),
+                   compact(QJsonObject::fromVariantMap(torFontProbe)));
+    const QVariantMap torSpeechVoices = torSurfaces
+        .value(QStringLiteral("speechVoices")).toMap();
+    results.record(QStringLiteral("Tor exposes no installed speech voice inventory asynchronously"),
+                   torSpeechVoices.value(QStringLiteral("initial")).toInt() == 0
+                       && torSpeechVoices.value(QStringLiteral("delayed")).toInt() == 0
+                       && torSpeechVoices.value(QStringLiteral("events")).toInt() == 0
+                       && !torSpeechVoices.value(QStringLiteral("labelsExposed")).toBool(),
+                   compact(QJsonObject::fromVariantMap(torSpeechVoices)));
+    const QVariantMap torMediaDevices = torSurfaces
+        .value(QStringLiteral("mediaDevices")).toMap();
+    results.record(QStringLiteral("Tor exposes no media device identifiers before permission"),
+                   torMediaDevices.value(QStringLiteral("first")).toInt() == 0
+                       && torMediaDevices.value(QStringLiteral("second")).toInt() == 0
+                       && torMediaDevices.value(QStringLiteral("events")).toInt() == 0
+                       && !torMediaDevices.value(QStringLiteral("identifiersExposed")).toBool(),
+                   compact(QJsonObject::fromVariantMap(torMediaDevices)));
     const QVariantList torScreen = torSurfaces.value(QStringLiteral("screen")).toList();
     const QVariantMap torApiTypes = torSurfaces.value(QStringLiteral("apiTypes")).toMap();
     bool sensitiveApisRestricted = true;
@@ -1073,6 +1180,38 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
     results.record(QStringLiteral("renderer and worker process locale is fixed independently of UI language"),
                    qgetenv("QTWEBENGINE_CHROMIUM_FLAGS").contains("--lang=en-US"),
                    QString::fromLocal8Bit(qgetenv("QTWEBENGINE_CHROMIUM_FLAGS")));
+    const QByteArray chromiumFlags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+    const QList<QByteArray> disabledAdvertisingFeatures{
+        QByteArrayLiteral("BrowsingTopics"),
+        QByteArrayLiteral("BrowsingTopicsDocumentAPI"),
+        QByteArrayLiteral("SharedStorageAPI"),
+        QByteArrayLiteral("InterestGroupStorage"),
+        QByteArrayLiteral("Fledge"),
+        QByteArrayLiteral("FencedFrames"),
+        QByteArrayLiteral("PrivateAggregationApi"),
+        QByteArrayLiteral("ConversionMeasurement"),
+        QByteArrayLiteral("PrivacySandboxAdsAPIsOverride"),
+        QByteArrayLiteral("PrivacySandboxAdsAPIsM1Override")
+    };
+    bool advertisingFeaturesDisabled = true;
+    for (const QByteArray &feature : disabledAdvertisingFeatures) {
+        advertisingFeaturesDisabled = advertisingFeaturesDisabled
+            && chromiumFlags.contains(feature);
+    }
+    results.record(QStringLiteral("Chromium advertising and Privacy Sandbox features are disabled process-wide"),
+                   advertisingFeaturesDisabled,
+                   QString::fromLocal8Bit(chromiumFlags));
+    const QVariantMap engineAdvertisingApis = torSurfaces
+        .value(QStringLiteral("engineAdvertisingApis")).toMap();
+    bool engineAdvertisingSurfaceAbsent = !engineAdvertisingApis.isEmpty();
+    for (auto it = engineAdvertisingApis.constBegin();
+         it != engineAdvertisingApis.constEnd(); ++it) {
+        engineAdvertisingSurfaceAbsent = engineAdvertisingSurfaceAbsent
+            && it.value().toString() == QStringLiteral("undefined");
+    }
+    results.record(QStringLiteral("Privacy Sandbox APIs are absent outside the injected MainWorld"),
+                   engineAdvertisingSurfaceAbsent,
+                   compact(QJsonObject::fromVariantMap(engineAdvertisingApis)));
     const QJsonObject architecture = manager.architectureDiagnostics();
     results.record(QStringLiteral("worker coverage limitation is reported instead of simulated"),
                    !architecture.value(QStringLiteral("workerInjectionSupported")).toBool()
@@ -1128,7 +1267,51 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                               QStringLiteral("local-fonts"), PrivacyProfileKind::Tor)
                               == PrivacyPermissionDecision::Block,
                    localFontPermissionError);
+    const QString scopedPermissionsPath = AppPaths::stateFile(
+        QStringLiteral("container-permissions.json"));
+    const QString legacyScopedKey = QStringLiteral(
+        "container:permission-space|https://space-permission.invalid|notifications");
+    QDir().mkpath(QFileInfo(scopedPermissionsPath).absolutePath());
+    QSaveFile scopedPermissionsFixture(scopedPermissionsPath);
+    const QByteArray scopedPermissionsBytes = QJsonDocument(QJsonObject{
+        {QStringLiteral("version"), 1},
+        {QStringLiteral("decisions"), QJsonObject{
+             {legacyScopedKey, QStringLiteral("allow-always")}}}
+    }).toJson(QJsonDocument::Indented);
+    const bool scopedFixtureWritten = scopedPermissionsFixture.open(QIODevice::WriteOnly)
+        && scopedPermissionsFixture.write(scopedPermissionsBytes) == scopedPermissionsBytes.size()
+        && scopedPermissionsFixture.commit();
     PermissionManager sessionPermissions(manager);
+    const QUrl scopedOrigin(QStringLiteral("https://space-permission.invalid"));
+    const QString scopedPermission = QStringLiteral("notifications");
+    const QString scopedScope = QStringLiteral("container:permission-space");
+    results.record(QStringLiteral("legacy Space permissions migrate only into the Normal profile"),
+                   scopedFixtureWritten
+                       && sessionPermissions.decisionForScope(
+                              scopedOrigin, scopedPermission, PrivacyProfileKind::Normal,
+                              scopedScope) == PrivacyPermissionDecision::AllowAlways
+                       && sessionPermissions.decisionForScope(
+                              scopedOrigin, scopedPermission, PrivacyProfileKind::Tor,
+                              scopedScope) == PrivacyPermissionDecision::Block);
+    QFile migratedScopedPermissions(scopedPermissionsPath);
+    QJsonObject migratedScopedRoot;
+    if (migratedScopedPermissions.open(QIODevice::ReadOnly)) {
+        migratedScopedRoot = QJsonDocument::fromJson(
+            migratedScopedPermissions.readAll()).object();
+    }
+    const QJsonObject migratedScopedValues = migratedScopedRoot
+        .value(QStringLiteral("decisions")).toObject();
+    const QString migratedScopedKey = QStringLiteral("normal|") + legacyScopedKey;
+    results.record(QStringLiteral("Space permission storage is profile-qualified and versioned"),
+                   migratedScopedRoot.value(QStringLiteral("version")).toInt() == 2
+                       && migratedScopedValues.value(migratedScopedKey).toString()
+                              == QStringLiteral("allow-always")
+                       && !migratedScopedValues.contains(legacyScopedKey));
+    sessionPermissions.clearPersistentDecisionsForScope(scopedScope);
+    results.record(QStringLiteral("clearing Space data removes persistent scoped permissions"),
+                   sessionPermissions.decisionForScope(
+                       scopedOrigin, scopedPermission, PrivacyProfileKind::Normal,
+                       scopedScope) == PrivacyPermissionDecision::Ask);
     const bool sessionPermissionSaved = sessionPermissions.setSessionDecision(
         QUrl(QStringLiteral("https://session.example")), QStringLiteral("notifications"),
         PrivacyProfileKind::Private, PrivacyPermissionDecision::AllowSession);
@@ -2139,9 +2322,15 @@ int runPrivacyDiagnosticsSmoke(QApplication &app, const QString &outputPath)
                 contentNetworkRules: document.getElementById('diag-content-network-rules') ? document.getElementById('diag-content-network-rules').textContent : '',
                 contentSources: document.getElementById('diag-content-sources') ? document.getElementById('diag-content-sources').textContent : '',
                 hardwareText: document.getElementById('diag-hardware-concurrency') ? document.getElementById('diag-hardware-concurrency').textContent : '',
+                fontText: document.getElementById('diag-fonts') ? document.getElementById('diag-fonts').textContent : '',
+                speechText: document.getElementById('diag-speech') ? document.getElementById('diag-speech').textContent : '',
+                mediaDevicesText: document.getElementById('diag-media-devices') ? document.getElementById('diag-media-devices').textContent : '',
                 canvasText: document.getElementById('diag-canvas') ? document.getElementById('diag-canvas').textContent : '',
                 audioText: document.getElementById('diag-audio') ? document.getElementById('diag-audio').textContent : '',
                 apiText: document.getElementById('diag-api-restrictions') ? document.getElementById('diag-api-restrictions').textContent : '',
+                privacySandboxText: document.getElementById('diag-privacy-sandbox') ? document.getElementById('diag-privacy-sandbox').textContent : '',
+                gpcText: document.getElementById('diag-gpc') ? document.getElementById('diag-gpc').textContent : '',
+                selfTestAction: Boolean(document.querySelector('a[href="https://granger.local/__action/open?page=about:privacy"]')),
                 scriptSyntax: (() => { try { new Function(document.scripts[0] ? document.scripts[0].textContent : ''); return 'ok'; } catch (error) { return String(error); } })()
             }))())JS"),
             [&](const QVariant &value) {
@@ -2183,9 +2372,22 @@ int runPrivacyDiagnosticsSmoke(QApplication &app, const QString &outputPath)
                               != Localization::text(QStringLiteral("status.applying")));
     results.record(QStringLiteral("diagnostic surface rows contain measured states rather than testing placeholders"),
                    !lastProbe.value(QStringLiteral("hardwareText")).toString().isEmpty()
+                       && !lastProbe.value(QStringLiteral("fontText")).toString().isEmpty()
+                       && !lastProbe.value(QStringLiteral("speechText")).toString().isEmpty()
+                       && !lastProbe.value(QStringLiteral("mediaDevicesText")).toString().isEmpty()
                        && lastProbe.value(QStringLiteral("canvasText")).toString() != QStringLiteral("Testing")
                        && lastProbe.value(QStringLiteral("audioText")).toString() != QStringLiteral("Testing")
-                       && lastProbe.value(QStringLiteral("apiText")).toString() != QStringLiteral("Testing"));
+                       && lastProbe.value(QStringLiteral("apiText")).toString() != QStringLiteral("Testing")
+                       && lastProbe.value(QStringLiteral("privacySandboxText")).toString()
+                              != QStringLiteral("Testing")
+                       && lastProbe.value(QStringLiteral("gpcText")).toString()
+                              != QStringLiteral("Testing"));
+    results.record(QStringLiteral("diagnostics measure disabled Privacy Sandbox APIs and enabled GPC"),
+                   diagnostics.value(QStringLiteral("privacySandboxApis")).toList().isEmpty()
+                       && diagnostics.value(QStringLiteral("globalPrivacyControl")).toBool(),
+                   compact(QJsonObject::fromVariantMap(diagnostics)));
+    results.record(QStringLiteral("diagnostics expose an explicit local privacy self-test action"),
+                   lastProbe.value(QStringLiteral("selfTestAction")).toBool());
     results.record(QStringLiteral("diagnostic candidate test exposes no numeric host address"),
                    !diagnostics.value(QStringLiteral("directIpExposed")).toBool(),
                    compact(QJsonObject::fromVariantMap(diagnostics)));

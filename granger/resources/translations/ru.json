@@ -403,6 +403,16 @@
   "privacy.protection_preset.description": "По умолчанию выбран сбалансированный режим. Строгий режим может нарушить работу сайтов.",
   "privacy.fingerprint": "Защита от цифрового отпечатка",
   "privacy.fingerprint.description": "Стандартизирует отдельные информативные API без случайных значений при каждом вызове.",
+  "privacy.anti_fingerprinting.title": "Защита от цифрового отпечатка",
+  "privacy.anti_fingerprinting.description": "Здесь показаны реально действующие категории защиты. Для Tor и Onion обязательные ограничения всегда остаются включёнными.",
+  "privacy.anti_fingerprinting.screen_viewport": "Экран, viewport и letterboxing",
+  "privacy.anti_fingerprinting.fonts": "Шрифты и метрики текста",
+  "privacy.anti_fingerprinting.graphics": "Графические API",
+  "privacy.anti_fingerprinting.hardware": "Аппаратные поверхности",
+  "privacy.anti_fingerprinting.timezone_locale": "Часовой пояс и locale",
+  "privacy.anti_fingerprinting.media": "Медиа-поверхности",
+  "privacy.anti_fingerprinting.speech_media": "Речь и медиаустройства",
+  "privacy.anti_fingerprinting.client_hints": "Client Hints",
   "privacy.webrtc": "Защищённый WebRTC",
   "privacy.webrtc.description": "Разрешает WebRTC в режиме Direct с запретом непроксированного UDP. Выключение блокирует API; в Tor и Onion он блокируется всегда.",
   "privacy.trackers": "Блокировка трекеров",
@@ -577,6 +587,8 @@
   "privacy.diagnostics.public_ip": "Публичный IP браузерной сессии",
   "privacy.diagnostics.profile": "Профиль конфиденциальности",
   "privacy.diagnostics.profile_isolation": "Изоляция профиля",
+  "privacy.diagnostics.no_verified_route": "Нет подтверждённого приватного маршрута",
+  "privacy.diagnostics.letterboxing": "Стандартизация viewport внешних страниц",
   "privacy.diagnostics.candidates": "Типы кандидатов WebRTC",
   "privacy.diagnostics.local_ip": "Прямой локальный или публичный IP-кандидат",
   "privacy.diagnostics.direct_udp": "Попытка прямого UDP-сокета",
@@ -585,13 +597,20 @@
   "privacy.diagnostics.screen": "Отпечаток экрана",
   "privacy.diagnostics.hardware_concurrency": "Логические процессоры",
   "privacy.diagnostics.device_memory": "Память устройства",
+  "privacy.diagnostics.fonts": "Раскрытие метрик шрифтов",
   "privacy.diagnostics.api_restrictions": "Наблюдаемые ограничения конфиденциальности",
   "privacy.diagnostics.api_surface": "Раскрытие чувствительных API",
+  "privacy.diagnostics.privacy_sandbox": "Рекламные API Privacy Sandbox",
   "privacy.diagnostics.third_party_cookies": "Политика сторонних cookie",
   "privacy.diagnostics.storage": "Постоянное хранилище",
   "privacy.diagnostics.permissions": "Разрешения по умолчанию",
   "privacy.diagnostics.trackers": "Блокировка трекеров",
+  "privacy.diagnostics.testing": "Локальная проверка",
+  "privacy.diagnostics.prompt": "Запрашивать",
+  "privacy.diagnostics.none_observed": "Не обнаружено",
+  "privacy.diagnostics.webrtc_proxy_only": "Включено с запретом непроксированного UDP",
   "privacy.diagnostics.local_only": "Проверки выполняются локально в текущем профиле WebEngine. Результаты не отправляются на серверы Granger Browser.",
+  "privacy.diagnostics.run_self_test": "Запустить самопроверку приватности",
   "privacy.forget_site.title": "Удаление данных сайта",
   "privacy.forget_site.confirm": "Удалить сохранённые данные и разрешения для %1?",
   "privacy.forget_site.detail": "Будут удалены доменные cookie, local и session storage, IndexedDB, CacheStorage, service workers и правило точного origin. Qt WebEngine не умеет очищать HTTP-кэш только одного сайта, поэтому общий HTTP-кэш останется.",
@@ -716,6 +735,12 @@
   ,"fingerprint.mode.rounded": "Округлённые"
   ,"fingerprint.mode.standardized": "Стандартизированные"
   ,"fingerprint.mode.system": "Системный"
+  ,"fingerprint.mode.disabled": "Отключено"
+  ,"fingerprint.mode.metrics_standardized": "Метрики стандартизированы"
+  ,"fingerprint.mode.permission_blocked": "Доступ к локальным шрифтам заблокирован"
+  ,"fingerprint.mode.engine_default": "По умолчанию движка"
+  ,"fingerprint.mode.utc": "UTC"
+  ,"fingerprint.mode.reduced": "Сокращённые"
   ,"fingerprint.apply": "Применить настройки отпечатка"
   ,"fingerprint.applied": "Настройки отпечатка применены к профилям браузера и будут использованы при новых загрузках страниц."
   ,"https_first.title": "Безопасные соединения",

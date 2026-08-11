@@ -35,6 +35,11 @@ public:
     void clearSessionDecisions();
     void clearSessionDecisions(PrivacyProfileKind profile);
     void clearSessionDecisionsForScope(const QString &scope);
+    void clearPersistentDecisionsForScope(const QString &scope);
+    PrivacyPermissionDecision decisionForScope(const QUrl &origin,
+                                               const QString &permission,
+                                               PrivacyProfileKind profile,
+                                               const QString &scope = QString()) const;
     bool setSessionDecision(const QUrl &origin,
                             const QString &permission,
                             PrivacyProfileKind profile,
@@ -56,10 +61,12 @@ private:
                        PrivacyProfileKind profile,
                        const QString &scope = QString()) const;
     PrivacyPermissionDecision scopedDecision(const QUrl &origin,
-                                             const QString &permission,
-                                             const QString &scope) const;
+                                              const QString &permission,
+                                              PrivacyProfileKind profile,
+                                              const QString &scope) const;
     void setScopedDecision(const QUrl &origin,
                            const QString &permission,
+                           PrivacyProfileKind profile,
                            const QString &scope,
                            PrivacyPermissionDecision decision);
     void loadScopedDecisions();

@@ -4,8 +4,9 @@
 /output/
 /release/
 /dist/
-# Local owner asset drop; canonical tracked copies live in granger/resources/settings-icons.
+# Local owner asset drops; canonical tracked copies live in granger/resources.
 /settings_icon/
+/icons_for_browser/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt

@@ -88,6 +88,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "BUILDING.md") -Destination $reso
 Copy-Item -LiteralPath (Join-Path $projectRoot "SECURITY.md") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GRANGER_BROWSER_RELEASE_REPORT.md") -Destination $releaseDocs
+Copy-Item -LiteralPath (Join-Path $projectRoot "docs/FULL_PAMP_INTEGRATION_AUDIT.md") -Destination $releaseDocs
+Copy-Item -LiteralPath (Join-Path $projectRoot "docs/CROSS_DEVICE_PRIVACY_TESTING.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GIT_WORKFLOW.md") -Destination $releaseDocs
 Copy-Item -Path (Join-Path $projectRoot "docs/screenshots/sidebar-layout-stability/*.png") `
     -Destination $releaseSidebarScreenshots
@@ -110,7 +112,7 @@ $required = @(
     "GrangerBrowser.exe", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
     "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
-    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/GIT_WORKFLOW.md",
+    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md",
     "docs/screenshots/sidebar-layout-stability/sidebar-hidden.png", "docs/screenshots/sidebar-layout-stability/sidebar-rail.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-tabs-expanded.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-tabs-collapsed.png", "docs/screenshots/sidebar-layout-stability/sidebar-collapsed.png",
@@ -125,6 +127,23 @@ $required = @(
 foreach ($relative in $required) {
     $candidate = Join-Path $resolvedPackage $relative
     if (-not (Test-Path -LiteralPath $candidate)) { throw "Package validation failed; missing $relative" }
+}
+
+$forbiddenFullPampDirectories = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -Directory | Where-Object {
+    $_.Name -in @("pentest", "pamp")
+})
+if ($forbiddenFullPampDirectories.Count -ne 0) {
+    throw "Package validation failed; an unreviewed full Pamp directory is present."
+}
+$forbiddenPythonExecutables = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File | Where-Object {
+    $_.Name -in @("python.exe", "pythonw.exe")
+})
+if ($forbiddenPythonExecutables.Count -ne 0) {
+    throw "Package validation failed; an app-local Python executable is not part of the reviewed browser runtime."
+}
+$appLocalPythonDlls = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File -Filter "python*.dll")
+if ($appLocalPythonDlls.Count -ne 0) {
+    throw "Package validation failed; app-local Python DLLs are not part of the reviewed browser runtime."
 }
 
 $versionInfo = (Get-Item -LiteralPath (Join-Path $resolvedPackage "GrangerBrowser.exe")).VersionInfo

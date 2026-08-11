@@ -64,6 +64,10 @@
         <file alias="spaces.png">settings-icons/spaces.png</file>
         <file alias="tor-connection.png">settings-icons/tor-connection.png</file>
     </qresource>
+    <qresource prefix="/browser-icons">
+        <file alias="isolated-tabs.png">browser-icons/isolated-tabs.png</file>
+        <file alias="privacy-security.png">browser-icons/privacy-security.png</file>
+    </qresource>
     <qresource prefix="/search-engines">
         <file alias="duckduckgo.png">search-engines/duckduckgo.png</file>
         <file alias="google.png">search-engines/google.png</file>

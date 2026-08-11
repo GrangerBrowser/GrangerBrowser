@@ -623,7 +623,7 @@ void NavigationBar::updateSecurityIndicator()
     } else if (m_securityStatusId == QStringLiteral("onion-over-tor")) {
         iconPath = QStringLiteral(":/icons/tor.svg");
     } else if (m_privacyRestrictionCount > 0) {
-        iconPath = QStringLiteral(":/icons/shield.svg");
+        iconPath = QStringLiteral(":/browser-icons/privacy-security.png");
     } else {
         iconPath = QStringLiteral(":/icons/lock.svg");
     }

@@ -470,6 +470,63 @@ int runUiFocusSmoke(QApplication &app,
                        && expectedSettingsNavigationIconSources.size() == 12,
                    QString::number(settingsIconAssets.size()), QStringLiteral("6"));
 
+    struct BrowserIconExpectation {
+        QString purpose;
+        QString source;
+        QString resource;
+        QSize size;
+        QString sha256;
+    };
+    const QVector<BrowserIconExpectation> expectedBrowserIcons{
+        {QStringLiteral("isolated-tabs"),
+         QStringLiteral("icons_for_browser/isolated_tabs.png"),
+         QStringLiteral(":/browser-icons/isolated-tabs.png"), QSize(65, 72),
+         QStringLiteral("8AA442E04EF568A57C3A5CC431A9BF59F3D7378F9F0C274DB3C65C138FC1E1C8")},
+        {QStringLiteral("privacy-control"),
+         QStringLiteral("icons_for_browser/privacy_and_security.png"),
+         QStringLiteral(":/browser-icons/privacy-security.png"), QSize(64, 64),
+         QStringLiteral("450FF78225160872A2144B74526E37347EC0AF57FC82C805C5C5A89B4C5096E0")}
+    };
+    const QJsonArray browserIconAssets = assetManifest.value(QStringLiteral("browserIcons")).toArray();
+    bool browserIconResourcesValid = browserIconAssets.size() == expectedBrowserIcons.size();
+    for (const BrowserIconExpectation &expected : expectedBrowserIcons) {
+        QJsonObject manifestEntry;
+        for (const QJsonValue &value : browserIconAssets) {
+            if (value.toObject().value(QStringLiteral("purpose")).toString() == expected.purpose) {
+                manifestEntry = value.toObject();
+                break;
+            }
+        }
+        QFile resource(expected.resource);
+        const bool opened = resource.open(QIODevice::ReadOnly);
+        const QByteArray bytes = opened ? resource.readAll() : QByteArray();
+        QImage image;
+        const bool decoded = image.loadFromData(bytes, "PNG");
+        const QString actualHash = QString::fromLatin1(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex().toUpper());
+        const QIcon icon(expected.resource);
+        bool highDpiScales = !icon.isNull();
+        for (const qreal dpr : {1.0, 1.25, 1.5, 1.75, 2.0}) {
+            const QPixmap pixmap = icon.pixmap(QSize(20, 20), dpr, QIcon::Normal, QIcon::Off);
+            highDpiScales = highDpiScales && !pixmap.isNull()
+                && qAbs(pixmap.devicePixelRatio() - dpr) < 0.01;
+        }
+        const bool valid = !manifestEntry.isEmpty()
+            && manifestEntry.value(QStringLiteral("source")).toString() == expected.source
+            && manifestEntry.value(QStringLiteral("sourceFormat")).toString() == QStringLiteral("PNG")
+            && manifestEntry.value(QStringLiteral("sourceSha256")).toString() == expected.sha256
+            && manifestEntry.value(QStringLiteral("resource")).toString() == expected.resource
+            && manifestEntry.value(QStringLiteral("embeddedSha256")).toString() == expected.sha256
+            && opened && decoded && image.hasAlphaChannel() && image.size() == expected.size
+            && actualHash == expected.sha256 && highDpiScales;
+        browserIconResourcesValid = browserIconResourcesValid && valid;
+        results.record(QStringLiteral("owner browser icon: %1").arg(expected.purpose),
+                       valid, actualHash, expected.sha256);
+    }
+    results.record(QStringLiteral("browser replacement icons use integrity-checked compiled resources"),
+                   browserIconResourcesValid,
+                   QString::number(browserIconAssets.size()), QStringLiteral("2"));
+
     SettingsManager settings;
     settings.setLanguage(QStringLiteral("en"));
     settings.setTorConnectionMode(QStringLiteral("disabled"));

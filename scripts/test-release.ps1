@@ -566,19 +566,39 @@ userAgentProfile=default
         $path = Join-Path $testRoot ("search-{0}.json" -f $entry.Key.ToLowerInvariant())
         $exitCode = Invoke-GrangerBrowser @("--smoke-url=$($entry.Value)", "--smoke-output=$path") -AllowNonZero
         $providerResult = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json
+        $resultPage = switch ($entry.Key) {
+            "DuckDuckGo" { [bool]$providerResult.ok -and $providerResult.url -match '^https://(?:www\.)?duckduckgo\.com/.*[?&]q=' }
+            "Google" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.google\.[^/]+/search[?]' }
+            "Bing" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.bing\.com/search[?]' }
+            "Brave" { [bool]$providerResult.ok -and $providerResult.url -match '^https://search\.brave\.com/search[?]' }
+            "Startpage" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.startpage\.com/sp/search[?]' }
+            "Mojeek" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.mojeek\.com/search[?]' }
+            "Yandex" { [bool]$providerResult.ok -and $providerResult.url -match '^https://yandex\.[^/]+/search/[?]' }
+            "Onion" { [bool]$providerResult.ok -and $providerResult.url -match '^https://(?:www\.)?ahmia\.fi/search/[?]' }
+            default { $false }
+        }
+        $externalChallenge = -not $resultPage -and -not $providerResult.ok -and (
+            $providerResult.url -match "google\.com/sorry|startpage\.com/.*(?:challenge|captcha)" -or
+            ($entry.Key -eq "Mojeek" -and $providerResult.title -match "403")
+        )
+        $ahmiaSearchRedirect = $entry.Key -eq "Onion" -and -not $resultPage -and
+            $providerResult.url -match '^https://(?:www\.)?ahmia\.fi/?$' -and
+            ($providerResult.reason -eq "timeout" -or $providerResult.title -match "Ahmia")
+        $externalLimitation = $externalChallenge -or $ahmiaSearchRedirect
         $searchResults[$entry.Key] = [ordered]@{
             Path = $path
-            OK = $providerResult.ok
+            OK = $resultPage
+            Loaded = [bool]$providerResult.ok
             ExitCode = $exitCode
+            Reason = $providerResult.reason
+            RequestedUrl = $providerResult.requestedUrl
             FinalUrl = $providerResult.url
             Title = $providerResult.title
-            ExternalChallenge = (-not $providerResult.ok -and (
-                $providerResult.url -match "google\.com/sorry|startpage\.com/.*(?:challenge|captcha)" -or
-                ($entry.Key -eq "Mojeek" -and $providerResult.title -match "403")
-            ))
+            ExternalChallenge = $externalChallenge
+            ExternalLimitation = $externalLimitation
         }
-        if (-not $searchResults[$entry.Key].OK -and -not $searchResults[$entry.Key].ExternalChallenge) {
-            throw "$($entry.Key) search navigation failed without a recognized provider challenge."
+        if (-not $searchResults[$entry.Key].OK -and -not $searchResults[$entry.Key].ExternalLimitation) {
+            throw "$($entry.Key) search navigation failed without a recognized external limitation."
         }
     }
 

@@ -649,7 +649,7 @@ QString internalPageIcon(const QString &address)
         {QStringLiteral("about:downloads"), QStringLiteral(":/icons/downloads.svg")},
         {QStringLiteral("about:history"), QStringLiteral(":/icons/history.svg")},
         {QStringLiteral("about:bookmarks"), QStringLiteral(":/icons/bookmarks.svg")},
-        {QStringLiteral("about:privacy"), QStringLiteral(":/icons/privacy.svg")},
+        {QStringLiteral("about:privacy"), QStringLiteral(":/browser-icons/privacy-security.png")},
         {QStringLiteral("about:tor"), QStringLiteral(":/icons/tor.svg")},
         {QStringLiteral("about:bridges"), QStringLiteral(":/icons/bridges.svg")},
         {QStringLiteral("about:network"), QStringLiteral(":/icons/network.svg")},
@@ -4042,6 +4042,7 @@ QWebEngineProfile *MainWindow::newIsolatedProfile(PrivacyProfileKind kind, const
     auto *profile = new QWebEngineProfile(this);
     profile->setProperty("granger.isolatedScope", scopeId);
     profile->setProperty("granger.isolatedOnion", kind == PrivacyProfileKind::Onion);
+    profile->setProperty("granger.isolatedProfile", privacyProfileId(kind));
     profile->setProperty("granger.persistentProfile", false);
     m_privacy.configureExternalProfile(profile, kind, false);
     return profile;
@@ -4117,7 +4118,7 @@ void MainWindow::rebuildNewTabMenu()
     const QString isolatedHint =
         Localization::text(QStringLiteral("containers.isolated_tab_hint"));
     QAction *isolated = addCreateMenuRow(
-        m_newTabMenu, QIcon(QStringLiteral(":/icons/privacy.svg")),
+        m_newTabMenu, QIcon(QStringLiteral(":/browser-icons/isolated-tabs.png")),
         isolatedTitle, isolatedHint);
     isolated->setObjectName(QStringLiteral("CreateIsolatedTabAction"));
     connect(isolated, &QAction::triggered, this, [this] { openIsolatedTab(); });
@@ -4795,13 +4796,10 @@ void MainWindow::prepareTabPrivacyProfile(BrowserTab *tab, const QUrl &url)
     QPointer<QWebEngineProfile> profileToRelease;
     if (tab->isIsolatedTab()) {
         QPointer<QWebEngineProfile> current = m_isolatedProfiles.value(tab);
-        const bool onion = kind == PrivacyProfileKind::Onion;
-        if (!current || current->property("granger.isolatedOnion").toBool() != onion) {
+        if (!current || BrowserProfile::kindForProfile(current) != kind) {
             profileToRelease = current;
             current = newIsolatedProfile(kind, tab->privacyScope().section(QLatin1Char(':'), 1));
             m_isolatedProfiles.insert(tab, current);
-        } else {
-            m_privacy.configureExternalProfile(current, kind, false);
         }
         profile = current;
     } else if (!tab->containerId().isEmpty()) {
@@ -5630,6 +5628,9 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
                 }
                 return;
             }
+            const QString scope = QStringLiteral("container:%1").arg(id);
+            m_permissions.clearSessionDecisionsForScope(scope);
+            m_permissions.clearPersistentDecisionsForScope(scope);
             releaseContainerProfileWhenIdle(id);
             if (settingsTab && m_tabs->indexOf(settingsTab) >= 0) {
                 refreshContainers(Localization::text(
@@ -5672,6 +5673,9 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
                 }
                 return;
             }
+            const QString scope = QStringLiteral("container:%1").arg(id);
+            m_permissions.clearSessionDecisionsForScope(scope);
+            m_permissions.clearPersistentDecisionsForScope(scope);
             releaseContainerProfileWhenIdle(id);
             if (settingsTab && m_tabs->indexOf(settingsTab) >= 0) {
                 refreshContainers(Localization::text(
@@ -7893,6 +7897,18 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     context.screenExposureMode = m_settings.screenExposureMode();
     context.timezoneMode = m_settings.timezoneMode();
     context.hardwareExposureMode = m_settings.hardwareExposureMode();
+    const FingerprintPolicyMatrix settingsFingerprint = m_privacy.fingerprintPolicy(
+        tor.routeVerified ? PrivacyProfileKind::Tor : PrivacyProfileKind::Normal);
+    context.fingerprintEffectiveWebGlMode = settingsFingerprint.webGlMode;
+    context.fingerprintEffectiveCanvasMode = settingsFingerprint.canvasMode;
+    context.fingerprintEffectiveAudioMode = settingsFingerprint.audioMode;
+    context.fingerprintEffectiveScreenMode = settingsFingerprint.screenMode;
+    context.fingerprintEffectiveTimezoneMode = settingsFingerprint.timezoneMode;
+    context.fingerprintEffectiveHardwareMode = settingsFingerprint.hardwareMode;
+    context.fingerprintEffectiveFontMode = settingsFingerprint.fontMode;
+    context.fingerprintEffectiveClientHintsMode = settingsFingerprint.clientHintsMode;
+    context.fingerprintEffectiveLetterboxing = settingsFingerprint.letterboxingEnabled;
+    context.fingerprintEffectiveSpeechMediaRestricted = settingsFingerprint.strict;
     context.developerToolsEnabled = m_settings.developerToolsEnabled();
     context.developerToolsDockPosition = m_settings.developerToolsDockPosition();
     context.developerToolsOpenWithF12 = m_settings.developerToolsOpenWithF12();
@@ -8981,7 +8997,7 @@ void MainWindow::showBrowserContextMenu(BrowserTab *tab, const BrowserContextMen
         QAction *openBackground = setId(addAction(menu, Localization::text(QStringLiteral("context.open_link_background_tab"))), BrowserContextAction::OpenLinkInBackgroundTab);
         connect(openBackground, &QAction::triggered, this, [this, linkUrl] { openNewTabInBackground(linkUrl.toString(QUrl::FullyEncoded)); });
         QAction *openPrivate = setId(addAction(menu, Localization::text(QStringLiteral("context.open_link_private_tab")),
-                                               QIcon(QStringLiteral(":/icons/privacy.svg"))), BrowserContextAction::OpenLinkInPrivateTab);
+                                               QIcon(QStringLiteral(":/browser-icons/isolated-tabs.png"))), BrowserContextAction::OpenLinkInPrivateTab);
         connect(openPrivate, &QAction::triggered, this, [this, linkUrl] { openPrivateTab(linkUrl.toString(QUrl::FullyEncoded)); });
         QAction *bookmarkLink = setId(addAction(menu, Localization::text(QStringLiteral("context.bookmark_link")),
                                                  QIcon(QStringLiteral(":/icons/bookmarks.svg"))), BrowserContextAction::BookmarkLink);
@@ -9126,7 +9142,7 @@ void MainWindow::showBrowserContextMenu(BrowserTab *tab, const BrowserContextMen
             });
             separator();
             QAction *privacy = setId(addAction(menu, Localization::text(QStringLiteral("context.site_privacy")),
-                                               QIcon(QStringLiteral(":/icons/shield.svg"))), BrowserContextAction::SitePrivacy);
+                                               QIcon(QStringLiteral(":/browser-icons/privacy-security.png"))), BrowserContextAction::SitePrivacy);
             connect(privacy, &QAction::triggered, this, &MainWindow::showSiteInfoPopup);
             QAction *analyze = addAction(menu,
                                          Localization::text(QStringLiteral("pamp.analyze_current")),
@@ -10545,6 +10561,7 @@ QString MainWindow::privacyDiagnosticsHtml() const
     const BrowserTab *tab = currentTab();
     const PrivacyProfileKind kind = tab ? tab->privacyProfileKind() : PrivacyProfileKind::Normal;
     const EffectivePrivacyPolicy policy = m_privacy.effectivePolicy(QUrl(QStringLiteral("https://diagnostics.invalid")), kind);
+    const FingerprintPolicyMatrix fingerprint = m_privacy.fingerprintPolicy(kind);
     const TorStatus tor = m_tor.status();
     const QJsonObject blocking = m_privacy.contentBlockingDiagnostics();
     const bool blockingReady = blocking.value(QStringLiteral("ready")).toBool();
@@ -10559,10 +10576,13 @@ QString MainWindow::privacyDiagnosticsHtml() const
         keyMode.replace(QLatin1Char('-'), QLatin1Char('_'));
         return Localization::text(QStringLiteral("fingerprint.mode.%1").arg(keyMode));
     };
+    const bool torModeSelected = m_settings.torConnectionMode() != QStringLiteral("disabled");
     const QString route = tor.routeVerified
         ? (m_activeConnectionStrategy.isEmpty() ? QStringLiteral("Tor") : m_activeConnectionStrategy)
-        : (m_processProxyActive ? QStringLiteral("Proxy")
-                                : Localization::text(QStringLiteral("status.direct")));
+        : (torModeSelected
+               ? Localization::text(QStringLiteral("privacy.diagnostics.no_verified_route"))
+               : (m_processProxyActive ? QStringLiteral("Proxy")
+                                       : Localization::text(QStringLiteral("status.direct"))));
     const QString routeVerified = tor.routeVerified
         ? Localization::text(QStringLiteral("privacy.status.protected"))
         : (m_processProxyActive ? Localization::text(QStringLiteral("privacy.status.not_verifiable"))
@@ -10592,6 +10612,10 @@ QString MainWindow::privacyDiagnosticsHtml() const
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.profile")),
                 profileLabel == profileKey ? profileId : profileLabel);
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.profile_isolation")), isolation);
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.letterboxing")),
+                fingerprint.letterboxingEnabled
+                    ? Localization::text(QStringLiteral("privacy.status.protected"))
+                    : Localization::text(QStringLiteral("privacy.status.exposed")));
     html += QStringLiteral("</div></section><section class=\"section\"><h2>%1</h2><div class=\"info-list\">")
                 .arg(Localization::text(QStringLiteral("content_blocking.title")));
     const QString blockingMode = blocking.value(QStringLiteral("mode")).toString(
@@ -10617,42 +10641,68 @@ QString MainWindow::privacyDiagnosticsHtml() const
                 QStringLiteral("diag-content-sources"));
     html += QStringLiteral("</div></section><section class=\"section\"><h2>%1</h2><div class=\"info-list\">")
                 .arg(Localization::text(QStringLiteral("privacy.diagnostics.engine")));
-    html += row(QStringLiteral("WebRTC"), policy.webRtcEnabled ? QStringLiteral("Testing") : Localization::text(QStringLiteral("privacy.status.restricted")), QStringLiteral("diag-webrtc"));
-    html += row(Localization::text(QStringLiteral("privacy.diagnostics.candidates")), QStringLiteral("Testing"), QStringLiteral("diag-candidates"));
-    html += row(Localization::text(QStringLiteral("privacy.diagnostics.local_ip")), QStringLiteral("Testing"), QStringLiteral("diag-local-ip"));
+    const QString testing = Localization::text(QStringLiteral("privacy.diagnostics.testing"));
+    html += row(QStringLiteral("WebRTC"), policy.webRtcEnabled ? testing : Localization::text(QStringLiteral("privacy.status.restricted")), QStringLiteral("diag-webrtc"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.candidates")), testing, QStringLiteral("diag-candidates"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.local_ip")), testing, QStringLiteral("diag-local-ip"));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.direct_udp")), Localization::text(QStringLiteral("privacy.status.not_verifiable")), QStringLiteral("diag-udp"));
-    html += row(QStringLiteral("User-Agent"), QStringLiteral("Testing"), QStringLiteral("diag-ua"));
-    html += row(QStringLiteral("Client Hints"), QStringLiteral("Testing"), QStringLiteral("diag-hints"));
-    html += row(Localization::text(QStringLiteral("privacy.diagnostics.timezone")), QStringLiteral("Testing"), QStringLiteral("diag-timezone"));
-    html += row(Localization::text(QStringLiteral("privacy.diagnostics.language")), QStringLiteral("Testing"), QStringLiteral("diag-language"));
+    html += row(QStringLiteral("User-Agent"), testing, QStringLiteral("diag-ua"));
+    html += row(QStringLiteral("Client Hints"), testing, QStringLiteral("diag-hints"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.timezone")), testing, QStringLiteral("diag-timezone"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.language")), testing, QStringLiteral("diag-language"));
     html += row(Localization::text(QStringLiteral("fingerprint.timezone")),
                 fingerprintMode(m_settings.timezoneMode()));
     html += row(Localization::text(QStringLiteral("fingerprint.screen")),
                 fingerprintMode(m_settings.screenExposureMode()));
-    html += row(Localization::text(QStringLiteral("privacy.diagnostics.screen")), QStringLiteral("Testing"), QStringLiteral("diag-screen"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.screen")), testing, QStringLiteral("diag-screen"));
     html += row(Localization::text(QStringLiteral("fingerprint.hardware")),
                 fingerprintMode(m_settings.hardwareExposureMode()));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.hardware_concurrency")),
-                QStringLiteral("Testing"), QStringLiteral("diag-hardware-concurrency"));
+                testing, QStringLiteral("diag-hardware-concurrency"));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.device_memory")),
-                QStringLiteral("Testing"), QStringLiteral("diag-device-memory"));
-    html += row(QStringLiteral("Canvas"), QStringLiteral("Testing"), QStringLiteral("diag-canvas"));
-    html += row(QStringLiteral("WebGL"), QStringLiteral("Testing"), QStringLiteral("diag-webgl"));
-    html += row(QStringLiteral("AudioContext"), QStringLiteral("Testing"), QStringLiteral("diag-audio"));
+                testing, QStringLiteral("diag-device-memory"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.fonts")),
+                testing, QStringLiteral("diag-fonts"));
+    html += row(QStringLiteral("SpeechSynthesis"), testing,
+                QStringLiteral("diag-speech"));
+    html += row(QStringLiteral("MediaDevices"), testing,
+                QStringLiteral("diag-media-devices"));
+    html += row(QStringLiteral("Canvas"), testing, QStringLiteral("diag-canvas"));
+    html += row(QStringLiteral("WebGL"), testing, QStringLiteral("diag-webgl"));
+    html += row(QStringLiteral("AudioContext"), testing, QStringLiteral("diag-audio"));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.api_restrictions")),
-                QStringLiteral("Testing"), QStringLiteral("diag-api-restrictions"));
+                testing, QStringLiteral("diag-api-restrictions"));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.api_surface")),
-                QStringLiteral("Testing"), QStringLiteral("diag-api-surface"));
+                testing, QStringLiteral("diag-api-surface"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.privacy_sandbox")),
+                testing, QStringLiteral("diag-privacy-sandbox"));
+    html += row(QStringLiteral("HTTPS-First"),
+                Localization::text(QStringLiteral("https_first.mode.%1")
+                                       .arg(m_settings.httpsFirstMode())));
+    html += row(QStringLiteral("Global Privacy Control"), testing,
+                QStringLiteral("diag-gpc"));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.third_party_cookies")), policy.thirdPartyCookiesEnabled ? Localization::text(QStringLiteral("privacy.status.exposed")) : Localization::text(QStringLiteral("privacy.status.restricted")));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.storage")), policy.persistentStorageEnabled ? Localization::text(QStringLiteral("privacy.status.exposed")) : Localization::text(QStringLiteral("privacy.status.restricted")));
-    html += row(Localization::text(QStringLiteral("privacy.diagnostics.permissions")), policy.preset == PrivacyPreset::Strict || kind == PrivacyProfileKind::Tor || kind == PrivacyProfileKind::Onion ? Localization::text(QStringLiteral("privacy.status.restricted")) : QStringLiteral("Prompt"));
+    html += row(Localization::text(QStringLiteral("privacy.diagnostics.permissions")), policy.preset == PrivacyPreset::Strict || kind == PrivacyProfileKind::Tor || kind == PrivacyProfileKind::Onion ? Localization::text(QStringLiteral("privacy.status.restricted")) : Localization::text(QStringLiteral("privacy.diagnostics.prompt")));
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.trackers")), policy.trackerBlocking ? Localization::text(QStringLiteral("privacy.status.protected")) : Localization::text(QStringLiteral("privacy.status.exposed")));
-    html += QStringLiteral("</div></section><p>%1</p><script>")
-                .arg(Localization::text(QStringLiteral("privacy.diagnostics.local_only")).toHtmlEscaped());
+    html += QStringLiteral("</div></section><div class=\"ds-action-bar\"><a class=\"button primary\" href=\"https://granger.local/__action/open?page=about:privacy\">%1</a></div><p>%2</p><script>")
+                .arg(Localization::text(QStringLiteral("privacy.diagnostics.run_self_test")).toHtmlEscaped(),
+                     Localization::text(QStringLiteral("privacy.diagnostics.local_only")).toHtmlEscaped());
+    const QStringList diagnosticLabelEntries = {
+        QStringLiteral("protected: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.status.protected")))),
+        QStringLiteral("restricted: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.status.restricted")))),
+        QStringLiteral("exposed: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.status.exposed")))),
+        QStringLiteral("notVerifiable: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.status.not_verifiable")))),
+        QStringLiteral("unsupported: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.status.unsupported")))),
+        QStringLiteral("standardized: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.status.standardized")))),
+        QStringLiteral("none: %1").arg(javascriptString(Localization::text(QStringLiteral("common.none")))),
+        QStringLiteral("noneObserved: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.diagnostics.none_observed")))),
+        QStringLiteral("webrtcProxyOnly: %1").arg(javascriptString(Localization::text(QStringLiteral("privacy.diagnostics.webrtc_proxy_only"))))
+    };
     html += QStringLiteral(R"JS(
 (() => {
   const set = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = String(value); };
-  const labels = { protected: %1, restricted: %2, exposed: %3, notVerifiable: %4, unsupported: %5, standardized: %6 };
+  const labels = {%1};
   const frame = document.createElement('iframe');
   frame.hidden = true;
   const receive = event => {
@@ -10669,6 +10719,9 @@ QString MainWindow::privacyDiagnosticsHtml() const
       ? result.hardwareConcurrency : labels.unsupported);
     set('diag-device-memory', Number.isFinite(result.deviceMemory)
       ? result.deviceMemory + ' GiB' : labels.unsupported);
+    set('diag-fonts', result.fontMetricsStandardized ? labels.standardized : labels.exposed);
+    set('diag-speech', result.speechVoicesHidden ? labels.restricted : labels.exposed);
+    set('diag-media-devices', result.mediaDevicesHidden ? labels.restricted : labels.exposed);
     const restrictions = Array.isArray(result.restrictions) ? result.restrictions : [];
     const restricted = name => restrictions.includes(name);
     set('diag-canvas', result.canvasRestricted ? labels.restricted
@@ -10687,25 +10740,30 @@ QString MainWindow::privacyDiagnosticsHtml() const
       ? result.sensitiveApisAvailable : [];
     set('diag-api-surface', availableApis.length
       ? labels.exposed + ': ' + availableApis.join(', ') : labels.restricted);
+    const advertisingApis = Array.isArray(result.privacySandboxApis)
+      ? result.privacySandboxApis : [];
+    set('diag-privacy-sandbox', advertisingApis.length
+      ? labels.exposed + ': ' + advertisingApis.join(', ') : labels.restricted);
+    set('diag-gpc', result.globalPrivacyControl === true ? labels.protected : labels.exposed);
     if (!result.webRtcEnabled) {
       set('diag-webrtc', labels.restricted);
-      set('diag-candidates', 'None');
+      set('diag-candidates', labels.none);
       set('diag-local-ip', labels.protected);
     } else if (result.webRtcError) {
       set('diag-webrtc', labels.restricted);
-      set('diag-candidates', 'None');
+      set('diag-candidates', labels.none);
       set('diag-local-ip', labels.protected);
     } else {
-      set('diag-webrtc', 'Enabled with disable_non_proxied_udp policy');
+      set('diag-webrtc', labels.webrtcProxyOnly);
       set('diag-candidates', result.candidates.length
         ? result.candidates.map(candidate => { const match=candidate.match(/ typ (\w+)/); return match ? match[1] : 'unknown'; }).join(', ')
-        : 'None observed');
+        : labels.noneObserved);
       set('diag-local-ip', result.directIpExposed ? labels.exposed : labels.protected);
     }
     window.__grangerDiagnosticsResult = result;
   };
   window.addEventListener('message', receive);
-  const childDocument = `<!doctype html><meta charset="utf-8"><script>
+  const childDocument = `<!doctype html><meta charset="utf-8"><body><script>
 (async () => {
   const result = {};
   const n = navigator;
@@ -10719,6 +10777,42 @@ QString MainWindow::privacyDiagnosticsHtml() const
   result.screen = screen.width + 'x' + screen.height + ', available ' + screen.availWidth + 'x' + screen.availHeight + ', DPR ' + devicePixelRatio;
   result.hardwareConcurrency = Number(n.hardwareConcurrency);
   result.deviceMemory = Number(n.deviceMemory);
+  result.globalPrivacyControl = n.globalPrivacyControl === true;
+  const fontProbe = document.createElement('span');
+  fontProbe.textContent = 'mmmMMMlllWWW';
+  fontProbe.style.cssText = 'position:absolute;left:-9999px;font-size:96px';
+  const fontStyle = document.createElement('style');
+  fontStyle.textContent = '.diag-font-probe{font-family:var(--diag-font),serif!important}';
+  document.head.appendChild(fontStyle); document.body.appendChild(fontProbe);
+  fontProbe.className = 'diag-font-probe';
+  const fontMetric = family => {
+    fontProbe.style.setProperty('--diag-font', '"' + family + '"');
+    const range = document.createRange(); range.selectNodeContents(fontProbe);
+    const rect = range.getBoundingClientRect();
+    return [fontProbe.offsetWidth, fontProbe.offsetHeight, fontProbe.clientWidth,
+      fontProbe.scrollWidth, rect.width, rect.height].join(',');
+  };
+  const fallbackMetric = fontMetric('__granger_missing_font__');
+  result.fontMetricsStandardized = ['Arial', 'Times New Roman', 'Consolas', 'Cascadia Code']
+    .every(family => fontMetric(family) === fallbackMetric);
+  fontProbe.remove(); fontStyle.remove();
+  let voiceEvents = 0;
+  if (globalThis.speechSynthesis && typeof speechSynthesis.getVoices === 'function') {
+    speechSynthesis.addEventListener('voiceschanged', () => { voiceEvents += 1; });
+    const firstVoices = Array.from(speechSynthesis.getVoices() || []);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const delayedVoices = Array.from(speechSynthesis.getVoices() || []);
+    result.speechVoicesHidden = firstVoices.length === 0 && delayedVoices.length === 0
+      && voiceEvents === 0;
+  } else result.speechVoicesHidden = true;
+  let deviceEvents = 0;
+  if (n.mediaDevices && typeof n.mediaDevices.enumerateDevices === 'function') {
+    n.mediaDevices.addEventListener('devicechange', () => { deviceEvents += 1; });
+    const firstDevices = Array.from(await n.mediaDevices.enumerateDevices());
+    const secondDevices = Array.from(await n.mediaDevices.enumerateDevices());
+    result.mediaDevicesHidden = firstDevices.length === 0 && secondDevices.length === 0
+      && deviceEvents === 0;
+  } else result.mediaDevicesHidden = true;
   try {
     const canvas = document.createElement('canvas'); canvas.width=24; canvas.height=24;
     const context = canvas.getContext('2d'); context.fillStyle='#314159'; context.fillRect(0,0,24,24); context.fillStyle='#fff'; context.fillText('DS',3,15);
@@ -10753,10 +10847,16 @@ QString MainWindow::privacyDiagnosticsHtml() const
     ['MIDI', typeof n.requestMIDIAccess === 'function'], ['WebGPU', Boolean(n.gpu)],
     ['XR', Boolean(n.xr)],
     ['Clipboard read', Boolean(n.clipboard && (n.clipboard.read || n.clipboard.readText))],
-    ['Topics', typeof n.browsingTopics === 'function'],
-    ['Protected Audience', typeof n.joinAdInterestGroup === 'function' || typeof n.runAdAuction === 'function']
+    ['Topics', typeof document.browsingTopics === 'function'],
+    ['Protected Audience', typeof n.joinAdInterestGroup === 'function' || typeof n.runAdAuction === 'function'],
+    ['Shared Storage', typeof globalThis.sharedStorage !== 'undefined'],
+    ['Private Aggregation', typeof globalThis.privateAggregation !== 'undefined'],
+    ['Fenced Frames', typeof globalThis.HTMLFencedFrameElement !== 'undefined'],
+    ['Attribution XHR', Boolean(globalThis.XMLHttpRequest
+      && XMLHttpRequest.prototype.setAttributionReporting)]
   ];
   result.sensitiveApisAvailable = sensitiveApis.filter(item => item[1]).map(item => item[0]);
+  result.privacySandboxApis = sensitiveApis.slice(-6).filter(item => item[1]).map(item => item[0]);
   const Peer = globalThis.RTCPeerConnection || globalThis.webkitRTCPeerConnection;
   result.webRtcEnabled = Boolean(Peer);
   result.candidates = [];
@@ -10779,12 +10879,7 @@ QString MainWindow::privacyDiagnosticsHtml() const
   document.body.appendChild(frame);
 })();
 </script>)JS")
-                .arg(javascriptString(Localization::text(QStringLiteral("privacy.status.protected"))),
-                     javascriptString(Localization::text(QStringLiteral("privacy.status.restricted"))),
-                      javascriptString(Localization::text(QStringLiteral("privacy.status.exposed"))),
-                      javascriptString(Localization::text(QStringLiteral("privacy.status.not_verifiable"))),
-                      javascriptString(Localization::text(QStringLiteral("privacy.status.unsupported"))),
-                      javascriptString(Localization::text(QStringLiteral("privacy.status.standardized"))));
+                .arg(diagnosticLabelEntries.join(QStringLiteral(", ")));
     return html;
 }
 

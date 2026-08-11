@@ -1040,8 +1040,16 @@ QWebEngineProfile *ContainerManager::profileFor(const QString &containerId, Priv
 {
     const QString cleanId = containerId.trimmed().toLower();
     if (indexForId(cleanId) < 0 || isContainerClosing(cleanId)) return nullptr;
-    const bool onion = kind == PrivacyProfileKind::Onion;
-    const QString profileKey = onion ? cleanId + QStringLiteral("|onion") : cleanId;
+    if (kind != PrivacyProfileKind::Normal
+        && kind != PrivacyProfileKind::Tor
+        && kind != PrivacyProfileKind::Onion) {
+        qWarning().noquote()
+            << QStringLiteral("Refusing unsupported persistent Space profile kind %1 for %2")
+                   .arg(privacyProfileId(kind), cleanId);
+        return nullptr;
+    }
+    const QString profileId = privacyProfileId(kind);
+    const QString profileKey = cleanId + QLatin1Char('|') + profileId;
     QPointer<QWebEngineProfile> &profile = m_profiles[profileKey];
     if (!profile) {
         QString leaseError;
@@ -1052,23 +1060,36 @@ QWebEngineProfile *ContainerManager::profileFor(const QString &containerId, Priv
                        .arg(cleanId, leaseError);
             return nullptr;
         }
-        const QString profileRoot = migrateLegacyProfilePath(
-            onion ? AppPaths::legacyContainerOnionProfileRoot(cleanId)
-                  : AppPaths::legacyContainerProfileRoot(cleanId),
-            onion ? AppPaths::containerOnionProfileRoot(cleanId)
-                  : AppPaths::containerProfileRoot(cleanId),
-            onion ? QStringLiteral("onion container profile")
-                  : QStringLiteral("container profile"));
-        const QString cacheRoot = migrateLegacyProfilePath(
-            onion ? AppPaths::legacyContainerOnionCacheRoot(cleanId)
-                  : AppPaths::legacyContainerCacheRoot(cleanId),
-            onion ? AppPaths::containerOnionCacheRoot(cleanId)
-                  : AppPaths::containerCacheRoot(cleanId),
-            onion ? QStringLiteral("onion container cache")
-                  : QStringLiteral("container cache"));
+        QString profileRoot;
+        QString cacheRoot;
+        if (kind == PrivacyProfileKind::Normal) {
+            profileRoot = migrateLegacyProfilePath(
+                AppPaths::legacyContainerProfileRoot(cleanId),
+                AppPaths::containerProfileRoot(cleanId),
+                QStringLiteral("container profile"));
+            cacheRoot = migrateLegacyProfilePath(
+                AppPaths::legacyContainerCacheRoot(cleanId),
+                AppPaths::containerCacheRoot(cleanId),
+                QStringLiteral("container cache"));
+        } else if (kind == PrivacyProfileKind::Tor) {
+            // Tor starts with a clean route-specific store. Importing the old mixed
+            // Direct/Tor store would preserve the cross-route identity leak.
+            profileRoot = AppPaths::containerTorProfileRoot(cleanId);
+            cacheRoot = AppPaths::containerTorCacheRoot(cleanId);
+        } else {
+            profileRoot = migrateLegacyProfilePath(
+                AppPaths::legacyContainerOnionProfileRoot(cleanId),
+                AppPaths::containerOnionProfileRoot(cleanId),
+                QStringLiteral("onion container profile"));
+            cacheRoot = migrateLegacyProfilePath(
+                AppPaths::legacyContainerOnionCacheRoot(cleanId),
+                AppPaths::containerOnionCacheRoot(cleanId),
+                QStringLiteral("onion container cache"));
+        }
         QDir().mkpath(profileRoot);
         QDir().mkpath(cacheRoot);
-        profile = new QWebEngineProfile(QStringLiteral("GrangerSpace-%1").arg(cleanId), this);
+        profile = new QWebEngineProfile(
+            QStringLiteral("GrangerSpace-%1-%2").arg(cleanId, profileId), this);
         profile->setPersistentStoragePath(profileRoot);
         profile->setCachePath(cacheRoot);
         profile->setProperty("granger.containerId", cleanId);
@@ -1081,7 +1102,10 @@ QWebEngineProfile *ContainerManager::profileFor(const QString &containerId, Priv
             else liveProfileCounts.insert(cleanId, remaining);
         });
     } else if (BrowserProfile::kindForProfile(profile) != kind) {
-        m_privacy.configureExternalProfile(profile, kind, true);
+        qCritical().noquote()
+            << QStringLiteral("Refusing to reuse Space profile %1 as %2")
+                   .arg(profileKey, privacyProfileId(kind));
+        return nullptr;
     }
     return profile;
 }

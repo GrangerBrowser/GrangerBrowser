@@ -403,6 +403,16 @@
   "privacy.protection_preset.description": "Balanced is the default. Strict can reduce website compatibility.",
   "privacy.fingerprint": "Fingerprint protection",
   "privacy.fingerprint.description": "Standardizes selected high-entropy APIs without per-call randomization.",
+  "privacy.anti_fingerprinting.title": "Fingerprint protection",
+  "privacy.anti_fingerprinting.description": "Current effective categories are summarized here. Tor and Onion keep mandatory protections enabled.",
+  "privacy.anti_fingerprinting.screen_viewport": "Screen, viewport and letterboxing",
+  "privacy.anti_fingerprinting.fonts": "Fonts and text metrics",
+  "privacy.anti_fingerprinting.graphics": "Graphics APIs",
+  "privacy.anti_fingerprinting.hardware": "Hardware surfaces",
+  "privacy.anti_fingerprinting.timezone_locale": "Timezone and locale",
+  "privacy.anti_fingerprinting.media": "Media surfaces",
+  "privacy.anti_fingerprinting.speech_media": "Speech and media devices",
+  "privacy.anti_fingerprinting.client_hints": "Client Hints",
   "privacy.webrtc": "Protected WebRTC",
   "privacy.webrtc.description": "Allows WebRTC in Direct mode with non-proxied UDP disabled. Turning it off blocks the API; Tor and Onion always block it.",
   "privacy.trackers": "Tracker blocking",
@@ -577,6 +587,8 @@
   "privacy.diagnostics.public_ip": "Public IP through browser session",
   "privacy.diagnostics.profile": "Privacy profile",
   "privacy.diagnostics.profile_isolation": "Profile isolation",
+  "privacy.diagnostics.no_verified_route": "No verified privacy route",
+  "privacy.diagnostics.letterboxing": "External-page viewport standardization",
   "privacy.diagnostics.candidates": "WebRTC candidate types",
   "privacy.diagnostics.local_ip": "Direct local/public IP candidate",
   "privacy.diagnostics.direct_udp": "Direct UDP socket attempted",
@@ -585,13 +597,20 @@
   "privacy.diagnostics.screen": "Screen fingerprint",
   "privacy.diagnostics.hardware_concurrency": "Logical processors",
   "privacy.diagnostics.device_memory": "Device memory",
+  "privacy.diagnostics.fonts": "Font metric exposure",
   "privacy.diagnostics.api_restrictions": "Observed privacy restrictions",
   "privacy.diagnostics.api_surface": "Sensitive API exposure",
+  "privacy.diagnostics.privacy_sandbox": "Privacy Sandbox advertising APIs",
   "privacy.diagnostics.third_party_cookies": "Third-party cookie policy",
   "privacy.diagnostics.storage": "Persistent storage",
   "privacy.diagnostics.permissions": "Permission defaults",
   "privacy.diagnostics.trackers": "Tracker blocking",
+  "privacy.diagnostics.testing": "Testing locally",
+  "privacy.diagnostics.prompt": "Prompt",
+  "privacy.diagnostics.none_observed": "None observed",
+  "privacy.diagnostics.webrtc_proxy_only": "Enabled with non-proxied UDP disabled",
   "privacy.diagnostics.local_only": "Tests run locally in the current WebEngine profile. Results are not uploaded to Granger Browser servers.",
+  "privacy.diagnostics.run_self_test": "Run privacy self-test",
   "privacy.forget_site.title": "Forget site data",
   "privacy.forget_site.confirm": "Remove stored data and saved permissions for %1?",
   "privacy.forget_site.detail": "Removes domain cookies, local and session storage, IndexedDB, CacheStorage, service workers, and the exact-origin privacy rule. Qt WebEngine cannot clear HTTP cache for only one site, so shared HTTP cache is left intact.",
@@ -716,6 +735,12 @@
   ,"fingerprint.mode.rounded": "Rounded"
   ,"fingerprint.mode.standardized": "Standardized"
   ,"fingerprint.mode.system": "System"
+  ,"fingerprint.mode.disabled": "Disabled"
+  ,"fingerprint.mode.metrics_standardized": "Metrics standardized"
+  ,"fingerprint.mode.permission_blocked": "Local font access blocked"
+  ,"fingerprint.mode.engine_default": "Engine default"
+  ,"fingerprint.mode.utc": "UTC"
+  ,"fingerprint.mode.reduced": "Reduced"
   ,"fingerprint.apply": "Apply fingerprint settings"
   ,"fingerprint.applied": "Fingerprint settings were applied to browser profiles and will be used by new page loads."
   ,"https_first.title": "Secure Connections",

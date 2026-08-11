@@ -324,22 +324,34 @@ void TorManager::stopManagedTor()
     if (m_controlPollTimer) {
         m_controlPollTimer->stop();
     }
-    if (!m_process) {
-        return;
-    }
-    QProcess *process = m_process;
-    m_process = nullptr;
-    disconnect(process, nullptr, this, nullptr);
-    if (process->state() != QProcess::NotRunning) {
-        process->terminate();
-        if (!process->waitForFinished(2500)) {
-            process->kill();
-            process->waitForFinished(1000);
+    const bool statusChanged = m_process || m_status.torProcessRunning
+        || m_status.routeVerified || m_status.bridgeEnabled;
+    if (m_process) {
+        QProcess *process = m_process;
+        m_process = nullptr;
+        disconnect(process, nullptr, this, nullptr);
+        if (process->state() != QProcess::NotRunning) {
+            process->terminate();
+            if (!process->waitForFinished(2500)) {
+                process->kill();
+                process->waitForFinished(1000);
+            }
         }
+        process->deleteLater();
     }
-    process->deleteLater();
     m_status.torProcessRunning = false;
+    m_status.routeVerified = false;
+    m_status.bridgeEnabled = false;
+    m_status.torDetected = false;
+    m_status.outboundIp = QStringLiteral("unknown");
+    if (m_status.bridgeState != QStringLiteral("Failed")) {
+        m_status.bridgeState = QStringLiteral("Saved");
+        m_status.bootstrapProgress = -1;
+        m_status.bootstrapMessage = QStringLiteral("Tor stopped");
+        m_status.routeState = QStringLiteral("Tor stopped; browser route is not verified");
+    }
     m_torOutputBuffer.clear();
+    if (statusChanged) emitStatus();
 }
 
 QString TorManager::torExecutablePath() const

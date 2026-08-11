@@ -582,7 +582,7 @@ Granger title сохранены. Letterbox-поля визуально одно
 
 | Поле | Значение |
 | --- | --- |
-| Executable | `C:\Users\Admin\Desktop\DarkSearch\release\Granger Browser\GrangerBrowser.exe` |
+| Executable | `release\Granger Browser\GrangerBrowser.exe` |
 | SHA-256 | `120DB4EAF379E66CBC60F9B701E32F6073AD33C04DF9FDF83657F3A79DF5FE40` |
 | Size | `10,319,360 bytes` (`9.841 MiB`) |
 | Build timestamp | `2026-08-10 20:46:35 +05:00` |

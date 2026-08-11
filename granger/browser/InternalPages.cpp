@@ -1121,10 +1121,48 @@ QString InternalPages::settings(const InternalPageContext &context)
             .arg(httpsModeOption(QStringLiteral("off"), t("https_first.mode.off")),
                  httpsModeOption(QStringLiteral("standard"), t("https_first.mode.standard")),
                  httpsModeOption(QStringLiteral("strict"), t("https_first.mode.strict")));
+        const auto fingerprintMode = [](QString mode) {
+            mode.replace(QLatin1Char('-'), QLatin1Char('_'));
+            const QString key = QStringLiteral("fingerprint.mode.%1").arg(mode);
+            const QString value = Localization::text(key);
+            return value == key ? mode : value;
+        };
+        const QString protectedStatus = t("privacy.status.protected");
+        const QString restrictedStatus = t("privacy.status.restricted");
+        const QString exposedStatus = t("privacy.status.exposed");
         panel = QStringLiteral("<h2>%1</h2>").arg(e(t("settings.category.privacy")));
         panel += QStringLiteral("<form action=\"https://granger.local/__action/settings/privacy-security\" method=\"get\">");
         panel += QStringLiteral("<h3>%1</h3>").arg(e(t("privacy.section.protection")));
         panel += settingRow(t("privacy.protection_preset"), t("privacy.protection_preset.description"), preset);
+        panel += QStringLiteral("<section class=\"settings-subsection fingerprint-summary\"><h3>%1</h3><p>%2</p><div class=\"info-list\">%3%4%5%6%7%8%9</div></section>")
+                     .arg(e(t("privacy.anti_fingerprinting.title")),
+                          e(t("privacy.anti_fingerprinting.description")),
+                          infoRow(t("privacy.anti_fingerprinting.screen_viewport"),
+                                  QStringLiteral("%1 / %2")
+                                      .arg(fingerprintMode(context.fingerprintEffectiveScreenMode),
+                                           context.fingerprintEffectiveLetterboxing
+                                               ? protectedStatus : exposedStatus)),
+                          infoRow(t("privacy.anti_fingerprinting.fonts"),
+                                  fingerprintMode(context.fingerprintEffectiveFontMode)),
+                          infoRow(t("privacy.anti_fingerprinting.graphics"),
+                                  QStringLiteral("%1: %2; %3: %4")
+                                      .arg(t("fingerprint.canvas"),
+                                           fingerprintMode(context.fingerprintEffectiveCanvasMode),
+                                           t("fingerprint.webgl"),
+                                           fingerprintMode(context.fingerprintEffectiveWebGlMode))),
+                          infoRow(t("privacy.anti_fingerprinting.hardware"),
+                                  fingerprintMode(context.fingerprintEffectiveHardwareMode)),
+                          infoRow(t("privacy.anti_fingerprinting.timezone_locale"),
+                                  fingerprintMode(context.fingerprintEffectiveTimezoneMode)),
+                          infoRow(t("privacy.anti_fingerprinting.media"),
+                                  QStringLiteral("%1: %2; %3: %4")
+                                      .arg(t("fingerprint.audio"),
+                                           fingerprintMode(context.fingerprintEffectiveAudioMode),
+                                           t("privacy.anti_fingerprinting.speech_media"),
+                                           context.fingerprintEffectiveSpeechMediaRestricted
+                                               ? restrictedStatus : exposedStatus)),
+                          infoRow(t("privacy.anti_fingerprinting.client_hints"),
+                                  fingerprintMode(context.fingerprintEffectiveClientHintsMode)));
         panel += settingRow(t("privacy.graphical_api_protection"), t("privacy.graphical_api_protection.description"), check(QStringLiteral("fingerprint"), context.fingerprintProtectionEnabled));
         panel += settingRow(t("privacy.webrtc"), t("privacy.webrtc.description"), check(QStringLiteral("webrtc"), context.webRtcLeakProtectionEnabled));
         panel += settingRow(t("privacy.trackers"), t("privacy.trackers.description"), check(QStringLiteral("trackers"), context.trackerBlockingEnabled));

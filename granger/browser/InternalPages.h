@@ -64,6 +64,14 @@ struct InternalPageContext {
     QString timezoneMode;
     QString hardwareExposureMode;
     QString windowSizeProtectionMode;
+    QString fingerprintEffectiveWebGlMode;
+    QString fingerprintEffectiveCanvasMode;
+    QString fingerprintEffectiveAudioMode;
+    QString fingerprintEffectiveScreenMode;
+    QString fingerprintEffectiveTimezoneMode;
+    QString fingerprintEffectiveHardwareMode;
+    QString fingerprintEffectiveFontMode;
+    QString fingerprintEffectiveClientHintsMode;
     QString localLogMode;
     QStringList localLogCategories;
     int localLogRetentionDays = 7;
@@ -124,6 +132,8 @@ struct InternalPageContext {
     bool developerToolsAllowInternalPages = false;
     bool privacyJavascriptEnabled = true;
     bool fingerprintProtectionEnabled = true;
+    bool fingerprintEffectiveLetterboxing = false;
+    bool fingerprintEffectiveSpeechMediaRestricted = false;
     bool webRtcLeakProtectionEnabled = true;
     bool trackerBlockingEnabled = true;
     bool privacyBlockThirdPartyCookies = true;

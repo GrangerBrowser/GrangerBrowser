@@ -144,6 +144,30 @@
       "embeddedSha256": "7FB188C617B310647D9CBE34A27E58C919B08D1D0698D4BF79DF1E03110AE057"
     }
   ],
+  "browserIcons": [
+    {
+      "purpose": "isolated-tabs",
+      "source": "icons_for_browser/isolated_tabs.png",
+      "canonicalSource": "browser-icons/isolated-tabs.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [65, 72],
+      "sourceSha256": "8AA442E04EF568A57C3A5CC431A9BF59F3D7378F9F0C274DB3C65C138FC1E1C8",
+      "resource": ":/browser-icons/isolated-tabs.png",
+      "embeddedSize": [65, 72],
+      "embeddedSha256": "8AA442E04EF568A57C3A5CC431A9BF59F3D7378F9F0C274DB3C65C138FC1E1C8"
+    },
+    {
+      "purpose": "privacy-control",
+      "source": "icons_for_browser/privacy_and_security.png",
+      "canonicalSource": "browser-icons/privacy-security.png",
+      "sourceFormat": "PNG",
+      "sourceSize": [64, 64],
+      "sourceSha256": "450FF78225160872A2144B74526E37347EC0AF57FC82C805C5C5A89B4C5096E0",
+      "resource": ":/browser-icons/privacy-security.png",
+      "embeddedSize": [64, 64],
+      "embeddedSha256": "450FF78225160872A2144B74526E37347EC0AF57FC82C805C5C5A89B4C5096E0"
+    }
+  ],
   "wallpaper": {
     "source": "emma watson.jpg",
     "sourceFormat": "JPEG",

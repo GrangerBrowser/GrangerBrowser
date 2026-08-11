@@ -18,6 +18,8 @@ public:
     static QString containerStorageRoot(const QString &safeId);
     static QString containerProfileRoot(const QString &safeId);
     static QString containerCacheRoot(const QString &safeId);
+    static QString containerTorProfileRoot(const QString &safeId);
+    static QString containerTorCacheRoot(const QString &safeId);
     static QString containerOnionProfileRoot(const QString &safeId);
     static QString containerOnionCacheRoot(const QString &safeId);
     static QString legacyContainerProfileRoot(const QString &safeId);

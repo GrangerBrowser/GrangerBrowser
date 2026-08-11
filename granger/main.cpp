@@ -186,8 +186,37 @@ void appendChromiumDisabledFeature(const QByteArray &feature)
 {
     constexpr auto prefix = "--disable-features=";
     QByteArray flags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS").trimmed();
+    constexpr auto enablePrefix = "--enable-features=";
+    const qsizetype enableStart = flags.indexOf(enablePrefix);
+    if (enableStart >= 0) {
+        const qsizetype enableValueStart = enableStart + QByteArray(enablePrefix).size();
+        qsizetype enableValueEnd = flags.indexOf(' ', enableValueStart);
+        if (enableValueEnd < 0) enableValueEnd = flags.size();
+        QList<QByteArray> enabled = flags.mid(
+            enableValueStart, enableValueEnd - enableValueStart).split(',');
+        enabled.erase(std::remove_if(enabled.begin(), enabled.end(), [&feature](const QByteArray &entry) {
+            return entry == feature || entry.startsWith(feature + '<')
+                || entry.startsWith(feature + ':');
+        }), enabled.end());
+        if (enabled.isEmpty()) {
+            qsizetype removeStart = enableStart;
+            qsizetype removeLength = enableValueEnd - enableStart;
+            if (enableValueEnd < flags.size()) {
+                ++removeLength;
+            } else if (removeStart > 0 && flags.at(removeStart - 1) == ' ') {
+                --removeStart;
+                ++removeLength;
+            }
+            flags.remove(removeStart, removeLength);
+        } else {
+            flags.replace(enableValueStart, enableValueEnd - enableValueStart,
+                          enabled.join(','));
+        }
+        flags = flags.trimmed();
+    }
     const qsizetype switchStart = flags.indexOf(prefix);
     if (switchStart < 0) {
+        qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags);
         appendChromiumFlag(QByteArray(prefix) + feature);
         return;
     }
@@ -320,6 +349,23 @@ void applyFingerprintProcessFlags()
     // before a document-level policy script can run. Browser chrome remains
     // localized by Granger Browser's own translation layer.
     appendChromiumFlag(QByteArrayLiteral("--lang=en-US"));
+
+    // Chromium 140 runtime_features.cc gates these advertising APIs on the
+    // named base features. Disable the engine facilities before renderers start;
+    // document scripts remain only a defense-in-depth layer.
+    for (const QByteArray &feature : {
+             QByteArrayLiteral("BrowsingTopics"),
+             QByteArrayLiteral("BrowsingTopicsDocumentAPI"),
+             QByteArrayLiteral("SharedStorageAPI"),
+             QByteArrayLiteral("InterestGroupStorage"),
+             QByteArrayLiteral("Fledge"),
+             QByteArrayLiteral("FencedFrames"),
+             QByteArrayLiteral("PrivateAggregationApi"),
+             QByteArrayLiteral("ConversionMeasurement"),
+             QByteArrayLiteral("PrivacySandboxAdsAPIsOverride"),
+             QByteArrayLiteral("PrivacySandboxAdsAPIsM1Override")}) {
+        appendChromiumDisabledFeature(feature);
+    }
 }
 
 void configureRuntimePrivacySettings(bool enabled)
@@ -381,7 +427,12 @@ int runSmoke(QApplication &app, const QUrl &url, const QString &outputPath)
         QJsonObject result;
         result.insert(QStringLiteral("ok"), false);
         result.insert(QStringLiteral("reason"), QStringLiteral("timeout"));
-        result.insert(QStringLiteral("url"), granger::sanitizeDownloadSourceUrl(url));
+        result.insert(QStringLiteral("requestedUrl"),
+                      granger::sanitizeDownloadSourceUrl(url));
+        result.insert(QStringLiteral("url"),
+                      granger::sanitizeDownloadSourceUrl(
+                          page.url().isValid() ? page.url() : url));
+        result.insert(QStringLiteral("title"), page.title());
         QFile file(outputPath);
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -4741,9 +4792,17 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
         record(QStringLiteral("address edit state"), false, QStringLiteral("AddressLine not found"));
     }
 
-    const granger::TorManager tor;
+    granger::TorManager tor;
     record(QStringLiteral("no false Connected state"), tor.status().bridgeState != QStringLiteral("Connected") && !tor.status().routeVerified,
            tor.status().bridgeState);
+    tor.setBrowserRouteVerified(QStringLiteral("192.0.2.1"));
+    tor.stopManagedTor();
+    record(QStringLiteral("stopping Tor invalidates browser route verification"),
+           !tor.status().routeVerified
+               && !tor.status().bridgeEnabled
+               && tor.status().bridgeState != QStringLiteral("Connected")
+               && tor.status().outboundIp == QStringLiteral("unknown"),
+           tor.status().routeState);
     record(QStringLiteral("writable data layout"), granger::AppPaths::ensureWritableLayout(), granger::AppPaths::dataRoot());
     record(QStringLiteral("runtime path is application-relative"), granger::AppPaths::runtimeRoot().startsWith(granger::AppPaths::applicationRoot())
                || !qEnvironmentVariable("GRANGER_RUNTIME_ROOT").isEmpty(), granger::AppPaths::runtimeRoot());

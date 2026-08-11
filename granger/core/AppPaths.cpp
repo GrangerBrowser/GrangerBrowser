@@ -98,6 +98,18 @@ QString AppPaths::containerCacheRoot(const QString &safeId)
     return root.isEmpty() ? QString() : QDir(root).filePath(QStringLiteral("k"));
 }
 
+QString AppPaths::containerTorProfileRoot(const QString &safeId)
+{
+    const QString root = containerStorageRoot(safeId);
+    return root.isEmpty() ? QString() : QDir(root).filePath(QStringLiteral("t"));
+}
+
+QString AppPaths::containerTorCacheRoot(const QString &safeId)
+{
+    const QString root = containerStorageRoot(safeId);
+    return root.isEmpty() ? QString() : QDir(root).filePath(QStringLiteral("u"));
+}
+
 QString AppPaths::containerOnionProfileRoot(const QString &safeId)
 {
     const QString root = containerStorageRoot(safeId);

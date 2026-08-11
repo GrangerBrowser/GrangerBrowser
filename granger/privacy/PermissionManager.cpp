@@ -41,9 +41,8 @@ void PermissionManager::handlePermission(QWidget *parent,
                                PrivacyPermissionDecision::Block);
         return;
     }
-    PrivacyPermissionDecision decision = scope.isEmpty()
-        ? m_policy.permissionDecision(permission.origin(), id, profile)
-        : scopedDecision(permission.origin(), id, scope);
+    PrivacyPermissionDecision decision = decisionForScope(
+        permission.origin(), id, profile, scope);
     const QString key = sessionKey(permission.origin(), id, profile, scope);
     if (decision == PrivacyPermissionDecision::Ask && m_sessionDecisions.contains(key)) {
         decision = m_sessionDecisions.value(key);
@@ -61,7 +60,7 @@ void PermissionManager::handlePermission(QWidget *parent,
                 decision = PrivacyPermissionDecision::AllowSession;
                 m_sessionDecisions.insert(key, decision);
             } else {
-                setScopedDecision(permission.origin(), id, scope, decision);
+                setScopedDecision(permission.origin(), id, profile, scope, decision);
             }
             permission.grant();
         } else {
@@ -76,7 +75,7 @@ void PermissionManager::handlePermission(QWidget *parent,
     } else if (decision == PrivacyPermissionDecision::Block) {
         if (!scope.isEmpty()) {
             if (scope.startsWith(QStringLiteral("isolated:"))) m_sessionDecisions.insert(key, decision);
-            else setScopedDecision(permission.origin(), id, scope, decision);
+            else setScopedDecision(permission.origin(), id, profile, scope, decision);
         }
         permission.deny();
     } else {
@@ -92,9 +91,8 @@ void PermissionManager::handleFileSystemAccess(QWidget *parent,
                                                const QString &scope)
 {
     const QString id = QStringLiteral("file-system");
-    PrivacyPermissionDecision decision = scope.isEmpty()
-        ? m_policy.permissionDecision(request.origin(), id, profile)
-        : scopedDecision(request.origin(), id, scope);
+    PrivacyPermissionDecision decision = decisionForScope(
+        request.origin(), id, profile, scope);
     const QString key = sessionKey(request.origin(), id, profile, scope);
     if (decision == PrivacyPermissionDecision::Ask && m_sessionDecisions.contains(key)) {
         decision = m_sessionDecisions.value(key);
@@ -115,7 +113,7 @@ void PermissionManager::handleFileSystemAccess(QWidget *parent,
                 decision = PrivacyPermissionDecision::AllowSession;
                 m_sessionDecisions.insert(key, decision);
             } else {
-                setScopedDecision(request.origin(), id, scope, decision);
+                setScopedDecision(request.origin(), id, profile, scope, decision);
             }
             request.accept();
         } else {
@@ -128,7 +126,7 @@ void PermissionManager::handleFileSystemAccess(QWidget *parent,
     } else {
         if (decision == PrivacyPermissionDecision::Block && !scope.isEmpty()) {
             if (scope.startsWith(QStringLiteral("isolated:"))) m_sessionDecisions.insert(key, decision);
-            else setScopedDecision(request.origin(), id, scope, decision);
+            else setScopedDecision(request.origin(), id, profile, scope, decision);
         }
         request.reject();
     }
@@ -171,6 +169,36 @@ void PermissionManager::clearSessionDecisionsForScope(const QString &scope)
         if (it.key().contains(marker)) it = m_sessionDecisions.erase(it);
         else ++it;
     }
+}
+
+void PermissionManager::clearPersistentDecisionsForScope(const QString &scope)
+{
+    const QString marker = QLatin1Char('|') + scope.trimmed() + QLatin1Char('|');
+    bool changed = false;
+    for (auto it = m_scopedPersistentDecisions.begin();
+         it != m_scopedPersistentDecisions.end();) {
+        if (it.key().contains(marker)) {
+            it = m_scopedPersistentDecisions.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (changed) saveScopedDecisions();
+}
+
+PrivacyPermissionDecision PermissionManager::decisionForScope(
+    const QUrl &origin,
+    const QString &permission,
+    PrivacyProfileKind profile,
+    const QString &scope) const
+{
+    const PrivacyPermissionDecision baseline =
+        m_policy.permissionDecision(origin, permission, profile);
+    if (scope.trimmed().isEmpty() || baseline != PrivacyPermissionDecision::Ask) {
+        return baseline;
+    }
+    return scopedDecision(origin, permission, profile, scope.trimmed());
 }
 
 bool PermissionManager::setSessionDecision(const QUrl &origin,
@@ -239,23 +267,30 @@ QString PermissionManager::sessionKey(const QUrl &origin,
 }
 
 PrivacyPermissionDecision PermissionManager::scopedDecision(const QUrl &origin,
-                                                            const QString &permission,
-                                                            const QString &scope) const
+                                                             const QString &permission,
+                                                             PrivacyProfileKind profile,
+                                                             const QString &scope) const
 {
     if (scope.startsWith(QStringLiteral("isolated:"))) return PrivacyPermissionDecision::Ask;
-    const QString key = QStringLiteral("%1|%2|%3")
-                            .arg(scope, canonicalPrivacyOrigin(origin), permission);
+    const QString key = QStringLiteral("%1|%2|%3|%4")
+                            .arg(privacyProfileId(profile), scope,
+                                 canonicalPrivacyOrigin(origin), permission);
     return m_scopedPersistentDecisions.value(key, PrivacyPermissionDecision::Ask);
 }
 
 void PermissionManager::setScopedDecision(const QUrl &origin,
-                                          const QString &permission,
-                                          const QString &scope,
-                                          PrivacyPermissionDecision decision)
+                                           const QString &permission,
+                                           PrivacyProfileKind profile,
+                                           const QString &scope,
+                                           PrivacyPermissionDecision decision)
 {
-    if (!scope.startsWith(QStringLiteral("container:"))) return;
-    const QString key = QStringLiteral("%1|%2|%3")
-                            .arg(scope, canonicalPrivacyOrigin(origin), permission);
+    if (!scope.startsWith(QStringLiteral("container:"))
+        || profile == PrivacyProfileKind::Internal) {
+        return;
+    }
+    const QString key = QStringLiteral("%1|%2|%3|%4")
+                            .arg(privacyProfileId(profile), scope,
+                                 canonicalPrivacyOrigin(origin), permission);
     if (decision == PrivacyPermissionDecision::Ask) m_scopedPersistentDecisions.remove(key);
     else m_scopedPersistentDecisions.insert(key, decision);
     saveScopedDecisions();
@@ -265,18 +300,33 @@ void PermissionManager::loadScopedDecisions()
 {
     QFile file(AppPaths::stateFile(QStringLiteral("container-permissions.json")));
     if (!file.open(QIODevice::ReadOnly)) return;
-    const QJsonObject values = QJsonDocument::fromJson(file.readAll()).object()
+    const QByteArray payload = file.readAll();
+    file.close();
+    const QJsonObject values = QJsonDocument::fromJson(payload).object()
                                    .value(QStringLiteral("decisions")).toObject();
+    bool migratedLegacyKeys = false;
     for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
         const QString value = it.value().toString();
         PrivacyPermissionDecision decision = PrivacyPermissionDecision::Ask;
         if (value == QStringLiteral("allow-always")) decision = PrivacyPermissionDecision::AllowAlways;
         else if (value == QStringLiteral("block")) decision = PrivacyPermissionDecision::Block;
-        if (decision != PrivacyPermissionDecision::Ask
-            && it.key().startsWith(QStringLiteral("container:"))) {
-            m_scopedPersistentDecisions.insert(it.key(), decision);
+        QString key = it.key();
+        if (key.startsWith(QStringLiteral("container:"))) {
+            key.prepend(QStringLiteral("normal|"));
+            migratedLegacyKeys = true;
+        }
+        const int profileSeparator = key.indexOf(QLatin1Char('|'));
+        bool profileOk = false;
+        const PrivacyProfileKind profile = privacyProfileFromId(
+            key.left(profileSeparator), &profileOk);
+        const QString scopedPart = profileSeparator >= 0 ? key.mid(profileSeparator + 1) : QString();
+        if (decision != PrivacyPermissionDecision::Ask && profileOk
+            && profile != PrivacyProfileKind::Internal
+            && scopedPart.startsWith(QStringLiteral("container:"))) {
+            m_scopedPersistentDecisions.insert(key, decision);
         }
     }
+    if (migratedLegacyKeys) saveScopedDecisions();
 }
 
 void PermissionManager::saveScopedDecisions() const
@@ -291,7 +341,7 @@ void PermissionManager::saveScopedDecisions() const
     QDir().mkpath(QFileInfo(path).absolutePath());
     QSaveFile file(path);
     if (file.open(QIODevice::WriteOnly)) {
-        file.write(QJsonDocument(QJsonObject{{QStringLiteral("version"), 1},
+        file.write(QJsonDocument(QJsonObject{{QStringLiteral("version"), 2},
                                              {QStringLiteral("decisions"), values}})
                        .toJson(QJsonDocument::Indented));
         file.commit();

@@ -2000,7 +2000,11 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
       const withStandardFont = (element, operation) => {
         const style = element && element.style;
         if (!style) return operation();
-        const fallback = measurementFallback(style.fontFamily);
+        let family = style.fontFamily;
+        try {
+          if (globalThis.getComputedStyle) family = getComputedStyle(element).fontFamily || family;
+        } catch (_) {}
+        const fallback = measurementFallback(family);
         if (!fallback) return operation();
         const value = style.getPropertyValue('font-family');
         const priority = style.getPropertyPriority('font-family');
@@ -2013,7 +2017,15 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
           else style.removeProperty('font-family');
         }
       };
-      for (const property of ['offsetWidth','offsetHeight']) {
+      const withStandardFonts = (elements, operation) => {
+        const queue = Array.from(new Set(elements.filter(Boolean)));
+        const run = index => index >= queue.length
+          ? operation() : withStandardFont(queue[index], () => run(index + 1));
+        return run(0);
+      };
+      for (const property of [
+        'offsetWidth','offsetHeight','clientWidth','clientHeight','scrollWidth','scrollHeight'
+      ]) {
         const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, property);
         if (!descriptor || typeof descriptor.get !== 'function') continue;
         Object.defineProperty(HTMLElement.prototype, property, {
@@ -2031,6 +2043,38 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
             return withStandardFont(this, () => original.apply(this, args));
           }
         });
+      }
+      if (globalThis.Range && Range.prototype) {
+        for (const name of ['getBoundingClientRect','getClientRects']) {
+          const original = Range.prototype[name];
+          if (typeof original !== 'function') continue;
+          Object.defineProperty(Range.prototype, name, {
+            configurable: true,
+            value: function(...args) {
+              const elementFor = node => node && (node.nodeType === Node.ELEMENT_NODE
+                ? node : node.parentElement);
+              return withStandardFonts([
+                elementFor(this.startContainer), elementFor(this.endContainer),
+                elementFor(this.commonAncestorContainer)
+              ], () => original.apply(this, args));
+            }
+          });
+        }
+      }
+      if (globalThis.SVGTextContentElement && SVGTextContentElement.prototype) {
+        for (const name of [
+          'getComputedTextLength','getSubStringLength','getExtentOfChar',
+          'getStartPositionOfChar','getEndPositionOfChar'
+        ]) {
+          const original = SVGTextContentElement.prototype[name];
+          if (typeof original !== 'function') continue;
+          Object.defineProperty(SVGTextContentElement.prototype, name, {
+            configurable: true,
+            value: function(...args) {
+              return withStandardFont(this, () => original.apply(this, args));
+            }
+          });
+        }
       }
       if (document.fonts) {
         const fontSetPrototype = Object.getPrototypeOf(document.fonts);
@@ -2465,6 +2509,19 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
     ]) {
       if (name in Navigator.prototype) define(Navigator.prototype, name, undefined);
     }
+    if (globalThis.Document && 'browsingTopics' in Document.prototype) {
+      define(Document.prototype, 'browsingTopics', undefined);
+    }
+    for (const name of [
+      'sharedStorage','SharedStorage','SharedStorageWorklet','FencedFrameConfig',
+      'HTMLFencedFrameElement','privateAggregation'
+    ]) {
+      if (name in globalThis) define(globalThis, name, undefined);
+    }
+    if (globalThis.XMLHttpRequest
+        && 'setAttributionReporting' in XMLHttpRequest.prototype) {
+      define(XMLHttpRequest.prototype, 'setAttributionReporting', undefined);
+    }
     if (globalThis.performance && 'memory' in performance) define(performance, 'memory', undefined);
     for (const name of [
       'IdleDetector','PresentationRequest','EyeDropper','BarcodeDetector',
@@ -2472,15 +2529,41 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
     ]) {
       if (name in globalThis) define(globalThis, name, undefined);
     }
+    const hiddenEventTargets = new Map();
     if (globalThis.speechSynthesis && typeof speechSynthesis.getVoices === 'function') {
       Object.defineProperty(speechSynthesis, 'getVoices', { configurable: true, value: function() {
         mark('Speech voices'); return [];
       }});
+      hiddenEventTargets.set(speechSynthesis, 'voiceschanged');
+      define(speechSynthesis, 'onvoiceschanged', null);
     }
     if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
       Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', { configurable: true, value: function() {
         mark('Media devices'); return Promise.resolve([]);
       }});
+      hiddenEventTargets.set(navigator.mediaDevices, 'devicechange');
+      define(navigator.mediaDevices, 'ondevicechange', null);
+    }
+    if (hiddenEventTargets.size && globalThis.EventTarget && EventTarget.prototype) {
+      const originalAddEventListener = EventTarget.prototype.addEventListener;
+      const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+      Object.defineProperty(EventTarget.prototype, 'addEventListener', {
+        configurable: true,
+        value: function(type, ...args) {
+          if (hiddenEventTargets.get(this) === String(type).toLowerCase()) {
+            mark(type === 'voiceschanged' ? 'Speech voices' : 'Media devices');
+            return;
+          }
+          return originalAddEventListener.call(this, type, ...args);
+        }
+      });
+      Object.defineProperty(EventTarget.prototype, 'removeEventListener', {
+        configurable: true,
+        value: function(type, ...args) {
+          if (hiddenEventTargets.get(this) === String(type).toLowerCase()) return;
+          return originalRemoveEventListener.call(this, type, ...args);
+        }
+      });
     }
     if (navigator.clipboard) {
       for (const method of ['read','readText']) {

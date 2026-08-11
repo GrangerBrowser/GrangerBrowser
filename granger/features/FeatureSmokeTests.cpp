@@ -1,5 +1,6 @@
 #include "granger/features/FeatureSmokeTests.h"
 
+#include "granger/browser/BrowserProfile.h"
 #include "granger/pamp_lite/core/PampLiteEngine.h"
 #include "granger/pamp_lite/network/PampRoutedEnricher.h"
 #include "granger/browser/BrowserTab.h"
@@ -694,6 +695,10 @@ int runFeatureSmokeTests(QApplication &app,
             researchId, PrivacyProfileKind::Normal);
         QWebEngineProfile *accounts = containers.profileFor(
             accountsId, PrivacyProfileKind::Normal);
+        QWebEngineProfile *researchTor = containers.profileFor(
+            researchId, PrivacyProfileKind::Tor);
+        QWebEngineProfile *researchTorAgain = containers.profileFor(
+            researchId, PrivacyProfileKind::Tor);
         QWebEngineProfile *researchOnion = containers.profileFor(
             researchId, PrivacyProfileKind::Onion);
         const QNetworkProxy routeAfter = QNetworkProxy::applicationProxy();
@@ -716,7 +721,28 @@ int runFeatureSmokeTests(QApplication &app,
         results.record(QStringLiteral("onion storage is separated inside each container"),
                        researchOnion && researchOnion != research
                            && researchOnion->persistentStoragePath()
-                                  != research->persistentStoragePath());
+                                   != research->persistentStoragePath());
+        results.record(QStringLiteral("Direct and Tor identities in one Space use different profiles"),
+                       research && researchTor && researchTor == researchTorAgain
+                           && researchTor != research && researchTor != researchOnion
+                           && BrowserProfile::kindForProfile(research)
+                                  == PrivacyProfileKind::Normal
+                           && BrowserProfile::kindForProfile(researchTor)
+                                  == PrivacyProfileKind::Tor
+                           && BrowserProfile::kindForProfile(researchOnion)
+                                  == PrivacyProfileKind::Onion);
+        results.record(QStringLiteral("Tor Space storage has a dedicated compact path"),
+                       researchTor
+                           && researchTor->persistentStoragePath()
+                                  == AppPaths::containerTorProfileRoot(researchId)
+                           && researchTor->cachePath()
+                                  == AppPaths::containerTorCacheRoot(researchId)
+                           && researchTor->persistentStoragePath()
+                                  != research->persistentStoragePath()
+                           && researchTor->cachePath() != research->cachePath()
+                           && pathIsInside(researchTor->persistentStoragePath(),
+                                           AppPaths::containerStorageRoot(researchId)),
+                       researchTor ? researchTor->persistentStoragePath() : QString());
         results.record(QStringLiteral("creating container profiles does not change the application route"),
                        sameProxy(routeBefore, routeAfter));
 
@@ -1348,7 +1374,7 @@ int runFeatureSmokeTests(QApplication &app,
                         && reportHtml.contains(QStringLiteral("class=\"evidence-list\""))
                         && !reportHtml.contains(QStringLiteral("&lt;br&gt;"))
                         && !reportHtml.contains(QChar(0x00b7)));
-    results.record(QStringLiteral("Pamp implementation and attribution are compiled into Granger Browser"),
+    results.record(QStringLiteral("Pamp Lite is compiled and full Pamp is not silently packaged"),
                    QFileInfo(QStringLiteral(":/legal/pamp-lite-attribution.md")).exists()
                        && !QFileInfo(QDir(AppPaths::applicationRoot())
                                          .filePath(QStringLiteral("pentest"))).exists());
