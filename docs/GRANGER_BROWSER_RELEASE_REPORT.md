@@ -1,635 +1,161 @@
-# Granger Browser 0.4.0: release report
+# Granger Browser 0.4.0 release record
 
-Дата проверки: 8 августа 2026 года.
+Updated: 2026-08-12
 
-Этот документ фиксирует результат итерации над жизненным циклом Spaces,
-Sidebar, интерфейсом Settings -> Spaces, обновлением Qt WebEngine, брендингом,
-миграцией пользовательских данных и последующей стабилизацией геометрии
-Sidebar/WebEngine. Все проверки Release выполнялись с
-изолированными `GRANGER_DATA_ROOT` и `GRANGER_SETTINGS_ROOT`. Реальный
-пользовательский профиль исследовался только для определения структуры и не
-изменялся.
+This document records the release boundary and the reproducible acceptance
+procedure for Granger Browser. It is intentionally short. Detailed privacy,
+content-filter, cross-device, and third-party attribution records remain in
+their dedicated documents.
 
-## 1. Исходный baseline
+## Canonical artifact
 
-Предыдущий portable Release зафиксирован до изменений:
+The only supported packaged executable is:
 
-| Параметр | Значение |
+```text
+release\Granger Browser\GrangerBrowser.exe
+```
+
+`scripts/build-release.ps1` performs a clean Release build, packages into a
+temporary staging directory, runs acceptance against the copied package, and
+replaces the canonical package only after every required check succeeds.
+`release-manifest.json` contains SHA-256 hashes for packaged files. The build
+orchestrator writes its machine-readable result to `release/build-report.json`.
+
+## Runtime
+
+| Component | Release value |
 | --- | --- |
-| Qt | 6.9.3 |
-| Qt WebEngine | 6.9.3 |
-| Chromium base | 130.0.6723.192 |
-| `qWebEngineChromiumSecurityPatchVersion()` | 140.0.7339.207 |
-| SHA-256 предыдущего EXE | `F4BB6CC2C0C36B8FD84709E30A4F44BFE28DC3190301FEF5453C6941393C39D0` |
-| Размер предыдущего EXE | 9 115 136 байт |
+| Product | Granger Browser 0.4.0 |
+| Language | C++20 |
+| UI | Qt Widgets 6.11.1 |
+| Browser engine | Qt WebEngine 6.11.1 / Chromium 140.0.7339.225 |
+| Chromium security patch API | 148.0.7778.96 |
+| Tor | Bundled Tor Expert Bundle |
+| Pluggable transports | Bundled lyrebird and transport configuration |
+| Platform | Windows x64, MSVC 2022 |
 
-Baseline gate прошёл: Product 123/123, New tab 15/15, Feature 77/77,
-UI/focus 120/120, Privacy 142/142, Privacy diagnostics 12/12, DevTools 13/13,
-Bridges 22/22 и Strategies 8/8.
+The Qt installer script downloads official Qt archives and verifies their
+published hashes before extraction. The packaged browser does not require a
+Python runtime or a Qt SDK.
 
-Сохранённые исходные показатели того же harness: окно 394 мс, стабильный кадр
-744 мс, одна вкладка 328.359 MiB working set, десять вкладок 1004.434 MiB,
-пять Space-профилей 654.766 MiB.
+## Architecture boundary
 
-## 2. Удаление Spaces
+The release uses the existing Qt Widgets shell, one tab model, one Settings
+implementation, and one `AnimationPolicy`. It does not include a parallel UI
+shell, a second network stack, or a remote UI runtime.
 
-### Причина
+User data is stored outside the package. Automated acceptance uses isolated
+`GRANGER_DATA_ROOT`, `GRANGER_SETTINGS_ROOT`, and, where required,
+`GRANGER_DOWNLOAD_ROOT` directories. Release validation must not mutate the
+normal user profile.
 
-Старая операция очистки начиналась, когда цепочка владения
-`BrowserTab -> QWebEngineView -> QWebEnginePage -> QWebEngineProfile` ещё могла
-оставаться живой. Chromium subprocess, service workers, storage handles,
-callbacks или download references продолжали держать файлы профиля. На Windows
-это превращалось в file lock, а прежняя операция не имела достаточно строгого
-постоянного состояния и гарантированного повторного запуска. Поэтому изменение
-модели, освобождение профиля и удаление файлов не были одной упорядоченной
-транзакцией.
-
-### Новый lifecycle
-
-Реализована явная последовательность:
+Space removal follows the persisted lifecycle:
 
 ```text
 Active -> Closing -> ProfileRelease -> CleanupPending -> Cleaned
                                                 \-> Failed
 ```
 
-`MainWindow` сначала запрещает новые вкладки Space, закрывает принадлежащие ему
-вкладки и отвязывает UI. `ContainerManager` удаляет Space из активной модели
-только в рамках begin/commit lifecycle, освобождает все profile references и
-продолжает удаление после сигнала `QObject::destroyed`.
+Profile references and active downloads are released before storage cleanup.
+Cleanup paths are validated beneath owned roots, serialized across processes,
+and retried after Windows file locks instead of reporting false success.
 
-Очередь `state/container-cleanup.json` имеет схему v2 и сохраняется атомарно
-через `QSaveFile`. `QLockFile` сериализует writers между процессами. Для каждого
-живого профиля используется process lease; активные downloads и lease другого
-процесса откладывают очистку. Очередь повторяется после освобождения профиля и
-при следующем запуске.
+## Privacy boundary
 
-Перед удалением проверяются UUID Space, принадлежность известных относительных
-путей, canonical root, отсутствие path traversal, symlink/junction escape и
-защита Default Space. Повреждённая очередь помещается в quarantine
-byte-for-byte; непроверенные пути не удаляются. Ошибка Windows lock сохраняет
-запись для следующей попытки, а не маскируется ложным успехом.
+Granger Browser does not promise anonymity. UI status distinguishes configured,
+bootstrapping, route-verified, and failed states.
 
-Проверки включают пустой Space, 1 и 20 вкладок, активный и неактивный Space,
-немедленное создание нового Space, restart manager, межпроцессный lease,
-повреждённую очередь, junction escape, Windows lock/retry, отмену
-незавершённого удаления при старте и запрет удаления Default Space. Реальные
-cookies, localStorage, IndexedDB и CacheStorage подтверждены через loopback HTTP
-origin; очистка одного Space не затрагивает другой.
+The release keeps these existing guarantees and their regression coverage:
 
-## 3. Sidebar
+- Tor/SOCKS routing is fail-closed; no direct fallback is presented as Tor.
+- DNS and WebRTC policies remain tied to the active privacy profile.
+- Tor, Onion, Space, and isolated-tab profiles retain their storage boundaries.
+- HTTPS-First, request interception, content filtering, permissions, URL
+  cleaning, and fingerprint protections remain enabled by policy.
+- Canvas, WebGL, WebAudio, font, screen, viewport, User-Agent, and Client Hints
+  behavior remains owned by the existing privacy pipeline.
+- Bridge lines are parsed and validated without rewriting the saved Tor payload.
+  obfs4, WebTunnel, Snowflake, vanilla, and generic future transports remain
+  covered by the bridge and strategy suites.
+- `Connected` is shown only after Tor bootstrap and browser-route verification.
 
-Причиной визуального дубля было смешение двух разных состояний: активный Space
-показывался и как элемент canonical Space selector, и как повторный заголовок
-группы вкладок, который одновременно управлял collapse. Повторные rebuild и
-state notifications могли расходиться с анимацией и видимостью строк.
+Qt WebEngine proxy configuration is process-wide. The process applies its proxy
+startup flags before WebEngine initialization.
 
-Теперь существуют:
+## Letterboxing
 
-- один список Space selector (`m_spaceButtons`);
-- один независимый заголовок `Tabs N` (`m_tabsHeaderButton`);
-- один `activeSpaceId`;
-- одно persisted collapse-состояние на Space;
-- одна точка изменения `setTabSectionCollapsed()`.
+Physical Tor-style letterboxing remains enabled. It is described as viewport
+standardization and fingerprinting resistance, not anonymity.
 
-Предыдущая анимация отменяется перед новой, итоговое состояние выставляется
-детерминированно, а reduced-motion завершает переход без декоративного движения.
-Stress test покрывает 20 вкладок, быстрые переключения, закрытие вкладок во
-время collapse, закрытие последней вкладки и повторное раскрытие. Дубликат
-заголовка не появляется.
+`FingerprintViewportPolicy::standardizedSize()` selects a host-derived logical
+viewport on a 200 by 100 pixel policy grid. `LetterboxedWebView` reports that
+preferred size to the existing layout while keeping a zero minimum size. The
+view is centered in hidden, compact, and expanded Sidebar modes. The page
+scrollbar therefore remains at the right edge of the protected WebEngine view,
+not at the right edge of the outer content host.
 
-## 4. Settings -> Spaces
+Rapid Sidebar reversal, early tiny restored viewports, and host-size changes are
+covered by regression tests. The policy is not a single hard-coded 800 by 700
+viewport.
 
-Список Space больше не является постоянно раскрытой административной формой.
-Каждая строка показывает локальную иконку, цветовой маркер, название, описание,
-число вкладок и site assignments. Действия перенесены в viewport-aware menu:
-открыть вкладку, изменить, очистить данные, назначения сайтов и удалить.
+## UI acceptance
 
-Диалог создания/редактирования имеет единые поля, validation, disabled primary
-action при пустом имени, focus trap, Escape, click-outside policy и возврат
-фокуса. Color picker содержит десять локальных swatches. Icon picker полностью
-локальный, поддерживает поиск, grid, keyboard navigation и selected state.
+Settings uses one shared layout grammar for page width, navigation width,
+content width, card inset, section and column gaps, row height, control column,
+footer padding, and responsive stacking. The Reports page uses the same grammar
+for its two-column controls, category checkboxes, clear-on-start/exit row, and
+Save footer.
 
-Автотесты подтвердили hover/focus/pressed, закрытие меню по Escape и outside
-click, возврат фокуса, flip меню вверх у нижней границы viewport, отсутствие
-горизонтального overflow и сохранение модели Space.
+Native and internal surfaces share local design tokens. Popup animations are
+short-lived and reused or stopped during rapid reversal. Settings category
+content uses a 150 ms opacity/2 px transition. Existing reduced-motion policy
+removes decorative motion without changing final geometry or functionality.
+There are no idle animation timers for these transitions.
 
-Скриншоты проверки:
+Focused UI acceptance measures:
 
-- `output/release acceptance/path with spaces/feature-captures/04-container-settings.png`;
-- `output/release acceptance/path with spaces/feature-captures/04a-container-actions.png`;
-- `output/release acceptance/path with spaces/feature-captures/04b-container-dialog.png`;
-- `output/release acceptance/path with spaces/feature-captures/04c-color-picker.png`;
-- `output/release acceptance/path with spaces/feature-captures/04d-icon-picker.png`;
-- `output/granger-final-dpi/dpi-150/captures/06-vertical-tabs-expanded.png`.
+- aligned card and control edges across every Settings category;
+- equal Reports columns, control heights, checkbox rows, and footer insets;
+- responsive layouts from wide desktop to the supported narrow window;
+- DPI 100, 125, 150, 175, and 200 percent;
+- Russian, English, and Kazakh localization;
+- rapid popup, Sidebar, tab, focus, and Settings interactions;
+- fullscreen, maximized, collapsed, expanded, and hidden Sidebar states;
+- reduced motion, viewport bounds, clipping, and horizontal overflow.
 
-## 5. Engine migration
+Reference captures for Sidebar and letterboxing are stored in
+`docs/screenshots/sidebar-layout-stability/`.
 
-| Параметр | Old | New |
-| --- | --- | --- |
-| Qt | 6.9.3 | 6.11.1 |
-| Qt WebEngine | 6.9.3 | 6.11.1 |
-| Chromium base | 130.0.6723.192 | 140.0.7339.225 |
-| Security patch API | 140.0.7339.207 | 148.0.7778.96 |
+## Release gate
 
-`Security patch API` выше является фактическим значением
-`qWebEngineChromiumSecurityPatchVersion()`, сообщённым Qt runtime; версия
-Chromium binary отдельно и явно указана как 140.0.7339.225.
+Run the canonical gate from the repository root:
 
-Выбрана стабильная Qt 6.11.1, выпущенная 13 мая 2026 года. Следующая patch
-версия 6.11.2 на дату проверки ещё не выпущена. Источники:
-
-- https://www.qt.io/blog/qt-6.11.1-released
-- https://wiki.qt.io/QtWebEngine/ChromiumVersions
-- https://doc.qt.io/qt-6/whatsnew611.html
-- https://chromium.googlesource.com/chromium/src/+/refs/tags/140.0.7339.225
-
-Chromium tag соответствует commit
-`aa324b3754009b927f7db643b2e837d6a5383b04`. Qt установлен из официального
-repository скриптом `scripts/install-qt-6.11.1.ps1`; архивы проверены по
-опубликованным SHA-1 до извлечения.
-
-Найдены две реальные несовместимости:
-
-1. Синхронная обработка internal action из
-   `BrowserPage::acceptNavigationRequest()` повторно загружала тот же
-   `QWebEnginePage` внутри Chromium navigation callback. В Chromium 140 это
-   приводило к 0x80000003. Dispatch переведён в queued invocation.
-2. Storage fixtures на `setHtml()` больше не являлись надёжным доказательством
-   first-party storage. Feature и UI tests используют настоящий loopback HTTP
-   origin для cookies, localStorage, IndexedDB и CacheStorage.
-
-Privacy, cookie и network policies ради совместимости не ослаблялись.
-
-## 6. Branding Granger Browser
-
-Единый владелец идентичности находится в `granger/core/Brand.*`. Обновлены
-target, `GrangerBrowser.exe`, namespace `granger`, window/taskbar title, Windows
-VersionInfo, `.rc`, Qt resources, internal URLs, About, settings filename,
-credential target, translations ru/en/kk, environment variables, scripts,
-README, BUILDING, SECURITY и portable directory.
-
-Текущий data root:
-
-```text
-%LOCALAPPDATA%\Granger\Granger Browser\
+```powershell
+.\scripts\build-release.ps1 `
+  -QtRoot "$env:USERPROFILE\Qt\6.11.1\msvc2022_64" `
+  -BuildDirectory build\desktop
 ```
 
-Audit активных исходников нашёл 35 строк прежней идентичности, и все они
-классифицированы как migration/backward compatibility:
-
-- `granger/core/AppPaths.cpp`: 4 fallback environment aliases;
-- `granger/core/Brand.cpp`: 21 legacy constants и environment aliases;
-- `granger/core/BrandMigration.cpp`: 6 legacy settings/environment mappings;
-- `granger/main.cpp`: 2 settings-root aliases;
-- `granger/settings/SettingsManager.cpp`: 2 settings-root aliases.
-
-В UI, metadata, target names, новых settings keys, resources, translations,
-tests и актуальной документации прежняя идентичность не используется. Raw
-binary scan видит 21 uppercase compatibility alias, потому что они нужны для
-однократной миграции и старых test overrides; package acceptance отдельно
-подтвердил 0 legacy-named entries и 0 user-visible text matches. Исторические
-отчёты сохранены как evidence и не входят в runtime package.
-
-Внешнее имя каталога, в котором размещён рабочий checkout, не является частью
-продукта и намеренно не менялось автоматически.
-
-## 7. Миграция пользовательских данных
-
-`BrandMigration` выполняет однократный перенос из legacy application-data root
-в `%LOCALAPPDATA%\Granger\Granger Browser`. Переносятся persistent settings,
-Spaces, cookies, sessions, bookmarks, history, download history, site rules,
-Pamp data и Tor configuration.
-
-Алгоритм:
-
-1. Отказ, если legacy executable ещё запущен.
-2. Проверка непересекающихся roots и запрет reparse-point escape.
-3. Копирование в staging без cache, lock, singleton и temporary files.
-4. SHA-256 verification каждого файла.
-5. Атомарная запись versioned marker через `QSaveFile`.
-6. Атомарный rename staging в destination.
-7. Legacy source остаётся rollback-копией; replay guard не позволяет повторно
-   применить старые данные.
-
-Непустой новый профиль никогда не перезаписывается. Ошибка до commit удаляет
-только staging и оставляет оба persistent roots пригодными для восстановления.
-Migration suite 12/12 проверяет byte-for-byte данные, idempotency, существующий
-destination, unsafe link abort, rollback и replay guard. Тест выполнен на
-fixture-копии, не на production profile.
-
-## 8. Regression и performance
-
-Финальный gate:
-
-| Suite | Результат |
-| --- | --- |
-| Product | 123/123 |
-| New tab | 15/15 |
-| Feature / Spaces / downloads | 110/110 |
-| UI/focus | 120/120 |
-| Privacy | 142/142 |
-| Privacy diagnostics | 12/12 |
-| DevTools | 13/13 |
-| Bridges | 22/22 |
-| Connection strategies | 8/8 |
-| Branding | 15/15 |
-| Brand migration | 12/12 |
-
-Bridge tests включают обе обязательные IPv4 obfs4 строки, exact Bridge-line
-preservation, WebTunnel, Snowflake, vanilla, future transport, IPv6 и ошибки
-валидации. Tor 0.4.9.11 проверил сгенерированные configs; lyrebird 0.8.1 реально
-запущен в obfs4 strategy smoke до bootstrap 1%. UI не показывал fake Connected.
-
-Content blocker, URL cleaner, HTTPS-First, TLS rejection, WebRTC policy,
-fingerprint profiles, Onion isolation, Pamp Lite, downloads, session restore и
-DevTools прошли существующие suites без изменения сетевой архитектуры.
-
-Performance одного и того же harness:
-
-| Метрика | Baseline | Final | Изменение |
-| --- | ---: | ---: | ---: |
-| Window shown | 394 ms | 491 ms | +24.6% |
-| Stable frame | 744 ms | 842 ms | +13.2% |
-| 1 tab working set | 328.359 MiB | 381.910 MiB | +16.3% |
-| 10 tabs working set | 1004.434 MiB | 1114.629 MiB | +11.0% |
-| 5 Space profiles working set | 654.766 MiB | 716.504 MiB | +9.4% |
-| Space activation average | 9703.676 us | 12577.248 us | +29.6% |
-| Settings open | 11908.9 us | 14698.4 us | +23.4% |
-| 100 Settings switches average | 15870.044 us | 17133.879 us | +8.0% |
-| 50 navigation transitions average | 26306.978 us | 27308.570 us | +3.8% |
-| 10 tab cycles average | 46.0 ms | 50.8 ms | +10.4% |
-| Pamp report open | 124 ms | 155 ms | +25.0% |
-
-Регрессии не скрываются. Их совпадение с переходом на новое поколение
-Qt/Chromium позволяет предположить существенную engine cost, но тест не
-доказывает единственную причинность. Короткая idle CPU sample изменилась с
-10.03% до 3.71% машины с 12 logical CPUs; двухсекундное измерение слишком
-шумное для заявления об улучшении.
-
-DPI 100%, 125%, 150%, 175% и 200%: по 120/120 UI/focus cases и по 31 capture,
-без paint/assert/crash/layout-loop warnings. Проверены normal, maximized,
-fullscreen, collapsed/expanded Sidebar, ru/en/kk, narrow Settings, popup у края
-viewport и reduced-motion behavior.
-
-Live search checks: DuckDuckGo, Bing, Brave, Startpage, Yandex и Onion прошли.
-Google вернул внешний anti-bot challenge, Mojeek — внешний HTTP 403; эти ответы
-не маскируются как успех приложения.
-
-## 9. Portable Release
-
-Канонический артефакт:
-
-```text
-release\Granger Browser\GrangerBrowser.exe
-```
-
-| Параметр | Значение |
-| --- | --- |
-| Version | 0.4.0 |
-| Size | 9 510 400 bytes |
-| SHA-256 | `E25B441909A09074FA251D42C389CD29BAD4AF450F8DEA5EB4DD640D3F682DBD` |
-| ProductName | Granger Browser |
-| FileDescription | Granger Browser privacy browser |
-| OriginalFilename | GrangerBrowser.exe |
-| InternalName | GrangerBrowser |
-| Qt / Qt WebEngine | 6.11.1 / 6.11.1 |
-| Chromium | 140.0.7339.225 |
-
-Acceptance запускал копию package из пути с пробелами, с unrelated working
-directory, без Python в `PATH` и без IDE. После gate: paint warnings 0, orphan
-processes 0, legacy-named package entries 0, user-visible legacy text matches 0.
-Release содержит одну каноническую директорию `Granger Browser`; staging и
-previous directories отсутствуют.
-
-Основные screenshot evidence:
-
-- Home/collapsed: `output/granger-final-dpi/dpi-100/captures/01-normal.png`;
-- Sidebar expanded: `output/granger-final-dpi/dpi-150/captures/06-vertical-tabs-expanded.png`;
-- Download active/complete: `output/release acceptance/path with spaces/download-active.png` и `download-completed.png`;
-- Tor settings: `output/granger-final-screens/tor-settings.png`;
-- About: `output/granger-final-screens/about.png`;
-- DPI matrix: `output/granger-final-dpi/dpi-{100,125,150,175,200}/captures/`.
-
-## 10. Изменённые файлы и ограничения
-
-Основные владельцы изменений:
-
-- build/release: `CMakeLists.txt`, `scripts/build-release.ps1`,
-  `scripts/compile-release.ps1`, `scripts/package-release.ps1`,
-  `scripts/test-release.ps1`, `scripts/install-qt-6.11.1.ps1`;
-- brand/migration: `granger/main.cpp`, `granger/core/Brand.*`,
-  `granger/core/BrandMigration.*`, `granger/core/BrandSmokeTests.*`,
-  `granger/core/BrandMigrationSmokeTests.*`, `granger/core/AppPaths.*`,
-  `granger/settings/SettingsManager.*`;
-- Space lifecycle/UI: `granger/containers/ContainerManager.*`,
-  `granger/tabs/TabManager.*`, `granger/ui/MainWindow.*`,
-  `granger/ui/ContainerEditorDialog.*`, `granger/browser/InternalPages.*`;
-- engine compatibility/tests: `granger/browser/BrowserPage.cpp`,
-  `granger/features/FeatureSmokeTests.cpp`,
-  `granger/ui/UiFocusSmokeTests.cpp`;
-- resources/localization: `granger/resources/GrangerBrowser.rc`,
-  `granger/resources/resources.qrc`, `granger/resources/translations/*.json`,
-  `locales/*.json`;
-- documentation: `README.md`, `BUILDING.md`, `SECURITY.md`, `NOTICE.txt`,
-  `docs/SPACES_DOWNLOAD_REFERENCES.md` и этот отчёт.
-
-Честные ограничения финальной проверки:
-
-- production migration не запускалась; проверена fixture-копия и отдельный
-  test-profile;
-- полноценная перезагрузка Windows не выполнялась; clean process launch,
-  copied package, path with spaces и unrelated cwd использованы как близкий
-  reboot-style сценарий;
-- живой внешний Tor route в финальном screenshot не поднимался: изолированный
-  профиль честно показывает Direct / Not configured; config, strategy, bridge
-  parser, torrc verification и начало obfs4 bootstrap проверены отдельно;
-- Google anti-bot challenge и Mojeek 403 являются внешними ограничениями;
-- Qt proxy остаётся process-wide ограничением Qt WebEngine;
-- EXE не подписан цифровой подписью;
-- memory для 50 одновременно открытых вкладок не измерялась: измерены 10
-  вкладок и 50 navigation/switch transitions;
-- active-download workflow прошёл функционально, но отдельного before/after
-  CPU/memory benchmark для него нет;
-- DPI screenshots являются детерминированными test captures и не охватывают
-  каждую физическую комбинацию monitor/GPU/driver;
-- idle CPU измерялся только две секунды;
-- legacy source сохраняется после успешной миграции как rollback copy и не
-  удаляется автоматически.
-
-## 11. GitHub import и стабилизация Sidebar (промежуточная итерация)
-
-Числа и артефакты этой промежуточной итерации сохранены для истории. Итоговые
-результаты после дополнительной проверки физического letterboxing приведены в
-разделе 12 и заменяют значения `288 px`, `124/124` и ранние screenshot evidence
-ниже.
-
-### Репозиторий и границы этапа
-
-Текущее каноническое дерево опубликовано в приватном репозитории
-`https://github.com/zakhar-git/Granger-Browser.git`. Чистый исходный baseline
-зафиксирован в `main` коммитом `a011760`; работа выполнена в ветке
-`agent/sidebar-layout-stability`. В репозиторий не включены `build/`, `output/`,
-`release/`, Qt deployment, EXE/DLL/PDB, browser profiles, cookies, history,
-LocalStorage, session state, Tor runtime data, логи и crash dumps. Gitleaks 8.30.1
-не обнаружил секретов в публикуемом дереве; три совпадения в комментариях
-EasyList зафиксированы точными allowlist-правилами как проверенные false positive.
-
-Этап не обновляет Qt, Qt WebEngine, Chromium, Tor или lyrebird и не меняет
-SOCKS/DNS routing, bridges, HTTPS/TLS, blocker, container isolation либо privacy
-profiles. Release по-прежнему использует Qt/Qt WebEngine 6.11.1 и Chromium
-140.0.7339.225.
-
-### Причины и исправления
-
-**BottomNavigation.** Нижние действия находились в том же вертикальном layout,
-что и изменяющие высоту Spaces/Tabs. При скрытии `TabScrollArea` Qt заново
-распределял свободную высоту между соседями, поэтому системные строки визуально
-поднимались или растягивались. Sidebar разделён на расширяемый `SidebarTopArea`
-и фиксированный по вертикальной политике `BottomNavigation`. Нижний блок является
-непрокручиваемым sibling верхней области; collapse меняет только область вкладок,
-без absolute positioning, `move()`, таймеров и магических координат.
-
-**Rapid toggle.** Одного `m_expanded` было недостаточно для прерванной анимации:
-видимая ширина Sidebar и зарезервированная ширина content могли двигаться к
-разным целям, а зависимый Download UI обновлялся по номинальному timer delay.
-Повторный toggle останавливал текущий ход, но не имел единого владельца
-терминального состояния и сигнала фактического завершения геометрии.
-
-Теперь `SidebarTransitionState` явно различает `Closed`, `Opening`, `Open` и
-`Closing`. Один постоянный `QVariantAnimation` продолжает движение от текущих
-ширин, а длительность пропорциональна оставшемуся пути. Единственный
-`applySidebarGeometry()` одновременно задаёт ширину Sidebar и reserved space;
-один `finishSidebarTransition()` фиксирует конечные значения и отправляет
-`sidebarGeometrySettled`. Hover хранится явно и сбрасывается при hide/fullscreen.
-Download UI реагирует на реальное завершение, а не на отложенный таймер.
-
-**QWebEngineView viewport.** После изменения внешнего spacer вложенный layout и
-фиксированный privacy-letterbox viewport не всегда синхронно активировались для
-скрытой или только что выбранной вкладки. Chromium surface мог до следующего
-resize сохранять прежнюю ширину. `BrowserTab::synchronizeViewportGeometry()`
-останавливает отложенный letterbox update, применяет существующий privacy bucket,
-активирует layout и обновляет geometry. Метод вызывается после settle Sidebar,
-show и смены вкладки. Это не JavaScript resize и не CSS zoom. Диагностика хранит
-только прямоугольники и DPR, без URL: при 125% DPI раскрытое состояние имеет
-Sidebar/reserved `288/288` и viewport `1248x737`; компактное - `64/64` и
-`1472x737`, в обоих случаях `matchesExpected=true`.
-
-**Lowercase `g`.** Текст с прозрачной gradient-заливкой рисовался в строковом
-box с `line-height: 1.04` без нижнего paint space. Descender буквы `g` попадал за
-clip границу inline box. Заголовок получил `overflow: visible`, `line-height:
-1.08`, нижний padding `.16em` и компенсирующий margin. Размер и положение glyph
-не меняются по фазам анимации; исправление относится ко всей типографике, а не к
-отдельной букве.
-
-**UI polish.** Spaces и Tabs получили отдельные заголовки и компактные count
-badges; active Space/tab и текущая системная страница используют сдержанный
-фон/маркер; BottomNavigation отделена тонким separator и имеет одинаковые строки,
-иконки и интервалы. Существующие favicon, drag-and-drop и `AnimationPolicy`
-сохранены.
-
-### Коммиты и файлы
-
-| Commit | Назначение |
-| --- | --- |
-| `73ab58b` | закрепить независимую BottomNavigation |
-| `6c31399` | добавить обратимую state machine геометрии Sidebar |
-| `57185d4` | синхронизировать реальный WebEngine viewport |
-| `7fccc45` | устранить clipping descender заголовка |
-| `5b3daae` | улучшить визуальную иерархию Spaces/Tabs |
-| `01204bd` | добавить geometry, stress, DPI и idle regression coverage |
-| `ef4c15c` | убрать race загрузки локализованного Settings dropdown в smoke |
-
-Изменены только `granger/tabs/TabManager.*`, `granger/browser/BrowserTab.*`,
-`granger/browser/InternalPages.cpp`, `granger/ui/MainWindow.cpp`,
-`granger/ui/ThemeManager.cpp`, `granger/main.cpp`,
-`granger/features/FeatureSmokeTests.cpp` и `granger/ui/UiFocusSmokeTests.cpp`,
-а также документация и приведённые ниже test-capture.
-
-### Проверки
-
-- clean Qt 6.11.1 Release compile: успешно;
-- Feature smoke: 115/115;
-- UI/focus smoke: 124/124 два раза на независимых профилях;
-- Product: 123/123; Privacy: 142/142; Strategies: 8/8;
-- Bridges: 22/22; QR: 5/5; New tab: 15/15;
-- 20 reversals во время resize/tab switch и 50 немедленных toggles: успешно;
-- 15 tab switch/close без stale WebEngine objects: успешно;
-- idle 4 s: `LayoutRequest=0`, animation lifecycle events `=0`;
-- full packaged acceptance из unrelated working directory и пути с пробелами:
-  успешно за 232.2 s, paint warnings `0`, orphan processes `0`;
-- DPI 100%, 125%, 150%, 175%, 200%: в каждом прогоне 124/124, без overlap,
-  horizontal overflow, обрезания заголовка или popup за viewport;
-- Downloads, container DnD, bridge exact preservation, Tor config/strategy,
-  privacy, blocker и DevTools прошли существующие regression suites.
-
-### Screenshot evidence
-
-Раскрытый Sidebar при 100% DPI:
-
-![Sidebar expanded](screenshots/sidebar-layout-stability/sidebar-expanded.png)
-
-Компактный Sidebar с полностью видимым `g`:
-
-![Sidebar collapsed](screenshots/sidebar-layout-stability/sidebar-collapsed.png)
-
-Проверки 150% и 200% DPI:
-
-![Sidebar at 150 percent DPI](screenshots/sidebar-layout-stability/sidebar-150.png)
-
-![Sidebar at 200 percent DPI](screenshots/sidebar-layout-stability/sidebar-200.png)
-
-Ограничения: pixel evidence получен детерминированным Qt smoke harness на текущем
-Windows/GPU/driver; он не заменяет матрицу всех физических мониторов. Внешние
-поисковые ответы зависят от exit/network policy (Google anti-bot и Mojeek 403 уже
-задокументированы выше). EXE остаётся без цифровой подписи. Pull Request должен
-быть просмотрен и объединён владельцем вручную.
-
-## 12. Финальная приёмка физического letterboxing и Sidebar
-
-### Выбранная privacy-модель
-
-Физический Tor-letterboxing сохранён. `BrowserTab::updateLetterbox()`,
-стандартизация viewport и связанные privacy-механизмы не отключались. Внешняя
-страница не растягивается до всего content host: поля вокруг `QWebEngineView`
-являются ожидаемой частью защиты от fingerprinting и стандартизации размера
-viewport. Это не заявление об анонимности.
-
-Размер не задан одним `800x700`. Общая
-`FingerprintViewportPolicy::standardizedSize()` выбирает наибольшие ширину и
-высоту, помещающиеся в текущий host, по сетке `200x100` logical px. Для host
-меньше одного bucket используется доступный размер. Один владелец политики
-используется и runtime-кодом, и regression tests.
-
-### Воспроизведённые причины
-
-1. Динамические секции Sidebar участвовали в распределении лишней вертикальной
-   высоты, поэтому Tabs/Spaces и нижняя навигация могли визуально растягиваться.
-2. `setFixedSize(policyTarget)` у центрированного `QWebEngineView` передавал
-   minimum size вверх по layout и мог увеличивать главное окно вместо создания
-   внутренних полей.
-3. Expanded Sidebar имел ширину `288` logical px и отнимал у защищённого
-   viewport лишний bucket. Итоговая ширина уменьшена до `256` logical px;
-   compact rail остаётся `64` px.
-4. При раннем восстановлении вкладки WebEngine мог получить начальную геометрию
-   около `100x30`. После замены fixed size на один maximum size центрирующий
-   `QVBoxLayout` продолжал брать устаревший `sizeHint`, поэтому viewport не
-   восстанавливался сам. Это был layout-дефект, а не допустимый letterbox.
-
-### Исправление без ослабления privacy
-
-`LetterboxedWebView` сообщает layout явный preferred size, выбранный действующей
-policy. Minimum остаётся `0x0`, maximum равен policy target, а
-`Qt::AlignCenter` стабильно центрирует поверхность. Поэтому target может занять
-свой bucket, но не заставляет родительское окно расти. При отключении
-letterboxing preferred size очищается; при включении
-`synchronizeViewportGeometry()` повторно применяет policy после show, смены
-вкладки и завершения перехода Sidebar.
-
-Добавлен regression, который намеренно сжимает защищённый WebEngine viewport до
-`100x30`, затем проверяет восстановление до host-derived bucket и точное
-центрирование. Отдельные проверки запрещают один постоянный размер для hidden и
-expanded состояний и подтверждают кратность policy buckets.
-
-### Подтверждённая геометрия
-
-При logical content host `1536x737`/`1472x737`/`1280x737` получены:
-
-| Sidebar | Policy viewport | Поля L/R | Поля T/B |
-| --- | --- | --- | --- |
-| Hidden | `1400x700` | `68/68` | `18/19` |
-| Compact rail | `1400x700` | `36/36` | `18/19` |
-| Expanded | `1200x700` | `40/40` | `18/19` |
-
-На реальном packaged Release при системном масштабе 125%:
-
-| Sidebar | Physical host | Physical WebView | Поля L/R | Поля T/B |
-| --- | --- | --- | --- | --- |
-| Compact rail | `1840x921` | `1750x875` (`1400x700` logical) | `45/45` | `23/23` |
-| Expanded | `1600x921` | `1500x875` (`1200x700` logical) | `50/50` | `23/23` |
-
-После 20 быстрых переключений expanded geometry полностью совпала с исходной.
-Scrollbar находится у правой границы самого `QWebEngineView`, как и требуется.
-
-### Коммиты этапа
-
-| Commit | Назначение |
-| --- | --- |
-| `d5ed302` | не позволять динамическим секциям Sidebar растягиваться |
-| `1bff984` | стабилизировать policy letterboxing во всех состояниях Sidebar |
-| `51bdd93` | уменьшить expanded Sidebar и выровнять spacing |
-| `5ebf45f` | исключить рост окна из-за minimum size WebView |
-| `bf4012a` | добавить пропорциональные и viewport regression tests |
-| `4aeac26` | восстанавливать ранний маленький letterboxed viewport |
-
-Основные изменённые владельцы: `granger/browser/BrowserTab.cpp`,
-`granger/privacy/PrivacyTypes.*`, `granger/tabs/TabManager.*`,
-`granger/ui/DesignTokens.h` и `granger/ui/UiFocusSmokeTests.cpp`. Tor manager,
-SOCKS/DNS routing, bridges, blocker и privacy profiles в этом этапе не менялись.
-
-### Финальные проверки
-
-- clean Qt 6.11.1 Release build и package acceptance: успешно;
-- Product `123/123`, UI/focus `137/137`, Privacy `142/142`;
-- Feature `115/115`, Privacy visual `7/7`;
-- Bridges `22/22`, Strategies `8/8`, QR `5/5`, New tab `15/15`;
-- exact effective DPR `1.0`, `1.5` и `2.0`: по `137/137`, включая recovery
-  раннего viewport, без overlap и horizontal overflow;
-- paint warnings `0`, orphan browser/WebEngine processes `0`;
-- DuckDuckGo загрузил реальные результаты по адресу
-  `https://duckduckgo.com/?q=granger+browser&ia=web`;
-- Google вернул внешний anti-abuse challenge; он не выдан за успешную загрузку;
-- Release содержит только `Granger Browser` и `build-report.json`, без staging и
-  previous package directories.
-
-### Финальные screenshots
-
-Hidden, compact rail и expanded Sidebar:
-
-![Sidebar hidden](screenshots/sidebar-layout-stability/sidebar-hidden.png)
-
-![Sidebar compact rail](screenshots/sidebar-layout-stability/sidebar-rail.png)
-
-![Sidebar expanded](screenshots/sidebar-layout-stability/sidebar-expanded.png)
-
-Физический letterboxing hidden/rail/expanded и результат toggle stress:
-
-![Letterbox hidden](screenshots/sidebar-layout-stability/letterbox-hidden.png)
-
-![Letterbox rail](screenshots/sidebar-layout-stability/letterbox-rail.png)
-
-![Letterbox expanded](screenshots/sidebar-layout-stability/letterbox-expanded.png)
-
-![Letterbox toggle stress](screenshots/sidebar-layout-stability/letterbox-toggle-stress.png)
-
-Реальная DuckDuckGo-страница в compact и expanded состояниях:
-
-![DuckDuckGo compact rail](screenshots/sidebar-layout-stability/duckduckgo-rail.png)
-
-![DuckDuckGo expanded](screenshots/sidebar-layout-stability/duckduckgo-expanded.png)
-
-![DuckDuckGo after toggle stress](screenshots/sidebar-layout-stability/duckduckgo-after-toggle-stress.png)
-
-Exact effective DPI 100%, 150% и 200%:
-
-![Sidebar at 100 percent DPI](screenshots/sidebar-layout-stability/sidebar-100.png)
-
-![Sidebar at 150 percent DPI](screenshots/sidebar-layout-stability/sidebar-150.png)
-
-![Sidebar at 200 percent DPI](screenshots/sidebar-layout-stability/sidebar-200.png)
-
-### Канонический артефакт
-
-```text
-release\Granger Browser\GrangerBrowser.exe
-```
-
-- размер: `9 510 400` bytes;
-- SHA-256: `E25B441909A09074FA251D42C389CD29BAD4AF450F8DEA5EB4DD640D3F682DBD`;
-- `release/build-report.json`: `OK=true`, Python runtime artifacts `0`;
-- пользовательские каталоги не очищались и не мигрировались в рамках этой
-  приёмки; automated runs использовали изолированные data/settings roots.
-
-Остающиеся ограничения: Qt WebEngine сохраняет process-wide proxy model;
-pixel evidence относится к текущим Windows/GPU/driver; EXE не подписан цифровой
-подписью; сетевой ответ внешних сайтов зависит от exit и их anti-abuse policy.
+The gate includes product, new-tab/internal-route, navigation, feature, UI,
+privacy, privacy-diagnostics, bridge, QR, connection-strategy, branding,
+migration, DevTools, persistence, download, visual, stability, DPI, performance,
+and copied-package checks. Tor validates generated strategy configurations, and
+managed transport tests use the bundled executables rather than simulated
+success states.
+
+External search providers can return CAPTCHA, anti-abuse, or exit-specific
+responses. Such a response is recorded as external behavior and is not relabeled
+as a successful results page.
+
+## Known limitations
+
+- Qt WebEngine retains a process-wide proxy model.
+- Pixel captures are specific to the tested Windows, GPU, driver, and DPI stack.
+- External sites and Tor exits can change independently of the application.
+- The executable is not digitally signed and may show an unknown-publisher
+  warning.
+
+See `BUILDING.md`, `SECURITY.md`, `NOTICE.txt`,
+`docs/CROSS_DEVICE_PRIVACY_TESTING.md`, and
+`docs/FULL_PAMP_INTEGRATION_AUDIT.md` for the supporting procedures and
+limitations.
