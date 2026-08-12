@@ -4948,7 +4948,8 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
     record(QStringLiteral("Settings form geometry uses one responsive card inset"),
            generalSettingsHtml.contains(QStringLiteral("padding:2px var(--settings-card-inset) var(--settings-card-inset)"))
                && generalSettingsHtml.contains(QStringLiteral("calc(-1 * var(--settings-card-inset))"))
-               && generalSettingsHtml.contains(QStringLiteral("min-height:66px;padding:13px 0"))
+               && generalSettingsHtml.contains(QStringLiteral("--settings-row-min-height:66px"))
+               && generalSettingsHtml.contains(QStringLiteral("min-height:var(--settings-row-min-height);padding:13px 0"))
                && !generalSettingsHtml.contains(QStringLiteral("margin:18px -18px -18px")));
 
     granger::InternalPageContext connectionContext;
