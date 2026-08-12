@@ -2911,6 +2911,12 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 &&near(items[0].left,items[2].left)
                 &&near(items[1].left,items[3].left)
                 &&spread(items.map(rect=>rect.width))<=1;
+            const oneColumnGeometry=items=>items.length>0
+                &&spread(items.map(rect=>rect.left))<=1
+                &&spread(items.map(rect=>rect.width))<=1;
+            const verticallyOrdered=items=>items.length>0&&items.every((rect,index)=>
+                index===0||rect.top>items[index-1].top);
+            const stackedLayout=fieldRects.length>=2&&oneColumnGeometry(fieldRects);
             const panelStyle=getComputedStyle(document.querySelector('.settings-panel'));
             const columnGap=parseFloat(panelStyle.getPropertyValue('--settings-column-gap'));
             const cardInset=parseFloat(panelStyle.getPropertyValue('--settings-card-inset'));
@@ -2920,6 +2926,9 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             const categoryColumnGap=categoryRects.length>=2?categoryRects[1].left-categoryRects[0].right:-1;
             const bodyStyle=body?getComputedStyle(body):null;
             const footerStyle=footer?getComputedStyle(footer):null;
+            const controlGridStyle=controlGrid?getComputedStyle(controlGrid):null;
+            const categoryGridStyle=categoryGrid?getComputedStyle(categoryGrid):null;
+            const clearGridStyle=clearGrid?getComputedStyle(clearGrid):null;
             return {
                 modeOptions:settingsForm?.querySelectorAll('select[name="mode"] option').length||0,
                 selectedMode:settingsForm?.querySelector('select[name="mode"]')?.value||'',
@@ -2938,22 +2947,41 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                     &&!source.includes('file:///'),
                 noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1,
                 explicitCardStructure:!!body&&!!footer&&settingsForm?.lastElementChild===footer,
-                equalControlColumns:twoColumnGeometry(fieldRects),
+                stackedLayout,
+                equalControlColumns:stackedLayout
+                    ?oneColumnGeometry(fieldRects)&&verticallyOrdered(fieldRects)
+                    :twoColumnGeometry(fieldRects),
                 equalControlHeights:controls.length===4&&spread(controls.map(rect=>rect.height))<=1,
-                alignedControlRows:rowPairsAligned(controls)&&rowPairsAligned(labels),
-                equalCategoryColumns:categoryRects.length===6
-                    &&near(categoryRects[0].left,categoryRects[2].left)
-                    &&near(categoryRects[0].left,categoryRects[4].left)
-                    &&near(categoryRects[1].left,categoryRects[3].left)
-                    &&near(categoryRects[1].left,categoryRects[5].left)
-                    &&spread(categoryRects.map(rect=>rect.width))<=1,
-                alignedCategoryRows:rowPairsAligned(categoryRects)&&rowPairsAligned(clearRects),
-                sharedColumnStarts:fieldRects.length>=2&&categoryRects.length>=2&&clearRects.length>=2
-                    &&near(fieldRects[0].left,categoryRects[0].left)
-                    &&near(fieldRects[1].left,categoryRects[1].left)
-                    &&near(fieldRects[0].left,clearRects[0].left)
-                    &&near(fieldRects[1].left,clearRects[1].left),
-                canonicalColumnGap:near(fieldColumnGap,columnGap)&&near(categoryColumnGap,columnGap),
+                alignedControlRows:stackedLayout
+                    ?oneColumnGeometry(controls)&&verticallyOrdered(controls)
+                        &&spread(labels.map(rect=>rect.left))<=1&&verticallyOrdered(labels)
+                    :rowPairsAligned(controls)&&rowPairsAligned(labels),
+                equalCategoryColumns:stackedLayout
+                    ?categoryRects.length===6&&oneColumnGeometry(categoryRects)
+                    :categoryRects.length===6
+                        &&near(categoryRects[0].left,categoryRects[2].left)
+                        &&near(categoryRects[0].left,categoryRects[4].left)
+                        &&near(categoryRects[1].left,categoryRects[3].left)
+                        &&near(categoryRects[1].left,categoryRects[5].left)
+                        &&spread(categoryRects.map(rect=>rect.width))<=1,
+                alignedCategoryRows:stackedLayout
+                    ?verticallyOrdered(categoryRects)&&oneColumnGeometry(clearRects)
+                        &&verticallyOrdered(clearRects)
+                    :rowPairsAligned(categoryRects)&&rowPairsAligned(clearRects),
+                sharedColumnStarts:stackedLayout
+                    ?fieldRects.length>=1&&categoryRects.length>=1&&clearRects.length>=1
+                        &&near(fieldRects[0].left,categoryRects[0].left)
+                        &&near(fieldRects[0].left,clearRects[0].left)
+                    :fieldRects.length>=2&&categoryRects.length>=2&&clearRects.length>=2
+                        &&near(fieldRects[0].left,categoryRects[0].left)
+                        &&near(fieldRects[1].left,categoryRects[1].left)
+                        &&near(fieldRects[0].left,clearRects[0].left)
+                        &&near(fieldRects[1].left,clearRects[1].left),
+                canonicalColumnGap:!!controlGridStyle&&!!categoryGridStyle&&!!clearGridStyle
+                    &&near(parseFloat(controlGridStyle.columnGap),columnGap)
+                    &&near(parseFloat(categoryGridStyle.columnGap),columnGap)
+                    &&near(parseFloat(clearGridStyle.columnGap),columnGap)
+                    &&(stackedLayout||(near(fieldColumnGap,columnGap)&&near(categoryColumnGap,columnGap))),
                 canonicalBodyInset:!!bodyStyle&&near(parseFloat(bodyStyle.paddingLeft),cardInset)
                     &&near(parseFloat(bodyStyle.paddingRight),cardInset),
                 canonicalFooter:!!footerStyle&&near(parseFloat(footerStyle.paddingLeft),cardInset)
