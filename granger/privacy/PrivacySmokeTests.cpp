@@ -327,13 +327,24 @@ QVariantMap evaluateFingerprintSurfaces(PrivacyPolicyManager &manager,
           const speech = globalThis.speechSynthesis;
           if (speech && typeof speech.getVoices === 'function') {
             speech.addEventListener('voiceschanged', () => { voiceEvents += 1; });
-            const initialVoices = Array.from(speech.getVoices() || []);
-            await new Promise(resolve => setTimeout(resolve, 350));
-            const delayedVoices = Array.from(speech.getVoices() || []);
+            const voiceSnapshots = {};
+            const sampleVoices = key => {
+              const voices = Array.from(speech.getVoices() || []);
+              voiceSnapshots[key] = voices.length;
+              return voices;
+            };
+            const observedVoices = sampleVoices('initial');
+            await new Promise(resolve => setTimeout(resolve, 100));
+            observedVoices.push(...sampleVoices('after100ms'));
+            await new Promise(resolve => setTimeout(resolve, 900));
+            observedVoices.push(...sampleVoices('after1s'));
+            await new Promise(resolve => setTimeout(resolve, 4000));
+            observedVoices.push(...sampleVoices('after5s'));
             output.speechVoices = {
-              initial: initialVoices.length, delayed: delayedVoices.length,
+              ...voiceSnapshots,
               events: voiceEvents,
-              labelsExposed: delayedVoices.some(voice => !!(voice.name || voice.voiceURI || voice.lang))
+              labelsExposed: observedVoices.some(voice =>
+                !!(voice.name || voice.voiceURI || voice.lang))
             };
           } else output.speechVoices = { unsupported: true };
           let deviceEvents = 0;
@@ -830,6 +841,17 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
         letterboxTab.resize(1033, 777);
         letterboxTab.show();
         letterboxTab.setLetterboxingEnabled(true);
+        const QSize immediateExpected = FingerprintViewportPolicy::standardizedSize(
+            letterboxTab.contentsRect().size());
+        const QJsonObject immediateDiagnostics = letterboxTab.viewportDiagnostics();
+        results.record(QStringLiteral("Tor letterboxing settles before the first protected navigation"),
+                       immediateExpected.isValid()
+                           && letterboxTab.letterboxedViewportSize() == immediateExpected
+                           && letterboxTab.view()->size() == immediateExpected
+                           && immediateDiagnostics.value(QStringLiteral("matchesExpected")).toBool()
+                           && immediateDiagnostics.value(QStringLiteral("centered")).toBool(),
+                       QString::fromUtf8(QJsonDocument(immediateDiagnostics)
+                                             .toJson(QJsonDocument::Compact)));
         waitForUi(220);
         const QSize firstSize = letterboxTab.letterboxedViewportSize();
         const int firstAdjustments = letterboxTab.letterboxAdjustmentCount();
@@ -1117,7 +1139,9 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
         .value(QStringLiteral("speechVoices")).toMap();
     results.record(QStringLiteral("Tor exposes no installed speech voice inventory asynchronously"),
                    torSpeechVoices.value(QStringLiteral("initial")).toInt() == 0
-                       && torSpeechVoices.value(QStringLiteral("delayed")).toInt() == 0
+                       && torSpeechVoices.value(QStringLiteral("after100ms")).toInt() == 0
+                       && torSpeechVoices.value(QStringLiteral("after1s")).toInt() == 0
+                       && torSpeechVoices.value(QStringLiteral("after5s")).toInt() == 0
                        && torSpeechVoices.value(QStringLiteral("events")).toInt() == 0
                        && !torSpeechVoices.value(QStringLiteral("labelsExposed")).toBool(),
                    compact(QJsonObject::fromVariantMap(torSpeechVoices)));
@@ -1312,6 +1336,42 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                    sessionPermissions.decisionForScope(
                        scopedOrigin, scopedPermission, PrivacyProfileKind::Normal,
                        scopedScope) == PrivacyPermissionDecision::Ask);
+    const QString permissionScopeA = QStringLiteral("container:permission-space-a");
+    const QString permissionScopeB = QStringLiteral("container:permission-space-b");
+    const QStringList hardwarePermissionIds{
+        QStringLiteral("camera"), QStringLiteral("microphone"),
+        QStringLiteral("geolocation"), QStringLiteral("clipboard"),
+        QStringLiteral("notifications")
+    };
+    bool hardwarePermissionsScoped = true;
+    for (const QString &permissionId : hardwarePermissionIds) {
+        hardwarePermissionsScoped = hardwarePermissionsScoped
+            && sessionPermissions.setSessionDecision(
+                scopedOrigin, permissionId, PrivacyProfileKind::Normal,
+                PrivacyPermissionDecision::AllowSession, permissionScopeA);
+        const QString scopeAKey = QStringLiteral("normal|%1|%2|%3")
+                                      .arg(permissionScopeA,
+                                           canonicalPrivacyOrigin(scopedOrigin),
+                                           permissionId);
+        const QString scopeBKey = QStringLiteral("normal|%1|%2|%3")
+                                      .arg(permissionScopeB,
+                                           canonicalPrivacyOrigin(scopedOrigin),
+                                           permissionId);
+        hardwarePermissionsScoped = hardwarePermissionsScoped
+            && sessionPermissions.sessionDecisions().value(scopeAKey)
+                   == PrivacyPermissionDecision::AllowSession
+            && !sessionPermissions.sessionDecisions().contains(scopeBKey);
+    }
+    sessionPermissions.clearSessionDecisionsForScope(permissionScopeA);
+    bool hardwarePermissionsCleared = true;
+    const auto remainingSessionPermissions = sessionPermissions.sessionDecisions();
+    for (auto it = remainingSessionPermissions.constBegin();
+         it != remainingSessionPermissions.constEnd(); ++it) {
+        hardwarePermissionsCleared = hardwarePermissionsCleared
+            && !it.key().contains(QLatin1Char('|') + permissionScopeA + QLatin1Char('|'));
+    }
+    results.record(QStringLiteral("camera microphone location clipboard and notification grants stay inside one Space"),
+                   hardwarePermissionsScoped && hardwarePermissionsCleared);
     const bool sessionPermissionSaved = sessionPermissions.setSessionDecision(
         QUrl(QStringLiteral("https://session.example")), QStringLiteral("notifications"),
         PrivacyProfileKind::Private, PrivacyPermissionDecision::AllowSession);

@@ -91,6 +91,7 @@
 #include "granger/search/SearchManager.h"
 #include "granger/settings/SettingsManager.h"
 #include "granger/tor/ConnectionStrategy.h"
+#include "granger/tor/NetworkEnvironmentProbe.h"
 #include "granger/tor/TorManager.h"
 #include "granger/ui/MainWindow.h"
 #include "granger/ui/ConnectionUiState.h"
@@ -3020,10 +3021,29 @@ int runStrategyTestSuite(const QString &outputPath)
     results.append(testStrategy(QStringLiteral("external"), true, externalConfig));
     results.append(testStrategy(QStringLiteral("upstream-socks"), runtime.hasTor(), upstreamSocksConfig));
     results.append(testStrategy(QStringLiteral("upstream-http"), runtime.hasTor(), upstreamHttpConfig));
+
+    granger::ConnectionConfig loopConfig;
+    loopConfig.upstreamProxyUrl = QStringLiteral("socks5://localhost:19050");
+    loopConfig.externalTorSocksUrl = QStringLiteral("socks5://127.0.0.1:19050");
+    loopConfig.managedTorSocksEndpoint = QStringLiteral("127.0.0.1:19050");
+    loopConfig.managedTorControlEndpoint = QStringLiteral("127.0.0.1:19051");
+    QString upstreamLoopError;
+    QString externalLoopError;
+    std::unique_ptr<granger::ConnectionStrategy> upstreamLoop(
+        granger::createConnectionStrategy(QStringLiteral("upstream-socks")));
+    std::unique_ptr<granger::ConnectionStrategy> externalLoop(
+        granger::createConnectionStrategy(QStringLiteral("external")));
+    const bool upstreamLoopRejected =
+        !upstreamLoop->validateConfiguration(runtime, profiles, loopConfig, &upstreamLoopError)
+        && upstreamLoopError.contains(QStringLiteral("proxy loop"), Qt::CaseInsensitive);
+    const bool externalLoopRejected =
+        !externalLoop->validateConfiguration(runtime, profiles, loopConfig, &externalLoopError)
+        && externalLoopError.contains(QStringLiteral("proxy loop"), Qt::CaseInsensitive);
     bool ok = runtime.hasTor() && runtime.hasLyrebird();
     for (const QJsonValue &value : results) {
         ok = ok && value.toObject().value(QStringLiteral("passed")).toBool();
     }
+    ok = ok && upstreamLoopRejected && externalLoopRejected;
 
     QJsonObject root;
     root.insert(QStringLiteral("ok"), ok);
@@ -3033,11 +3053,190 @@ int runStrategyTestSuite(const QString &outputPath)
     root.insert(QStringLiteral("lyrebirdVersion"), runtime.lyrebirdVersion);
     root.insert(QStringLiteral("ptConfigPath"), runtime.ptConfigPath);
     root.insert(QStringLiteral("results"), results);
+    root.insert(QStringLiteral("upstreamLoopRejected"), upstreamLoopRejected);
+    root.insert(QStringLiteral("upstreamLoopError"), upstreamLoopError);
+    root.insert(QStringLiteral("externalLoopRejected"), externalLoopRejected);
+    root.insert(QStringLiteral("externalLoopError"), externalLoopError);
     QFile file(outputPath);
     QDir().mkpath(QFileInfo(outputPath).absolutePath());
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     }
+    return ok ? 0 : 1;
+}
+
+int runNetworkEnvironmentSmoke(const QString &outputPath, const QString &configuredUpstreamProxy)
+{
+    QJsonObject checks;
+
+    QTcpServer heldPort;
+    heldPort.setProxy(QNetworkProxy::NoProxy);
+    const bool portHeld = heldPort.listen(QHostAddress::LocalHost, 0);
+    const QString endpoint = portHeld
+        ? QStringLiteral("127.0.0.1:%1").arg(heldPort.serverPort()) : QString();
+    QString heldError;
+    const bool heldRejected = portHeld
+        && !granger::NetworkEnvironmentProbe::endpointAvailableForListen(endpoint, &heldError);
+    heldPort.close();
+    QString releasedError;
+    const bool releasedAccepted = portHeld
+        && granger::NetworkEnvironmentProbe::endpointAvailableForListen(endpoint, &releasedError);
+    checks.insert(QStringLiteral("managedPortConflictDetected"), heldRejected);
+    checks.insert(QStringLiteral("releasedManagedPortAccepted"), releasedAccepted);
+    checks.insert(QStringLiteral("portConflictReason"), heldError);
+
+    const QStringList managedEndpoints{
+        QStringLiteral("127.0.0.1:19050"), QStringLiteral("127.0.0.1:19051")
+    };
+    const bool socksLoopRejected = granger::NetworkEnvironmentProbe::proxyTargetsManagedEndpoint(
+        QStringLiteral("socks5://localhost:19050"), managedEndpoints);
+    const bool httpLoopRejected = granger::NetworkEnvironmentProbe::proxyTargetsManagedEndpoint(
+        QStringLiteral("http://127.0.0.1:19051"), managedEndpoints);
+    const bool unrelatedProxyAllowed = !granger::NetworkEnvironmentProbe::proxyTargetsManagedEndpoint(
+        QStringLiteral("socks5://127.0.0.1:1080"), managedEndpoints);
+    checks.insert(QStringLiteral("socksLoopRejected"), socksLoopRejected);
+    checks.insert(QStringLiteral("httpLoopRejected"), httpLoopRejected);
+    checks.insert(QStringLiteral("unrelatedProxyAllowed"), unrelatedProxyAllowed);
+
+    granger::NetworkEnvironmentSnapshot tunnelSnapshot;
+    tunnelSnapshot.tunnelInterfaceDetected = true;
+    tunnelSnapshot.defaultRouteThroughTunnel = true;
+    const granger::TorConflictDiagnosis tunnelDiagnosis =
+        granger::NetworkEnvironmentProbe::diagnoseTorFailure(
+            tunnelSnapshot,
+            QStringLiteral("Tor bootstrap timed out: Network is unreachable"),
+            35,
+            QStringLiteral("direct"));
+    const granger::TorConflictDiagnosis bridgeDiagnosis =
+        granger::NetworkEnvironmentProbe::diagnoseTorFailure(
+            tunnelSnapshot,
+            QStringLiteral("Tor bootstrap timed out: bridge handshake failures: bridge.example:443: DONE"),
+            12,
+            QStringLiteral("obfs4"));
+    const granger::TorConflictDiagnosis loopDiagnosis =
+        granger::NetworkEnvironmentProbe::diagnoseTorFailure(
+            granger::NetworkEnvironmentSnapshot(),
+            QStringLiteral("proxy loop: endpoint targets a managed Tor port"),
+            0,
+            QStringLiteral("upstream-socks"));
+    checks.insert(QStringLiteral("tunnelFailureClassified"),
+                  tunnelDiagnosis.probableConflict
+                      && tunnelDiagnosis.code == QStringLiteral("tunnel-route"));
+    checks.insert(QStringLiteral("bridgeFailureDoesNotBlameVpn"),
+                  !bridgeDiagnosis.probableConflict);
+    checks.insert(QStringLiteral("proxyLoopClassified"),
+                  loopDiagnosis.probableConflict
+                      && loopDiagnosis.code == QStringLiteral("proxy-loop"));
+    checks.insert(QStringLiteral("tunnelDiagnosis"), tunnelDiagnosis.toJson());
+    checks.insert(QStringLiteral("bridgeDiagnosis"), bridgeDiagnosis.toJson());
+    checks.insert(QStringLiteral("loopDiagnosis"), loopDiagnosis.toJson());
+
+    const granger::TorRuntime runtime = granger::TorBinaryResolver::resolve(QDir::currentPath());
+    QTcpServer managedSocksReservation;
+    QTcpServer managedControlReservation;
+    managedSocksReservation.setProxy(QNetworkProxy::NoProxy);
+    managedControlReservation.setProxy(QNetworkProxy::NoProxy);
+    const bool managedPortsReserved = managedSocksReservation.listen(QHostAddress::LocalHost, 0)
+        && managedControlReservation.listen(QHostAddress::LocalHost, 0);
+    const QString managedSocksEndpoint = managedPortsReserved
+        ? QStringLiteral("127.0.0.1:%1").arg(managedSocksReservation.serverPort()) : QString();
+    const QString managedControlEndpoint = managedPortsReserved
+        ? QStringLiteral("127.0.0.1:%1").arg(managedControlReservation.serverPort()) : QString();
+    managedControlReservation.close();
+
+    const QString integrationRoot = QDir(QFileInfo(outputPath).absolutePath())
+                                        .filePath(QStringLiteral("network-environment-managed-port"));
+    const QString dataDirectory = QDir(integrationRoot).filePath(QStringLiteral("data"));
+    const QString torrcPath = QDir(integrationRoot).filePath(QStringLiteral("torrc"));
+    QDir().mkpath(dataDirectory);
+    granger::TorrcBuilder conflictBuilder;
+    conflictBuilder.setRuntime(runtime);
+    conflictBuilder.setDataDirectory(dataDirectory);
+    conflictBuilder.setSocksEndpoint(managedSocksEndpoint);
+    conflictBuilder.setControlEndpoint(managedControlEndpoint);
+    granger::TorManager conflictManager;
+    QString managerError;
+    const bool managerApplyAccepted = runtime.hasTor() && managedPortsReserved
+        && conflictManager.applyBridgeConfig(torrcPath,
+                                             conflictBuilder.build(),
+                                             QStringLiteral("direct"),
+                                             managedSocksEndpoint,
+                                             runtime.torPath,
+                                             &managerError);
+    const granger::TorStatus managerStatus = conflictManager.status();
+    const granger::TorConflictDiagnosis managerDiagnosis =
+        granger::NetworkEnvironmentProbe::diagnoseTorFailure(
+            granger::NetworkEnvironmentSnapshot(), managerError,
+            managerStatus.bootstrapProgress, QStringLiteral("direct"));
+    checks.insert(QStringLiteral("managedTorRuntimeAvailable"), runtime.hasTor());
+    checks.insert(QStringLiteral("managedTorPortConflictRejected"),
+                  runtime.hasTor() && managedPortsReserved && !managerApplyAccepted
+                      && managerError.contains(QStringLiteral("managed Tor SOCKS endpoint unavailable"),
+                                               Qt::CaseInsensitive));
+    checks.insert(QStringLiteral("managedTorFailureIsReal"),
+                  managerStatus.bridgeState == QStringLiteral("Failed")
+                      && !managerStatus.torProcessRunning
+                      && !managerStatus.routeVerified
+                      && !managerStatus.bridgeEnabled);
+    checks.insert(QStringLiteral("managedTorFailureClassified"),
+                  managerDiagnosis.probableConflict
+                      && managerDiagnosis.code == QStringLiteral("managed-port-conflict"));
+    checks.insert(QStringLiteral("managedTorError"), managerError);
+    checks.insert(QStringLiteral("managedTorStatus"), QJsonObject{
+        {QStringLiteral("bridgeState"), managerStatus.bridgeState},
+        {QStringLiteral("bootstrapProgress"), managerStatus.bootstrapProgress},
+        {QStringLiteral("torProcessRunning"), managerStatus.torProcessRunning},
+        {QStringLiteral("routeVerified"), managerStatus.routeVerified},
+        {QStringLiteral("bridgeEnabled"), managerStatus.bridgeEnabled},
+        {QStringLiteral("torrcVerified"), managerStatus.torrcVerified}
+    });
+    checks.insert(QStringLiteral("managedTorDiagnosis"), managerDiagnosis.toJson());
+
+    const granger::NetworkEnvironmentSnapshot actual =
+        granger::NetworkEnvironmentProbe::capture(configuredUpstreamProxy);
+    const bool allProxyWasSet = qEnvironmentVariableIsSet("ALL_PROXY");
+    const QByteArray originalAllProxy = qgetenv("ALL_PROXY");
+    QTcpServer credentialProxyReservation;
+    credentialProxyReservation.setProxy(QNetworkProxy::NoProxy);
+    const bool credentialProxyHeld = credentialProxyReservation.listen(QHostAddress::LocalHost, 0);
+    const QByteArray credentialProxy = QStringLiteral(
+        "socks5://diagnostic-user:diagnostic-password@127.0.0.1:%1")
+                                           .arg(credentialProxyReservation.serverPort())
+                                           .toUtf8();
+    if (credentialProxyHeld) qputenv("ALL_PROXY", credentialProxy);
+    const granger::NetworkEnvironmentSnapshot redactionSnapshot =
+        granger::NetworkEnvironmentProbe::capture(configuredUpstreamProxy);
+    if (allProxyWasSet) qputenv("ALL_PROXY", originalAllProxy);
+    else qunsetenv("ALL_PROXY");
+    const QString serialized = QString::fromUtf8(QJsonDocument(QJsonObject{
+        {QStringLiteral("actual"), actual.toJson()},
+        {QStringLiteral("redactionProbe"), redactionSnapshot.toJson()}
+    }).toJson(QJsonDocument::Compact));
+    const bool credentialsRedacted = !QRegularExpression(
+        QStringLiteral(R"(://[^/@\s]+@)"), QRegularExpression::CaseInsensitiveOption)
+                                          .match(serialized).hasMatch()
+        && !serialized.contains(QStringLiteral("diagnostic-user"))
+        && !serialized.contains(QStringLiteral("diagnostic-password"));
+    checks.insert(QStringLiteral("diagnosticsExcludeProxyCredentials"), credentialsRedacted);
+    checks.insert(QStringLiteral("localEnvironmentProxyDetected"),
+                  credentialProxyHeld
+                      && redactionSnapshot.environmentProxyDetected
+                      && redactionSnapshot.localProxyDetected());
+
+    bool ok = true;
+    for (auto it = checks.constBegin(); it != checks.constEnd(); ++it) {
+        if (it.value().isBool()) ok = ok && it.value().toBool();
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("ok"), ok);
+    root.insert(QStringLiteral("actualEnvironment"), actual.toJson());
+    root.insert(QStringLiteral("checks"), checks);
+    root.insert(QStringLiteral("note"), QStringLiteral(
+        "Run this packaged command once per no-VPN, VPN/TUN, Xray system-proxy, and Xray TUN scenario. Detection alone never marks Tor connected and never enables direct fallback."));
+    QDir().mkpath(QFileInfo(outputPath).absolutePath());
+    QFile file(outputPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     return ok ? 0 : 1;
 }
 
@@ -3325,6 +3524,7 @@ int runExternalPrivacyAudit(QApplication &app,
     bool finished = false;
     bool torConfirmed = false;
     bool tlsMeasured = false;
+    bool firstDocumentPolicyConfirmed = false;
     bool corePolicyConfirmed = false;
     bool fontSurfaceReduced = false;
     bool dnsCompleted = false;
@@ -3332,6 +3532,7 @@ int runExternalPrivacyAudit(QApplication &app,
     bool dns6MainFrameCompleted = false;
     int browserLeaksPagesLoaded = 0;
     QJsonObject strictEvidence;
+    QJsonObject firstDocumentEvidence;
     QJsonObject tlsEvidence;
     QJsonObject torEvidence;
     QJsonObject dns4MainFrameEvidence;
@@ -3394,6 +3595,7 @@ int runExternalPrivacyAudit(QApplication &app,
             && contextVerified
             && torConfirmed
             && tlsMeasured
+            && firstDocumentPolicyConfirmed
             && corePolicyConfirmed
             && fontSurfaceReduced
             && dnsCompleted
@@ -3407,6 +3609,8 @@ int runExternalPrivacyAudit(QApplication &app,
         recordFailure(contextVerified, QStringLiteral("browsing-context"));
         recordFailure(torConfirmed, QStringLiteral("tor-check"));
         recordFailure(tlsMeasured, QStringLiteral("tls-ja3-ja4"));
+        recordFailure(firstDocumentPolicyConfirmed,
+                      QStringLiteral("first-document-fingerprint-policy"));
         recordFailure(corePolicyConfirmed, QStringLiteral("strict-policy"));
         recordFailure(fontSurfaceReduced, QStringLiteral("font-surface"));
         recordFailure(dnsCompleted, QStringLiteral("browserleaks-dns"));
@@ -3441,9 +3645,12 @@ int runExternalPrivacyAudit(QApplication &app,
             {QStringLiteral("torrcPath"), status.torrcPath},
             {QStringLiteral("torCheck"), torEvidence},
             {QStringLiteral("tls"), tlsEvidence},
+            {QStringLiteral("firstDocumentEvidence"), firstDocumentEvidence},
             {QStringLiteral("strictEvidence"), strictEvidence},
             {QStringLiteral("torConfirmed"), torConfirmed},
             {QStringLiteral("tlsMeasured"), tlsMeasured},
+            {QStringLiteral("firstDocumentPolicyConfirmed"),
+             firstDocumentPolicyConfirmed},
             {QStringLiteral("corePolicyConfirmed"), corePolicyConfirmed},
             {QStringLiteral("fontSurfaceReduced"), fontSurfaceReduced},
             {QStringLiteral("dnsCompleted"), dnsCompleted},
@@ -3554,7 +3761,52 @@ int runExternalPrivacyAudit(QApplication &app,
                 torEvidence = body;
                 torConfirmed = body.value(QStringLiteral("IsTor")).toBool(false)
                     && !body.value(QStringLiteral("IP")).toString().isEmpty();
-                item.insert(QStringLiteral("evidenceAccepted"), torConfirmed);
+                const QJsonObject viewport = probe.value(QStringLiteral("viewport")).toObject();
+                const QJsonObject screen = probe.value(QStringLiteral("screen")).toObject();
+                const QSize viewportSize(
+                    viewport.value(QStringLiteral("innerWidth")).toInt(),
+                    viewport.value(QStringLiteral("innerHeight")).toInt());
+                const QList<QSize> screenBuckets{
+                    QSize(1366, 768), QSize(1920, 1080),
+                    QSize(2560, 1440), QSize(3840, 2160)
+                };
+                QSize expectedScreen = screenBuckets.constLast();
+                for (const QSize &bucket : screenBuckets) {
+                    if (bucket.width() >= viewportSize.width()
+                        && bucket.height() >= viewportSize.height()) {
+                        expectedScreen = bucket;
+                        break;
+                    }
+                }
+                const QSize reportedScreen(
+                    screen.value(QStringLiteral("width")).toInt(),
+                    screen.value(QStringLiteral("height")).toInt());
+                const bool viewportBucketed = viewportSize.isValid()
+                    && viewportSize.width() % granger::FingerprintViewportPolicy::widthBucket == 0
+                    && viewportSize.height() % granger::FingerprintViewportPolicy::heightBucket == 0;
+                firstDocumentPolicyConfirmed = hostMatches && !currentLoadTimedOut
+                    && viewportBucketed
+                    && reportedScreen == expectedScreen
+                    && screen.value(QStringLiteral("availWidth")).toInt() == expectedScreen.width()
+                    && screen.value(QStringLiteral("availHeight")).toInt() == expectedScreen.height() - 40
+                    && viewport.value(QStringLiteral("outerWidth")).toInt() == expectedScreen.width()
+                    && viewport.value(QStringLiteral("outerHeight")).toInt() == expectedScreen.height()
+                    && qFuzzyCompare(viewport.value(
+                                         QStringLiteral("devicePixelRatio")).toDouble(), 1.0);
+                firstDocumentEvidence = QJsonObject{
+                    {QStringLiteral("confirmed"), firstDocumentPolicyConfirmed},
+                    {QStringLiteral("viewport"), viewport},
+                    {QStringLiteral("screen"), screen},
+                    {QStringLiteral("expectedScreen"), QJsonObject{
+                        {QStringLiteral("width"), expectedScreen.width()},
+                        {QStringLiteral("height"), expectedScreen.height()}
+                    }},
+                    {QStringLiteral("viewportBucketed"), viewportBucketed}
+                };
+                item.insert(QStringLiteral("firstDocumentPolicyConfirmed"),
+                            firstDocumentPolicyConfirmed);
+                item.insert(QStringLiteral("evidenceAccepted"),
+                            torConfirmed && firstDocumentPolicyConfirmed);
             } else if (stage.id == QStringLiteral("tls")) {
                 tlsEvidence = QJsonDocument::fromJson(bodyText.trimmed().toUtf8()).object();
                 tlsMeasured = !tlsEvidence.value(QStringLiteral("ja3_hash")).toString().isEmpty()
@@ -3986,9 +4238,8 @@ int runManagedModeSmoke(QApplication &app,
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             file.write(QJsonDocument(result).toJson(QJsonDocument::Indented));
+            file.close();
         }
-        delete window;
-        delete theme;
         if (!bridgeLine.trimmed().isEmpty()) {
             if (profilesExisted) {
                 QFile profilesFile(profilesPath);
@@ -4003,7 +4254,18 @@ int runManagedModeSmoke(QApplication &app,
         settings->setExternalTorSocksUrl(oldExternal);
         settings->setUpstreamProxy(oldUpstreamUrl, oldUpstreamUsername, oldUpstreamPassword);
         settings->setProxy(oldProxyUrl, oldProxyEnabled);
-        app.exit(ok ? 0 : 1);
+        QObject::disconnect(poll, nullptr, &app, nullptr);
+        QObject::disconnect(timeout, nullptr, &app, nullptr);
+        poll->deleteLater();
+        timeout->deleteLater();
+        auto *closingWindow = window;
+        window = nullptr;
+        auto *closingTheme = theme;
+        theme = nullptr;
+        closingWindow->close();
+        closingWindow->deleteLater();
+        closingTheme->deleteLater();
+        QTimer::singleShot(100, &app, [&app, ok] { app.exit(ok ? 0 : 1); });
     };
     QTimer::singleShot(250, &app, [&] {
         if (finished || !window) return;
@@ -4683,6 +4945,37 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
                && generalSettingsHtml.contains(QStringLiteral("scrollbar-gutter:stable"))
                && generalSettingsHtml.contains(QStringLiteral("@media(max-width:760px)"))
                && !generalSettingsHtml.contains(QStringLiteral("__SCROLLBAR_SIZE__")));
+    record(QStringLiteral("Settings form geometry uses one responsive card inset"),
+           generalSettingsHtml.contains(QStringLiteral("padding:2px var(--settings-card-inset) var(--settings-card-inset)"))
+               && generalSettingsHtml.contains(QStringLiteral("calc(-1 * var(--settings-card-inset))"))
+               && generalSettingsHtml.contains(QStringLiteral("min-height:66px;padding:13px 0"))
+               && !generalSettingsHtml.contains(QStringLiteral("margin:18px -18px -18px")));
+
+    granger::InternalPageContext connectionContext;
+    connectionContext.settingsCategory = QStringLiteral("connection");
+    connectionContext.torConflictWarning = true;
+    connectionContext.torConflictCode = QStringLiteral("tunnel-route");
+    connectionContext.torConflictSummary = QStringLiteral("probable tunnel conflict");
+    connectionContext.torRecommendedAction = QStringLiteral("inspect split-tunnel rules");
+    connectionContext.upstreamProxyUrl = QStringLiteral("socks5://127.0.0.1:1080");
+    connectionContext.upstreamProxyUsername = QStringLiteral("saved-user");
+    const QString connectionSettingsHtml = granger::InternalPages::settings(connectionContext);
+    record(QStringLiteral("Tor conflict UI is evidence-gated, fail-closed, and exposes real upstream settings"),
+           connectionSettingsHtml.contains(QStringLiteral("role=\"alert\" data-conflict-code=\"tunnel-route\""))
+               && connectionSettingsHtml.contains(QStringLiteral("probable tunnel conflict"))
+               && connectionSettingsHtml.contains(QStringLiteral("/__action/connection/apply?mode=automatic"))
+               && connectionSettingsHtml.contains(QStringLiteral("/__action/open?page=about:network"))
+               && connectionSettingsHtml.contains(QStringLiteral("/__action/connection/save-upstream"))
+               && connectionSettingsHtml.contains(QStringLiteral("socks5://127.0.0.1:1080"))
+               && connectionSettingsHtml.contains(QStringLiteral("name=\"password\" value=\"\""))
+               && connectionSettingsHtml.contains(
+                   granger::Localization::text(QStringLiteral("tor.conflict.fail_closed"))));
+    const QString networkDiagnosticsHtml = granger::InternalPages::network(connectionContext);
+    record(QStringLiteral("Network diagnostics show the probable conflict without exposing proxy credentials"),
+           networkDiagnosticsHtml.contains(QStringLiteral("data-conflict-code=\"tunnel-route\""))
+               && networkDiagnosticsHtml.contains(
+                   granger::Localization::text(QStringLiteral("tor.diagnostics.last_error")))
+               && !networkDiagnosticsHtml.contains(QStringLiteral("password=")));
 
     granger::InternalPageContext searchSettingsContext;
     searchSettingsContext.settingsCategory = QStringLiteral("search");
@@ -5420,6 +5713,12 @@ int main(int argc, char *argv[])
     if (arguments.contains(QStringLiteral("--smoke-strategy-tests"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
         return runStrategyTestSuite(smokeOutput.isEmpty() ? QStringLiteral("output/strategy-tests.json") : smokeOutput);
+    }
+    if (arguments.contains(QStringLiteral("--smoke-network-environment"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return runNetworkEnvironmentSmoke(
+            smokeOutput.isEmpty() ? QStringLiteral("output/network-environment-smoke.json") : smokeOutput,
+            argumentValue(arguments, QStringLiteral("--smoke-upstream-url=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-browser-route"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

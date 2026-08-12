@@ -129,6 +129,7 @@ userAgentProfile=default
     $newTabResult = Join-Path $testRoot "new-tab-tests.json"
     $browserResult = Join-Path $testRoot "browser-smoke.json"
     $strategyResult = Join-Path $testRoot "strategy-tests.json"
+    $networkEnvironmentResult = Join-Path $testRoot "network-environment-smoke.json"
     $downloadResult = Join-Path $testRoot "download-smoke.json"
     $navigationResult = Join-Path $testRoot "navigation-error-tests.json"
     $bridgeResult = Join-Path $testRoot "bridge-tests.json"
@@ -263,6 +264,7 @@ userAgentProfile=default
     Invoke-GrangerBrowser @("--smoke-qr-import-flow", "--smoke-output=$qrFlowResult", "--smoke-qr-image=$releaseQrFixture")
     Invoke-GrangerBrowser @("--smoke-bridge-persistence", "--smoke-output=$bridgePersistenceResult")
     Invoke-GrangerBrowser @("--smoke-strategy-tests", "--smoke-output=$strategyResult")
+    Invoke-GrangerBrowser @("--smoke-network-environment", "--smoke-output=$networkEnvironmentResult")
     try {
         $env:GRANGER_DATA_ROOT = Join-Path $testRoot "performance data"
         $env:GRANGER_SETTINGS_ROOT = Join-Path $testRoot "performance settings"
@@ -606,6 +608,7 @@ userAgentProfile=default
     $newTab = Get-Content -Raw -Encoding UTF8 -LiteralPath $newTabResult | ConvertFrom-Json
     $browser = Get-Content -Raw -Encoding UTF8 -LiteralPath $browserResult | ConvertFrom-Json
     $strategy = Get-Content -Raw -Encoding UTF8 -LiteralPath $strategyResult | ConvertFrom-Json
+    $networkEnvironment = Get-Content -Raw -Encoding UTF8 -LiteralPath $networkEnvironmentResult | ConvertFrom-Json
     $download = Get-Content -Raw -Encoding UTF8 -LiteralPath $downloadResult | ConvertFrom-Json
     $navigation = Get-Content -Raw -Encoding UTF8 -LiteralPath $navigationResult | ConvertFrom-Json
     $bridge = Get-Content -Raw -Encoding UTF8 -LiteralPath $bridgeResult | ConvertFrom-Json
@@ -638,7 +641,7 @@ userAgentProfile=default
     $wipePreserveVerify = Get-Content -Raw -Encoding UTF8 -LiteralPath $wipePreserveVerifyResult | ConvertFrom-Json
     $wipeDeletePrepare = Get-Content -Raw -Encoding UTF8 -LiteralPath $wipeDeletePrepareResult | ConvertFrom-Json
     $wipeDeleteVerify = Get-Content -Raw -Encoding UTF8 -LiteralPath $wipeDeleteVerifyResult | ConvertFrom-Json
-    if (-not $product.ok -or -not $newTab.ok -or -not $browser.ok -or -not $strategy.ok -or -not $download.ok -or -not $download.sourcePageClosed -or
+    if (-not $product.ok -or -not $newTab.ok -or -not $browser.ok -or -not $strategy.ok -or -not $networkEnvironment.ok -or -not $download.ok -or -not $download.sourcePageClosed -or
         -not $navigation.ok -or -not $bridge.ok -or -not $bridgePersistence.ok -or -not $qr.ok -or -not $qrFlow.ok -or -not $performance.ok -or -not $containerPerformance.ok -or
         -not $uiFocus.ok -or -not $developerTools.ok -or -not $contentPersistence.ok -or -not $contentFilterUpdate.ok -or
         -not $privacy.ok -or -not $privacyDiagnostics.ok -or -not $privacyCorruptStore.ok -or
@@ -713,6 +716,7 @@ userAgentProfile=default
         ProfileState = $profileResult
         WebEngineSmoke = $browserResult
         StrategyTests = $strategyResult
+        NetworkEnvironmentSmoke = $networkEnvironmentResult
         NavigationErrorTests = $navigationResult
         BridgeTests = $bridgeResult
         BridgePersistence = $bridgePersistenceResult

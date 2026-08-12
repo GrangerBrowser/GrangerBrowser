@@ -2737,6 +2737,18 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                     .filter(visible).map(element=>element.getBoundingClientRect());
                 const surfaceStyles=surfaces.map(element=>getComputedStyle(element));
                 const spread=values=>values.length<2?0:Math.max(...values)-Math.min(...values);
+                const expectedInset=parseFloat(getComputedStyle(panel).getPropertyValue('--settings-card-inset'));
+                const nearly=(value,expected,tolerance=1)=>Math.abs(value-expected)<=tolerance;
+                const geometryAligned=surfaces.every(surface=>{
+                    const style=getComputedStyle(surface);
+                    if(surface.matches('form')&&!nearly(parseFloat(style.paddingLeft),expectedInset))return false;
+                    const header=surface.querySelector(':scope>.settings-surface-header,:scope>h3');
+                    if(header&&!nearly(parseFloat(getComputedStyle(header).paddingLeft),expectedInset))return false;
+                    const footers=[...surface.querySelectorAll(':scope>.settings-surface-footer,:scope>form>.settings-surface-footer')];
+                    if(!footers.every(footer=>nearly(parseFloat(getComputedStyle(footer).paddingLeft),expectedInset)))return false;
+                    const rows=[...surface.querySelectorAll('.setting-row')];
+                    return rows.every(row=>nearly(parseFloat(getComputedStyle(row).paddingLeft),0));
+                });
                 return {
                     present:true,
                     surfaceCount:surfaces.length,
@@ -2749,6 +2761,8 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                         &&parseFloat(style.borderTopWidth)>0
                         &&parseFloat(style.borderRadius)>0
                         &&style.backgroundColor!==getComputedStyle(document.body).backgroundColor),
+                    expectedInset,
+                    geometryAligned,
                     noLooseSectionHeadings:[...panel.children]
                         .filter(element=>element.tagName==='H3').length===0,
                     noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1,
@@ -2767,12 +2781,23 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             && geometry.value(QStringLiteral("controlColumnSpread")).toDouble() <= 1.0
             && geometry.value(QStringLiteral("controlHeightSpread")).toDouble() <= 2.0
             && geometry.value(QStringLiteral("cardsStyled")).toBool()
+            && geometry.value(QStringLiteral("expectedInset")).toDouble() >= 14.0
+            && geometry.value(QStringLiteral("geometryAligned")).toBool()
             && geometry.value(QStringLiteral("noLooseSectionHeadings")).toBool()
             && geometry.value(QStringLiteral("noHorizontalOverflow")).toBool()
             && geometry.value(QStringLiteral("controlsInside")).toBool();
         evaluate(tab ? tab->page() : nullptr, QStringLiteral("window.scrollTo(0,0)"));
         settle(140);
         capture(captureKey, captureName, window);
+        if (categoryId == QStringLiteral("connection")) {
+            evaluate(tab ? tab->page() : nullptr,
+                     QStringLiteral("window.scrollTo(0,document.documentElement.scrollHeight)"));
+            settle(180);
+            capture(QStringLiteral("settingsConnectionProxy"),
+                    QStringLiteral("07p2-settings-connection-proxy.png"), window);
+            evaluate(tab ? tab->page() : nullptr, QStringLiteral("window.scrollTo(0,0)"));
+            settle(80);
+        }
         return passed;
     };
     const bool connectionLayoutNormalized = verifyNormalizedSettingsCategory(
