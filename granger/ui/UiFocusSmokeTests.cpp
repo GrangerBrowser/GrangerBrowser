@@ -43,6 +43,7 @@
 #include <QNetworkCookie>
 #include <QPainter>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -1314,6 +1315,43 @@ int runUiFocusSmoke(QApplication &app,
         && newTabButton->property("expanded").toBool()
         && newTabButton->toolButtonStyle() == Qt::ToolButtonTextBesideIcon
         && !newTabButton->accessibleName().isEmpty();
+    QMenu *createMenu = newTabButton ? newTabButton->menu() : nullptr;
+    int maximumCreateMenuAnimations = 0;
+    if (createMenu && newTabButton) {
+        const QPoint popupPosition = newTabButton->mapToGlobal(
+            QPoint(newTabButton->width(), newTabButton->height() / 2));
+        for (int i = 0; i < 20; ++i) {
+            createMenu->popup(popupPosition);
+            settle(5);
+            int opacityAnimations = 0;
+            for (QPropertyAnimation *animation : createMenu->findChildren<QPropertyAnimation *>()) {
+                if (animation && animation->propertyName() == QByteArrayLiteral("windowOpacity")) {
+                    ++opacityAnimations;
+                }
+            }
+            maximumCreateMenuAnimations = qMax(maximumCreateMenuAnimations, opacityAnimations);
+            createMenu->close();
+            settle(5);
+        }
+        settle(AnimationPolicy::duration(AnimationKind::Popup) + 20);
+    }
+    int runningCreateMenuAnimations = 0;
+    if (createMenu) {
+        for (QPropertyAnimation *animation : createMenu->findChildren<QPropertyAnimation *>()) {
+            if (animation && animation->propertyName() == QByteArrayLiteral("windowOpacity")
+                && animation->state() == QAbstractAnimation::Running) {
+                ++runningCreateMenuAnimations;
+            }
+        }
+    }
+    results.record(QStringLiteral("rapid Create menu reversal reuses and settles one popup animation"),
+                   createMenu && maximumCreateMenuAnimations == (AnimationPolicy::reducedMotion() ? 0 : 1)
+                       && runningCreateMenuAnimations == 0 && !createMenu->isVisible()
+                       && qAbs(createMenu->windowOpacity() - 1.0) < 0.001,
+                   QStringLiteral("max=%1 running=%2 opacity=%3")
+                       .arg(maximumCreateMenuAnimations)
+                       .arg(runningCreateMenuAnimations)
+                       .arg(createMenu ? createMenu->windowOpacity() : -1.0));
     const bool tabsHeaderPresentationValid = tabsHeader
         && tabsHeader->height() == DesignTokens::sidebarTabsHeaderHeight
         && tabsHeader->property("expanded").toBool();
@@ -2625,14 +2663,27 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                     responsiveTab ? responsiveTab->page() : nullptr,
                     QStringLiteral(R"JS((()=>{
                     const visible=element=>{const r=element.getBoundingClientRect();return r.width>0&&r.height>0};
+                    const panel=document.querySelector('.settings-panel');
                     const controls=[...document.querySelectorAll('.settings-nav a,input:not(.ds-native-select),textarea,.ds-select-trigger,button,a.button')].filter(visible);
                     const selects=[...document.querySelectorAll('.settings-shell select')];
+                    const surfaces=panel?[...panel.querySelectorAll(
+                        ':scope>form,:scope>.settings-surface,:scope>.info-list,:scope>.settings-detail,:scope>.reports-page>form,:scope>.reports-page>.section')]
+                        .filter(visible):[];
+                    const surfaceRects=surfaces.map(surface=>surface.getBoundingClientRect());
+                    const controlStarts=panel?[...panel.querySelectorAll('.setting-row .control')]
+                        .filter(visible).map(control=>Math.round(control.getBoundingClientRect().left)):[];
+                    const spread=values=>values.length<2?0:Math.max(...values)-Math.min(...values);
+                    const panelRect=panel?.getBoundingClientRect();
                     return {
                         noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1,
                         controlsInside:controls.every(element=>{const r=element.getBoundingClientRect();return r.left>=-1&&r.right<=innerWidth+1}),
                         textContained:controls.filter(element=>element.matches('button,a.button')).every(element=>element.scrollWidth<=element.clientWidth+1),
                         selectsEnhanced:selects.every(select=>select.dataset.dsEnhanced==='true'&&!!select.closest('.ds-select')),
-                        panelPresent:!!document.querySelector('.settings-panel'),
+                        panelPresent:!!panel,
+                        surfacesAligned:spread(surfaceRects.map(rect=>Math.round(rect.left)))<=1
+                            &&spread(surfaceRects.map(rect=>Math.round(rect.width)))<=1,
+                        surfacesInside:!panelRect||surfaceRects.every(rect=>rect.left>=panelRect.left-1&&rect.right<=panelRect.right+1),
+                        controlColumnAligned:spread(controlStarts)<=1,
                         viewportWidth:innerWidth
                     };
                 })())JS"), QWebEngineScript::MainWorld, 5000).toMap();
@@ -2647,7 +2698,10 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 && layout.value(QStringLiteral("controlsInside")).toBool()
                 && layout.value(QStringLiteral("textContained")).toBool()
                 && layout.value(QStringLiteral("selectsEnhanced")).toBool()
-                && layout.value(QStringLiteral("panelPresent")).toBool();
+                && layout.value(QStringLiteral("panelPresent")).toBool()
+                && layout.value(QStringLiteral("surfacesAligned")).toBool()
+                && layout.value(QStringLiteral("surfacesInside")).toBool()
+                && layout.value(QStringLiteral("controlColumnAligned")).toBool();
             settingsResponsive = settingsResponsive && layoutPassed;
             QJsonObject item = QJsonObject::fromVariantMap(layout);
             item.insert(QStringLiteral("categoryReady"), categoryReady);
@@ -2833,6 +2887,39 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             const temporary=[...document.querySelectorAll('a[href*="/__action/logs/temporary?"]')];
             const exports=[...document.querySelectorAll('a[href*="/__action/logs/export?"]')];
             const source=document.documentElement.outerHTML;
+            const body=settingsForm?.querySelector('.reports-settings-body');
+            const controlGrid=settingsForm?.querySelector('.reports-control-grid');
+            const categoryGrid=settingsForm?.querySelector('.reports-category-group .reports-check-grid');
+            const clearGrid=settingsForm?.querySelector('.reports-clear-grid');
+            const footer=settingsForm?.querySelector('.reports-settings-footer');
+            const fields=[...controlGrid?.children||[]];
+            const categoryRows=[...categoryGrid?.children||[]];
+            const clearRows=[...clearGrid?.children||[]];
+            const rects=elements=>elements.map(element=>element.getBoundingClientRect());
+            const fieldRects=rects(fields);
+            const categoryRects=rects(categoryRows);
+            const clearRects=rects(clearRows);
+            const controls=fields.map(field=>field.querySelector('.ds-select-trigger,input'))
+                .filter(Boolean).map(control=>control.getBoundingClientRect());
+            const labels=fields.map(field=>field.querySelector(':scope>span'))
+                .filter(Boolean).map(label=>label.getBoundingClientRect());
+            const spread=values=>values.length<2?0:Math.max(...values)-Math.min(...values);
+            const near=(a,b,tolerance=1)=>Math.abs(a-b)<=tolerance;
+            const rowPairsAligned=items=>items.length>0&&items.every((rect,index)=>
+                index%2===0||near(rect.top,items[index-1].top));
+            const twoColumnGeometry=items=>items.length>=4
+                &&near(items[0].left,items[2].left)
+                &&near(items[1].left,items[3].left)
+                &&spread(items.map(rect=>rect.width))<=1;
+            const panelStyle=getComputedStyle(document.querySelector('.settings-panel'));
+            const columnGap=parseFloat(panelStyle.getPropertyValue('--settings-column-gap'));
+            const cardInset=parseFloat(panelStyle.getPropertyValue('--settings-card-inset'));
+            const controlHeight=parseFloat(panelStyle.getPropertyValue('--ds-control-height'));
+            const footerPadding=parseFloat(panelStyle.getPropertyValue('--settings-footer-padding-y'));
+            const fieldColumnGap=fieldRects.length>=2?fieldRects[1].left-fieldRects[0].right:-1;
+            const categoryColumnGap=categoryRects.length>=2?categoryRects[1].left-categoryRects[0].right:-1;
+            const bodyStyle=body?getComputedStyle(body):null;
+            const footerStyle=footer?getComputedStyle(footer):null;
             return {
                 modeOptions:settingsForm?.querySelectorAll('select[name="mode"] option').length||0,
                 selectedMode:settingsForm?.querySelector('select[name="mode"]')?.value||'',
@@ -2849,7 +2936,46 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 noAbsolutePaths:!source.includes('C:\\\\Users\\\\')
                     &&!source.includes('GRANGER_DATA_ROOT')
                     &&!source.includes('file:///'),
-                noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1
+                noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1,
+                explicitCardStructure:!!body&&!!footer&&settingsForm?.lastElementChild===footer,
+                equalControlColumns:twoColumnGeometry(fieldRects),
+                equalControlHeights:controls.length===4&&spread(controls.map(rect=>rect.height))<=1,
+                alignedControlRows:rowPairsAligned(controls)&&rowPairsAligned(labels),
+                equalCategoryColumns:categoryRects.length===6
+                    &&near(categoryRects[0].left,categoryRects[2].left)
+                    &&near(categoryRects[0].left,categoryRects[4].left)
+                    &&near(categoryRects[1].left,categoryRects[3].left)
+                    &&near(categoryRects[1].left,categoryRects[5].left)
+                    &&spread(categoryRects.map(rect=>rect.width))<=1,
+                alignedCategoryRows:rowPairsAligned(categoryRects)&&rowPairsAligned(clearRects),
+                sharedColumnStarts:fieldRects.length>=2&&categoryRects.length>=2&&clearRects.length>=2
+                    &&near(fieldRects[0].left,categoryRects[0].left)
+                    &&near(fieldRects[1].left,categoryRects[1].left)
+                    &&near(fieldRects[0].left,clearRects[0].left)
+                    &&near(fieldRects[1].left,clearRects[1].left),
+                canonicalColumnGap:near(fieldColumnGap,columnGap)&&near(categoryColumnGap,columnGap),
+                canonicalBodyInset:!!bodyStyle&&near(parseFloat(bodyStyle.paddingLeft),cardInset)
+                    &&near(parseFloat(bodyStyle.paddingRight),cardInset),
+                canonicalFooter:!!footerStyle&&near(parseFloat(footerStyle.paddingLeft),cardInset)
+                    &&near(parseFloat(footerStyle.paddingRight),cardInset)
+                    &&near(parseFloat(footerStyle.paddingTop),footerPadding)
+                    &&near(parseFloat(footerStyle.paddingBottom),footerPadding)
+                    &&parseFloat(footerStyle.borderTopWidth)>0,
+                saveButtonHeight:near(footer?.querySelector('button')?.getBoundingClientRect().height||0,controlHeight),
+                fieldColumnGap,
+                categoryColumnGap,
+                columnGap,
+                cardInset,
+                controlHeight,
+                footerPadding,
+                footerPaddingLeft:footerStyle?.paddingLeft||'',
+                footerPaddingRight:footerStyle?.paddingRight||'',
+                footerPaddingTop:footerStyle?.paddingTop||'',
+                footerPaddingBottom:footerStyle?.paddingBottom||'',
+                footerBorderTop:footerStyle?.borderTopWidth||'',
+                settingsMotionName:panelStyle.animationName,
+                settingsMotionMs:parseFloat(panelStyle.animationDuration)*1000,
+                settingsReducedClass:document.body.classList.contains('reduced-motion')
             };
         })())JS")).toMap();
     const bool reportsSettingsPassed = reportsRussianActive && reportsSettingsReady
@@ -2863,14 +2989,47 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
         && reportsSettingsState.value(QStringLiteral("filterSubmit")).toBool()
         && reportsSettingsState.value(QStringLiteral("table")).toBool()
         && reportsSettingsState.value(QStringLiteral("exports")).toInt() == 2
-        && reportsSettingsState.value(QStringLiteral("privateExport")).toBool()
-        && reportsSettingsState.value(QStringLiteral("noAbsolutePaths")).toBool()
-        && reportsSettingsState.value(QStringLiteral("noHorizontalOverflow")).toBool();
+            && reportsSettingsState.value(QStringLiteral("privateExport")).toBool()
+            && reportsSettingsState.value(QStringLiteral("noAbsolutePaths")).toBool()
+            && reportsSettingsState.value(QStringLiteral("noHorizontalOverflow")).toBool()
+            && reportsSettingsState.value(QStringLiteral("explicitCardStructure")).toBool()
+            && reportsSettingsState.value(QStringLiteral("equalControlColumns")).toBool()
+            && reportsSettingsState.value(QStringLiteral("equalControlHeights")).toBool()
+            && reportsSettingsState.value(QStringLiteral("alignedControlRows")).toBool()
+            && reportsSettingsState.value(QStringLiteral("equalCategoryColumns")).toBool()
+            && reportsSettingsState.value(QStringLiteral("alignedCategoryRows")).toBool()
+            && reportsSettingsState.value(QStringLiteral("sharedColumnStarts")).toBool()
+            && reportsSettingsState.value(QStringLiteral("canonicalColumnGap")).toBool()
+            && reportsSettingsState.value(QStringLiteral("canonicalBodyInset")).toBool()
+            && reportsSettingsState.value(QStringLiteral("canonicalFooter")).toBool()
+            && reportsSettingsState.value(QStringLiteral("saveButtonHeight")).toBool();
     results.record(QStringLiteral("Reports Settings exposes bounded local controls without local path disclosure"),
                    reportsSettingsPassed,
                    QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(reportsSettingsState))
                                          .toJson(QJsonDocument::Compact)));
+    const bool settingsMotionFollowsPolicy = AnimationPolicy::reducedMotion()
+        ? reportsSettingsState.value(QStringLiteral("settingsReducedClass")).toBool()
+            && reportsSettingsState.value(QStringLiteral("settingsMotionMs")).toDouble() <= 1.0
+        : !reportsSettingsState.value(QStringLiteral("settingsReducedClass")).toBool()
+            && reportsSettingsState.value(QStringLiteral("settingsMotionName")).toString()
+                == QStringLiteral("settingsPanelIn")
+            && reportsSettingsState.value(QStringLiteral("settingsMotionMs")).toDouble() >= 90.0
+            && reportsSettingsState.value(QStringLiteral("settingsMotionMs")).toDouble() <= 180.0;
+    results.record(QStringLiteral("Settings category transition follows AnimationPolicy and reduced motion"),
+                   settingsMotionFollowsPolicy,
+                   QStringLiteral("name=%1 duration=%2ms reduced=%3")
+                       .arg(reportsSettingsState.value(QStringLiteral("settingsMotionName")).toString())
+                       .arg(reportsSettingsState.value(QStringLiteral("settingsMotionMs")).toDouble())
+                       .arg(reportsSettingsState.value(QStringLiteral("settingsReducedClass")).toBool()));
+    settle(AnimationPolicy::duration(AnimationKind::Popup) + 40);
     capture(QStringLiteral("reportsSettings"), QStringLiteral("12-reports-settings-ru.png"), window);
+    evaluate(reportsSettingsTab ? reportsSettingsTab->page() : nullptr,
+             QStringLiteral("document.querySelector('.reports-settings-footer')?.scrollIntoView({block:'end'})"));
+    settle(120);
+    capture(QStringLiteral("reportsSettingsFooter"),
+            QStringLiteral("12b-reports-settings-footer-ru.png"), window);
+    evaluate(reportsSettingsTab ? reportsSettingsTab->page() : nullptr,
+             QStringLiteral("window.scrollTo(0,0)"));
 
     window->openAddressForDiagnostics(QStringLiteral("about:reports"));
     const bool logViewerReady = waitFor([&] {

@@ -483,6 +483,7 @@ private:
     QPointer<QMenu> m_activeContextMenu;
     QPointer<QMenu> m_siteInfoMenu;
     QPointer<QMenu> m_newTabMenu;
+    QPointer<QPropertyAnimation> m_newTabMenuAnimation;
     QString m_routeVerifierProxy;
     QStringList m_automaticQueue;
     QStringList m_automaticFailures;

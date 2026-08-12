@@ -257,8 +257,15 @@ margin:0;padding:14px 17px;border:0;border-bottom:1px solid var(--ds-border-subt
 .site-info-page>.section>p{margin:0;padding:14px 17px}
 .site-info-page>.section>p+p{padding-top:0}
 .site-info-page>.section>.info-list+.setting-row,.site-info-page>.section>.info-list+.row{border-top:1px solid var(--ds-border-subtle)}
-.reports-page>form{padding:17px}
-.reports-page>form>h3:first-of-type{margin-top:22px}
+.reports-page>.reports-settings-form{padding:0}
+.reports-settings-body{padding:17px}
+.reports-control-grid,.reports-check-grid{column-gap:20px}
+.reports-category-group{margin-top:22px;padding-top:19px;border-top:1px solid var(--ds-border-subtle)}
+.reports-category-group>h3{margin:0 0 7px;color:var(--ds-text);font-size:15px}
+.reports-check-grid{row-gap:0}
+.reports-check-grid .check-row{align-items:center;min-height:40px;padding:8px 0}
+.reports-clear-grid{margin-top:4px}
+.reports-settings-footer{padding:15px 17px}
 .reports-page>.section>.section-heading h3{margin:0}
 .reports-page>.section>.section-heading p{margin:5px 0 0}
 .reports-page>.section>.log-filters{margin:0;padding:16px 17px;border-bottom:1px solid var(--ds-border-subtle)}
@@ -284,7 +291,7 @@ overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-
 ::-webkit-scrollbar-thumb:active,html[data-scroll-active=true]::-webkit-scrollbar-thumb,html[data-scroll-active=true] *::-webkit-scrollbar-thumb{background:var(--ds-scrollbar-active);background-clip:padding-box}
 ::-webkit-scrollbar-button{display:none;width:0;height:0}
 ::-webkit-scrollbar-corner{background:transparent}
-@media(max-width:760px){main{padding:26px 20px 56px}main>header h1{font-size:28px}.ds-page-stack{gap:16px}.ds-card-footer{align-items:stretch;flex-direction:column}.ds-card-footer .button,.ds-card-footer button{width:100%}.reports-page>form{padding:15px}.bookmark-page>.hero{padding:15px}.bookmark-page>.hero>h2{margin:-15px -15px 14px;padding:14px 15px}.bookmark-page #bookmark-list{margin-left:-15px;margin-right:-15px}.bookmark-page .bookmark-row{padding-left:15px;padding-right:15px}}
+@media(max-width:760px){main{padding:26px 20px 56px}main>header h1{font-size:28px}.ds-page-stack{gap:16px}.ds-card-footer{align-items:stretch;flex-direction:column}.ds-card-footer .button,.ds-card-footer button{width:100%}.reports-settings-body{padding:15px}.reports-control-grid,.reports-check-grid{grid-template-columns:1fr}.reports-settings-footer{padding:14px 15px}.bookmark-page>.hero{padding:15px}.bookmark-page>.hero>h2{margin:-15px -15px 14px;padding:14px 15px}.bookmark-page #bookmark-list{margin-left:-15px;margin-right:-15px}.bookmark-page .bookmark-row{padding-left:15px;padding-right:15px}}
 @media(prefers-reduced-motion:reduce){
 button,.button,input,select,textarea,input[type=checkbox],input[type=checkbox]::before,summary::after,::-webkit-scrollbar-thumb,.ds-selectable-row,.analysis-page .metric{transition:none!important}
 }
@@ -318,10 +325,12 @@ border-left:3px solid var(--ds-warning);border-radius:var(--ds-radius-md);backgr
     return DesignTokens::apply(html);
 }
 
-QString settingsPage(QString html)
+QString settingsPage(QString html, bool reducedMotion)
 {
     html.replace(QStringLiteral("<html>"), QStringLiteral("<html class=\"settings-page\">"));
-    html.replace(QStringLiteral("<body>"), QStringLiteral("<body class=\"settings-page\">"));
+    html.replace(QStringLiteral("<body>"), reducedMotion
+        ? QStringLiteral("<body class=\"settings-page reduced-motion\">")
+        : QStringLiteral("<body class=\"settings-page\">"));
     html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
 .settings-page{--radius-small:__CONTROL_RADIUS__;--radius-medium:__POPUP_RADIUS__;--control-height:__CONTROL_HEIGHT__;--space-xs:__SPACING_XS__;--space-sm:__SPACING_SM__;--space-md:__SPACING_MD__;--space-lg:__SPACING_LG__;--transition-fast:__HOVER_DURATION__;--transition-popup:__POPUP_DURATION__;--scrollbar-size:__SCROLLBAR_SIZE__}
 html.settings-page{overflow-x:clip;overflow-anchor:none;scrollbar-gutter:stable;scrollbar-color:var(--ds-scrollbar-thumb) transparent;scrollbar-width:thin}body.settings-page{overflow-x:clip;overflow-anchor:none}.settings-page *{scrollbar-color:var(--ds-scrollbar-thumb) transparent;scrollbar-width:thin}
@@ -338,11 +347,17 @@ html.settings-page{overflow-x:clip;overflow-anchor:none;scrollbar-gutter:stable;
 @media(prefers-reduced-motion:reduce){.settings-page .ds-select-arrow,.settings-page .ds-listbox,.settings-page button,.settings-page .button,.settings-page input{transition:none!important}}
 </style>)CSS"));
     html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
-body.settings-page{background:var(--ds-bg-app)}
-.settings-page main{width:min(100%,1180px);max-width:1180px;padding:40px 36px 76px}
+body.settings-page{
+--settings-page-max:1180px;--settings-page-padding-x:36px;--settings-nav-width:224px;--settings-shell-gap:38px;
+--settings-content-max:860px;--settings-card-inset:18px;--settings-card-radius:8px;
+--settings-section-gap:18px;--settings-column-gap:20px;--settings-row-gap:12px;--settings-label-gap:7px;
+--settings-row-min-height:66px;--settings-control-column:minmax(230px,330px);
+--settings-footer-padding-y:15px;background:var(--ds-bg-app)
+}
+.settings-page main{width:min(100%,var(--settings-page-max));max-width:var(--settings-page-max);padding:40px var(--settings-page-padding-x) 76px}
 .settings-page main>header{margin-bottom:30px}
 .settings-page main>header h1{font-size:32px}
-.settings-page .settings-shell{display:grid;grid-template-columns:224px minmax(0,1fr);gap:38px;align-items:start}
+.settings-page .settings-shell{display:grid;grid-template-columns:var(--settings-nav-width) minmax(0,1fr);gap:var(--settings-shell-gap);align-items:start}
 .settings-page .settings-nav{
 position:sticky;top:20px;display:flex;flex-direction:column;gap:18px;min-width:0;padding:4px 16px 4px 0;
 border-right:1px solid var(--ds-border-subtle)
@@ -366,32 +381,29 @@ transition:background-color var(--ds-fast) ease,color var(--ds-fast) ease,border
 .settings-page .settings-nav a.active::before{
 content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:2px;border-radius:2px;background:var(--ds-accent-hover)
 }
-.settings-page .settings-panel{
---settings-content-max:860px;--settings-card-inset:18px;--settings-control-column:minmax(230px,330px);
-width:100%;max-width:var(--settings-content-max);min-width:0
-}
+.settings-page .settings-panel{width:100%;max-width:var(--settings-content-max);min-width:0;animation:settingsPanelIn var(--ds-normal) cubic-bezier(.2,.7,.2,1)}
 .settings-page .settings-panel>h2{margin:0 0 22px;font-size:22px}
 .settings-page .settings-panel>form+h3,.settings-page .settings-panel>form+form,
 .settings-page .settings-panel>details,.settings-page .settings-panel>.settings-subsection{margin-top:32px}
 .settings-page .settings-panel form>h3{margin:30px 0 4px;padding-top:22px;border-top:1px solid var(--ds-border-subtle)}
 .settings-page .settings-panel form>h3:first-child{margin-top:0;padding-top:0;border-top:0}
 .settings-page .settings-panel>form{
-min-width:0;padding:2px var(--settings-card-inset) var(--settings-card-inset);border:1px solid var(--ds-border-subtle);border-radius:8px;
+min-width:0;padding:2px var(--settings-card-inset) var(--settings-card-inset);border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);
 background:var(--ds-bg-surface)
 }
-.settings-page .settings-panel>form+form{margin-top:18px}
+.settings-page .settings-panel>form+form{margin-top:var(--settings-section-gap)}
 .settings-page .settings-panel>.settings-surface{
-min-width:0;overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:8px;
+min-width:0;overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);
 background:var(--ds-bg-surface)
 }
-.settings-page .settings-panel>.settings-surface+.settings-surface{margin-top:18px}
+.settings-page .settings-panel>.settings-surface+.settings-surface{margin-top:var(--settings-section-gap)}
 .settings-page .settings-surface-header{
 display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
 padding:17px var(--settings-card-inset) 14px;border-bottom:1px solid var(--ds-border-subtle)
 }
 .settings-page .settings-surface-header h3{margin:0;color:var(--ds-text);font-size:15px}
 .settings-page .settings-surface-header p{margin:4px 0 0}
-.settings-page .settings-surface-body{min-width:0;padding:16px var(--settings-card-inset)}
+.settings-page .settings-surface-body{min-width:0;padding:var(--settings-section-gap) var(--settings-card-inset)}
 .settings-page .settings-surface-body.flush{padding:0}
 .settings-page .settings-surface-body>.info-list{border-top:0}
 .settings-page .settings-surface-body.flush .info-row{padding-left:var(--settings-card-inset);padding-right:var(--settings-card-inset)}
@@ -399,7 +411,7 @@ padding:17px var(--settings-card-inset) 14px;border-bottom:1px solid var(--ds-bo
 .settings-page .settings-surface>form{margin:0}
 .settings-page .settings-surface-footer{
 display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0;
-padding:15px var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
+padding:var(--settings-footer-padding-y) var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
 background:rgba(255,255,255,.012)
 }
 .settings-page .settings-surface-footer .button,.settings-page .settings-surface-footer button{flex:0 1 auto}
@@ -407,7 +419,7 @@ background:rgba(255,255,255,.012)
 .settings-page .settings-strategy-grid .button{width:100%;min-width:0;text-align:center}
 .settings-page .settings-upstream-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .settings-page .settings-upstream-grid .upstream-url{grid-column:1/-1}
-.settings-page .settings-surface-field{display:grid;gap:7px;min-width:0}
+.settings-page .settings-surface-field{display:grid;gap:var(--settings-label-gap);min-width:0}
 .settings-page .settings-surface-field>span{color:var(--ds-text-secondary);font-size:12px;font-weight:550}
 .settings-page .settings-surface-field>input{width:100%;min-width:0}
 .settings-page .settings-panel>form>h3{
@@ -419,8 +431,8 @@ border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:1
 .settings-page .settings-panel>form>h3+p{margin:10px 0 13px}
 .settings-page .settings-panel>form>.setting-row:first-child{border-top:0}
 .settings-page .settings-panel>form>p:last-child:has(button,.button){
-margin:18px calc(-1 * var(--settings-card-inset)) calc(-1 * var(--settings-card-inset));padding:15px var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
-border-radius:0 0 8px 8px;background:rgba(255,255,255,.012)
+margin:var(--settings-section-gap) calc(-1 * var(--settings-card-inset)) calc(-1 * var(--settings-card-inset));padding:var(--settings-footer-padding-y) var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
+border-radius:0 0 var(--settings-card-radius) var(--settings-card-radius);background:rgba(255,255,255,.012)
 }
 .settings-page .settings-panel>.info-list{
 overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:8px;
@@ -429,14 +441,15 @@ background:var(--ds-bg-surface)
 .settings-page .settings-panel>.info-list .info-row{padding-left:var(--settings-card-inset);padding-right:var(--settings-card-inset)}
 .settings-page .setting-row{
 display:grid;grid-template-columns:minmax(0,1fr) var(--settings-control-column);gap:28px;align-items:center;
-min-height:66px;padding:13px 0;border-bottom:1px solid var(--ds-border-subtle)
+min-height:var(--settings-row-min-height);padding:13px 0;border-bottom:1px solid var(--ds-border-subtle)
 }
 .settings-page .setting-row:first-of-type{border-top:1px solid var(--ds-border-subtle)}
 .settings-page .setting-row>div:first-child>div:first-child{color:var(--ds-text);font-weight:580}
 .settings-page .setting-row .description{margin-top:4px;color:var(--ds-text-muted);font-size:12px;line-height:1.45}
 .settings-page .setting-row .control{display:flex;align-items:center;justify-content:flex-end;min-width:0;min-height:40px}
 .settings-page .setting-row .control>input[type=checkbox]{margin-right:0}
-.settings-page .field>span{color:var(--ds-text-secondary);font-size:12px;font-weight:550}
+.settings-page .field{gap:var(--settings-label-gap)}
+.settings-page .field>span{color:var(--ds-text-secondary);font-size:12px;font-weight:550;line-height:1.4}
 .settings-page .check-row{min-height:40px;padding:8px 0;color:var(--ds-text-secondary)}
 .settings-page .row{gap:10px}
 .settings-page form>p:last-child:has(button,.button){gap:10px;margin-top:20px}
@@ -454,6 +467,20 @@ box-shadow:var(--ds-shadow-popup)
 .settings-page .ds-option:hover,.settings-page .ds-option[data-active=true]{border-color:var(--ds-border-subtle);background:var(--ds-bg-hover)}
 .settings-page .ds-option[aria-selected=true]{background:var(--ds-accent-soft)}
 .settings-page .ds-option[aria-selected=true]::after{border-color:var(--ds-accent-hover)}
+.settings-page .settings-grid,.settings-page .check-grid{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:var(--settings-column-gap)}
+.settings-page .settings-grid{row-gap:var(--settings-row-gap)}
+.settings-page .check-grid{row-gap:0}
+.settings-page .reports-page.ds-page-stack{gap:var(--settings-section-gap)}
+.settings-page .reports-page>.section-copy{margin:0}
+.settings-page .settings-panel .reports-settings-form{padding:0;overflow:hidden;border-radius:var(--settings-card-radius)}
+.settings-page .reports-settings-body{padding:var(--settings-card-inset)}
+.settings-page .reports-control-grid,.settings-page .reports-check-grid{column-gap:var(--settings-column-gap)}
+.settings-page .reports-category-group{margin-top:var(--settings-section-gap);padding-top:var(--settings-section-gap);border-top:1px solid var(--ds-border-subtle)}
+.settings-page .reports-category-group>h3{margin:0 0 var(--settings-label-gap);padding:0;border:0;color:var(--ds-text);font-size:15px}
+.settings-page .reports-check-grid .check-row{align-items:center;min-height:var(--ds-control-height);padding:8px 0}
+.settings-page .reports-clear-grid{margin-top:4px}
+.settings-page .reports-settings-footer{padding:var(--settings-footer-padding-y) var(--settings-card-inset)}
+@keyframes settingsPanelIn{from{opacity:.72;transform:translateY(2px)}to{opacity:1;transform:none}}
 </style>)CSS"));
     html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
 .settings-page .settings-heading-actions{
@@ -548,6 +575,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .settings-upstream-grid .upstream-url{grid-column:1}
 }
 @media(max-width:760px){
+.settings-page{--settings-page-padding-x:18px;--settings-shell-gap:18px}
 .settings-page main{padding:24px 18px 58px}
 .settings-page main>header{margin-bottom:20px;padding-bottom:16px}
 .settings-page main>header h1{font-size:28px}
@@ -563,20 +591,23 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .settings-nav a.active::before{left:10px;right:10px;top:auto;bottom:-1px;width:auto;height:2px}
 .settings-page .settings-heading-actions{flex-direction:column;gap:16px}
 .settings-page .settings-heading-actions>.button{width:auto;max-width:100%;align-self:flex-start}
+.settings-page .settings-grid,.settings-page .check-grid{grid-template-columns:1fr}
 .settings-page .site-rule-grid{grid-template-columns:1fr}
 .settings-page .site-rule-grid .rule-target{grid-column:1}
 }
 @media(max-width:480px){
 .settings-page .settings-nav{grid-template-columns:1fr}
 .settings-page .settings-nav a{grid-template-columns:16px auto}
-.settings-page .settings-panel{--settings-card-inset:14px}
+.settings-page{--settings-card-inset:14px}
 .settings-page .container-row{grid-template-columns:40px minmax(0,1fr) 36px;gap:10px}
 .settings-page .container-badges{gap:4px}
 }
 @media(prefers-reduced-motion:reduce){
-.settings-page .container-menu-popover{animation:none}
+.settings-page .container-menu-popover,.settings-page .settings-panel{animation:none}
 .settings-page .container-row,.settings-page .settings-nav a{transition:none!important}
 }
+body.settings-page.reduced-motion .settings-panel,body.settings-page.reduced-motion .container-menu-popover{animation:none}
+body.settings-page.reduced-motion *,body.settings-page.reduced-motion *::before,body.settings-page.reduced-motion *::after{transition-duration:0s!important;animation-duration:0s!important}
 </style>)CSS"));
     html.replace(QStringLiteral("</body>"), QStringLiteral(R"HTML(
 <script>
@@ -1434,7 +1465,7 @@ QString InternalPages::settings(const InternalPageContext &context)
         panel = QStringLiteral("<h2>%1</h2><p>%2</p><a class=\"button primary\" href=\"https://granger.local/__action/open?page=about:downloads\">%3</a>")
                     .arg(e(t("page.downloads.title")), e(t("settings.downloads_description")), e(t("settings.open_downloads")));
     } else if (category == QStringLiteral("reports")) {
-        panel = QStringLiteral("<h2>%1</h2>%2")
+        panel = QStringLiteral("<h2>%1</h2><div class=\"reports-page ds-page-stack\">%2</div>")
                     .arg(e(t("settings.category.reports")), context.reportsLogsHtml);
     } else if (category == QStringLiteral("advanced")) {
         const auto selectControl = [](const QString &name,
@@ -1583,7 +1614,8 @@ QString InternalPages::settings(const InternalPageContext &context)
                                (category == QStringLiteral("danger")
                                     ? QString() : messageBlock(context.message))
                                    + QStringLiteral("<section class=\"settings-shell\"><nav class=\"settings-nav\">%1</nav><section class=\"settings-panel\">%2</section></section>")
-                                         .arg(nav, panel)));
+                                         .arg(nav, panel)),
+                        context.reducedMotion);
 }
 
 QString InternalPages::network(const InternalPageContext &context)

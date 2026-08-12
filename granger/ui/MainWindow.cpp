@@ -4092,16 +4092,25 @@ void MainWindow::rebuildNewTabMenu()
             if (!m_newTabMenu) return;
             const int duration = AnimationPolicy::duration(AnimationKind::Popup);
             if (duration <= 0) {
+                if (m_newTabMenuAnimation) m_newTabMenuAnimation->stop();
                 m_newTabMenu->setWindowOpacity(1.0);
                 return;
             }
+            if (!m_newTabMenuAnimation) {
+                m_newTabMenuAnimation = new QPropertyAnimation(
+                    m_newTabMenu, "windowOpacity", m_newTabMenu);
+                AnimationPolicy::configure(m_newTabMenuAnimation, AnimationKind::Popup);
+                m_newTabMenuAnimation->setEndValue(1.0);
+            }
+            m_newTabMenuAnimation->stop();
             m_newTabMenu->setWindowOpacity(0.94);
-            auto *animation = new QPropertyAnimation(
-                m_newTabMenu, "windowOpacity", m_newTabMenu);
-            AnimationPolicy::configure(animation, AnimationKind::Popup);
-            animation->setStartValue(0.94);
-            animation->setEndValue(1.0);
-            animation->start(QAbstractAnimation::DeleteWhenStopped);
+            m_newTabMenuAnimation->setStartValue(m_newTabMenu->windowOpacity());
+            m_newTabMenuAnimation->setCurrentTime(0);
+            m_newTabMenuAnimation->start();
+        });
+        connect(m_newTabMenu, &QMenu::aboutToHide, m_newTabMenu, [this] {
+            if (m_newTabMenuAnimation) m_newTabMenuAnimation->stop();
+            if (m_newTabMenu) m_newTabMenu->setWindowOpacity(1.0);
         });
     }
     m_newTabMenu->setObjectName(QStringLiteral("CreateMenu"));
@@ -7508,8 +7517,8 @@ QString MainWindow::localLogsHtml(const QUrlQuery *query)
 
     QString html = QStringLiteral(
         "<p class=\"section-copy\">%1</p>"
-        "<form action=\"https://granger.local/__action/settings/logs\" method=\"get\">"
-        "<div class=\"settings-grid\">"
+        "<form class=\"reports-settings-form\" action=\"https://granger.local/__action/settings/logs\" method=\"get\">"
+        "<div class=\"reports-settings-body\"><div class=\"settings-grid reports-control-grid\">"
         "<label class=\"field\"><span>%2</span><select name=\"mode\">"
         "<option value=\"off\"%3>%4</option><option value=\"minimal\"%5>%6</option>"
         "<option value=\"standard\"%7>%8</option><option value=\"enhanced\"%9>%10</option>"
@@ -7517,10 +7526,11 @@ QString MainWindow::localLogsHtml(const QUrlQuery *query)
         "<label class=\"field\"><span>%11</span><input type=\"number\" min=\"1\" max=\"30\" name=\"retention\" value=\"%12\"></label>"
         "<label class=\"field\"><span>%13</span><input type=\"number\" min=\"1\" max=\"20\" name=\"maxMiB\" value=\"%14\"></label>"
         "<label class=\"field\"><span>%15</span><input type=\"number\" min=\"1\" max=\"5\" name=\"maxFiles\" value=\"%16\"></label>"
-        "</div><h3>%17</h3><div class=\"check-grid\">%18</div>"
-        "<div class=\"check-grid\"><label class=\"check-row\"><input type=\"checkbox\" name=\"clearStartup\" value=\"1\"%19><span>%20</span></label>"
-        "<label class=\"check-row\"><input type=\"checkbox\" name=\"clearExit\" value=\"1\"%21><span>%22</span></label></div>"
-        "<p><button class=\"primary\" type=\"submit\">%23</button></p></form>")
+        "</div><section class=\"reports-category-group\"><h3>%17</h3>"
+        "<div class=\"check-grid reports-check-grid\">%18</div></section>"
+        "<div class=\"check-grid reports-check-grid reports-clear-grid\"><label class=\"check-row\"><input type=\"checkbox\" name=\"clearStartup\" value=\"1\"%19><span>%20</span></label>"
+        "<label class=\"check-row\"><input type=\"checkbox\" name=\"clearExit\" value=\"1\"%21><span>%22</span></label></div></div>"
+        "<div class=\"ds-card-footer settings-surface-footer reports-settings-footer\"><button class=\"primary\" type=\"submit\">%23</button></div></form>")
         .arg(text("reports.intro"),
              text("reports.mode"),
              selected(mode, QStringLiteral("off")), text("reports.mode.off"),
