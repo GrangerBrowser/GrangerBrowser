@@ -22,6 +22,17 @@ struct InternalPageContext {
     QString externalTorSocksUrl;
     QString upstreamProxyUrl;
     QString upstreamProxyUsername;
+    QString torCurrentStrategy;
+    QString torTransport;
+    QString torSystemProxyStatus;
+    QString torTunnelStatus;
+    QString torLocalProxyStatus;
+    QString torIpv4Status;
+    QString torIpv6Status;
+    QString torConflictCode;
+    QString torConflictSummary;
+    QString torRecommendedAction;
+    bool torConflictWarning = false;
     QString language;
     QString searchImplementation;
     QString resultsPath;

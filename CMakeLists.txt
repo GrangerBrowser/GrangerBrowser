@@ -89,6 +89,8 @@ qt_add_executable(granger_browser
     granger/tor/TorManager.h
     granger/tor/ConnectionStrategy.cpp
     granger/tor/ConnectionStrategy.h
+    granger/tor/NetworkEnvironmentProbe.cpp
+    granger/tor/NetworkEnvironmentProbe.h
     granger/ui/MainWindow.cpp
     granger/ui/MainWindow.h
     granger/ui/AnimationPolicy.cpp
@@ -133,7 +135,7 @@ target_link_libraries(granger_browser PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(granger_browser PRIVATE Advapi32 Psapi Shell32 User32)
+    target_link_libraries(granger_browser PRIVATE Advapi32 Iphlpapi Psapi Shell32 User32 Winhttp Ws2_32)
     set_target_properties(granger_browser PROPERTIES
         WIN32_EXECUTABLE TRUE
         OUTPUT_NAME "GrangerBrowser"

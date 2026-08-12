@@ -28,6 +28,7 @@
 #include "granger/search/SearchManager.h"
 #include "granger/settings/SettingsManager.h"
 #include "granger/tor/ConnectionStrategy.h"
+#include "granger/tor/NetworkEnvironmentProbe.h"
 #include "granger/tor/TorManager.h"
 #include "granger/ui/DownloadUi.h"
 
@@ -352,6 +353,8 @@ private:
     QString restorableAddress(BrowserTab *tab) const;
     void appendBrowserLog(const QString &message);
     void updateRouteState(const QString &state, const QString &error = QString());
+    void refreshNetworkEnvironment();
+    void diagnoseTorFailure(const TorStatus &status);
     bool proxyEndpointReachable(const QString &proxy, QString *error) const;
     bool prepareConnectionStrategy(const QString &strategyId,
                                    const QString &dataDir,
@@ -457,6 +460,8 @@ private:
     QString m_routeError;
     QString m_lastLoggedTorBridgeError;
     QString m_lastTorFailureDiagnostic;
+    NetworkEnvironmentSnapshot m_networkEnvironment;
+    TorConflictDiagnosis m_torConflictDiagnosis;
     QString m_onionSearchQuery;
     QVector<DownloadItem> m_downloads;
     QSet<QString> m_pendingContainerProfileReleases;

@@ -262,7 +262,7 @@ void BrowserTab::setFullScreenRequestHandler(FullScreenRequestHandler handler)
 void BrowserTab::setLetterboxingEnabled(bool enabled)
 {
     if (m_letterboxingEnabled == enabled) {
-        if (enabled) scheduleLetterboxUpdate();
+        if (enabled) synchronizeViewportGeometry();
         return;
     }
     m_letterboxingEnabled = enabled;
@@ -280,7 +280,7 @@ void BrowserTab::setLetterboxingEnabled(bool enabled)
         return;
     }
     m_layout->setAlignment(m_view, Qt::AlignCenter);
-    scheduleLetterboxUpdate();
+    synchronizeViewportGeometry();
 }
 
 bool BrowserTab::letterboxingEnabled() const

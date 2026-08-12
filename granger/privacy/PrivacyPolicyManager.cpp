@@ -1880,6 +1880,9 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
   const define = (object, property, value) => {
     try { Object.defineProperty(object, property, { configurable: true, enumerable: true, get: () => value }); } catch (_) {}
   };
+  const defineDynamic = (object, property, getter, enumerable = true) => {
+    try { Object.defineProperty(object, property, { configurable: true, enumerable, get: getter }); } catch (_) {}
+  };
   Object.defineProperty(globalThis, '__grangerPrivacyInstalled', { value: 'v1', configurable: false });
   Object.defineProperty(globalThis, '__grangerPrivacyRestrictedCount', { configurable: false, get: () => restricted.size });
   Object.defineProperty(globalThis, '__grangerPrivacyRestrictions', { configurable: false, get: () => Array.from(restricted) });
@@ -2202,12 +2205,32 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
       let availHeight;
       let ratio;
       if (base.screen === 'standardized') {
-        const requiredWidth = Math.max(1, Number(globalThis.innerWidth) || 1);
-        const requiredHeight = Math.max(1, Number(globalThis.innerHeight) || 1);
         const buckets = [[1366, 768], [1920, 1080], [2560, 1440], [3840, 2160]];
-        const bucket = buckets.find(item => item[0] >= requiredWidth && item[1] >= requiredHeight)
-          || buckets[buckets.length - 1];
-        width = bucket[0]; height = bucket[1]; availWidth = width; availHeight = Math.max(1, height - 40); ratio = 1;
+        const standardizedScreen = () => {
+          const requiredWidth = Math.max(1, Number(globalThis.innerWidth) || 1);
+          const requiredHeight = Math.max(1, Number(globalThis.innerHeight) || 1);
+          const bucket = buckets.find(item => item[0] >= requiredWidth && item[1] >= requiredHeight)
+            || buckets[buckets.length - 1];
+          return {
+            width: bucket[0],
+            height: bucket[1],
+            availWidth: bucket[0],
+            availHeight: Math.max(1, bucket[1] - 40)
+          };
+        };
+        defineDynamic(Screen.prototype, 'width', () => standardizedScreen().width);
+        defineDynamic(Screen.prototype, 'height', () => standardizedScreen().height);
+        defineDynamic(Screen.prototype, 'availWidth', () => standardizedScreen().availWidth);
+        defineDynamic(Screen.prototype, 'availHeight', () => standardizedScreen().availHeight);
+        define(Screen.prototype, 'colorDepth', 24);
+        define(Screen.prototype, 'pixelDepth', 24);
+        defineDynamic(globalThis, 'devicePixelRatio', () => 1, false);
+        if (globalThis.Window && Window.prototype) {
+          defineDynamic(Window.prototype, 'outerWidth', () => standardizedScreen().width);
+          defineDynamic(Window.prototype, 'outerHeight', () => standardizedScreen().height);
+        }
+        defineDynamic(globalThis, 'outerWidth', () => standardizedScreen().width);
+        defineDynamic(globalThis, 'outerHeight', () => standardizedScreen().height);
       } else {
         const round = value => Math.max(100, Math.round(value / 100) * 100);
         width = Math.max(round(nativeWidth), Math.ceil((Number(globalThis.innerWidth) || 1) / 100) * 100);
@@ -2215,20 +2238,20 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
         availWidth = Math.min(width, round(nativeAvailWidth));
         availHeight = Math.min(height, round(nativeAvailHeight));
         ratio = Math.max(0.25, Math.round((Number(globalThis.devicePixelRatio) || 1) * 4) / 4);
+        define(Screen.prototype, 'width', width);
+        define(Screen.prototype, 'height', height);
+        define(Screen.prototype, 'availWidth', availWidth);
+        define(Screen.prototype, 'availHeight', availHeight);
+        define(Screen.prototype, 'colorDepth', 24);
+        define(Screen.prototype, 'pixelDepth', 24);
+        defineDynamic(globalThis, 'devicePixelRatio', () => ratio, false);
+        if (globalThis.Window && Window.prototype) {
+          define(Window.prototype, 'outerWidth', width);
+          define(Window.prototype, 'outerHeight', height);
+        }
+        define(globalThis, 'outerWidth', width);
+        define(globalThis, 'outerHeight', height);
       }
-      define(Screen.prototype, 'width', width);
-      define(Screen.prototype, 'height', height);
-      define(Screen.prototype, 'availWidth', availWidth);
-      define(Screen.prototype, 'availHeight', availHeight);
-      define(Screen.prototype, 'colorDepth', 24);
-      define(Screen.prototype, 'pixelDepth', 24);
-      try { Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, get: () => ratio }); } catch (_) {}
-      if (globalThis.Window && Window.prototype) {
-        define(Window.prototype, 'outerWidth', width);
-        define(Window.prototype, 'outerHeight', height);
-      }
-      define(globalThis, 'outerWidth', width);
-      define(globalThis, 'outerHeight', height);
     }
 )JS") + QStringLiteral(R"JS(
   }

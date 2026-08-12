@@ -289,6 +289,17 @@ overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-
 button,.button,input,select,textarea,input[type=checkbox],input[type=checkbox]::before,summary::after,::-webkit-scrollbar-thumb,.ds-selectable-row,.analysis-page .metric{transition:none!important}
 }
 </style>)CSS"));
+    html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
+.tor-conflict-alert{
+margin:0 0 18px;padding:17px 18px;border:1px solid color-mix(in srgb,var(--ds-warning) 48%,var(--ds-border));
+border-left:3px solid var(--ds-warning);border-radius:var(--ds-radius-md);background:color-mix(in srgb,var(--ds-warning) 7%,var(--ds-bg-surface))
+}
+.tor-conflict-alert h2,.tor-conflict-alert h3{margin:0 0 7px;color:var(--ds-text);font-size:16px}
+.tor-conflict-alert p{max-width:760px;margin:5px 0;color:var(--ds-text-secondary)}
+.tor-conflict-alert .tor-conflict-action{color:var(--ds-text);font-weight:580}
+.tor-conflict-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}
+@media(max-width:520px){.tor-conflict-actions{align-items:stretch;flex-direction:column}.tor-conflict-actions .button{width:100%}}
+</style>)CSS"));
     html.replace(QStringLiteral("</body>"), QStringLiteral(R"HTML(
 <script>
 (()=>{
@@ -365,7 +376,7 @@ width:100%;max-width:var(--settings-content-max);min-width:0
 .settings-page .settings-panel form>h3{margin:30px 0 4px;padding-top:22px;border-top:1px solid var(--ds-border-subtle)}
 .settings-page .settings-panel form>h3:first-child{margin-top:0;padding-top:0;border-top:0}
 .settings-page .settings-panel>form{
-min-width:0;padding:2px 18px 18px;border:1px solid var(--ds-border-subtle);border-radius:8px;
+min-width:0;padding:2px var(--settings-card-inset) var(--settings-card-inset);border:1px solid var(--ds-border-subtle);border-radius:8px;
 background:var(--ds-bg-surface)
 }
 .settings-page .settings-panel>form+form{margin-top:18px}
@@ -394,37 +405,39 @@ background:rgba(255,255,255,.012)
 .settings-page .settings-surface-footer .button,.settings-page .settings-surface-footer button{flex:0 1 auto}
 .settings-page .settings-strategy-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .settings-page .settings-strategy-grid .button{width:100%;min-width:0;text-align:center}
+.settings-page .settings-upstream-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.settings-page .settings-upstream-grid .upstream-url{grid-column:1/-1}
 .settings-page .settings-surface-field{display:grid;gap:7px;min-width:0}
 .settings-page .settings-surface-field>span{color:var(--ds-text-secondary);font-size:12px;font-weight:550}
 .settings-page .settings-surface-field>input{width:100%;min-width:0}
 .settings-page .settings-panel>form>h3{
-margin:0 -18px 4px;padding:17px 18px 14px;border-top:1px solid var(--ds-border-subtle);
+margin:0 calc(-1 * var(--settings-card-inset)) 4px;padding:17px var(--settings-card-inset) 14px;border-top:1px solid var(--ds-border-subtle);
 border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:15px
 }
 .settings-page .settings-panel>form>h3:first-child{border-top:0}
 .settings-page .settings-panel>form>h3:not(:first-child){margin-top:16px}
-.settings-page .settings-panel>form>h3+p{margin:10px 2px 13px}
+.settings-page .settings-panel>form>h3+p{margin:10px 0 13px}
 .settings-page .settings-panel>form>.setting-row:first-child{border-top:0}
 .settings-page .settings-panel>form>p:last-child:has(button,.button){
-margin:18px -18px -18px;padding:15px 18px;border-top:1px solid var(--ds-border-subtle);
+margin:18px calc(-1 * var(--settings-card-inset)) calc(-1 * var(--settings-card-inset));padding:15px var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
 border-radius:0 0 8px 8px;background:rgba(255,255,255,.012)
 }
 .settings-page .settings-panel>.info-list{
 overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:8px;
 background:var(--ds-bg-surface)
 }
-.settings-page .settings-panel>.info-list .info-row{padding-left:16px;padding-right:16px}
+.settings-page .settings-panel>.info-list .info-row{padding-left:var(--settings-card-inset);padding-right:var(--settings-card-inset)}
 .settings-page .setting-row{
 display:grid;grid-template-columns:minmax(0,1fr) var(--settings-control-column);gap:28px;align-items:center;
-min-height:66px;padding:13px 2px;border-bottom:1px solid var(--ds-border-subtle)
+min-height:66px;padding:13px 0;border-bottom:1px solid var(--ds-border-subtle)
 }
 .settings-page .setting-row:first-of-type{border-top:1px solid var(--ds-border-subtle)}
 .settings-page .setting-row>div:first-child>div:first-child{color:var(--ds-text);font-weight:580}
 .settings-page .setting-row .description{margin-top:4px;color:var(--ds-text-muted);font-size:12px;line-height:1.45}
 .settings-page .setting-row .control{display:flex;align-items:center;justify-content:flex-end;min-width:0;min-height:40px}
-.settings-page .setting-row .control>input[type=checkbox]{margin-right:3px}
+.settings-page .setting-row .control>input[type=checkbox]{margin-right:0}
 .settings-page .field>span{color:var(--ds-text-secondary);font-size:12px;font-weight:550}
-.settings-page .check-row{min-height:40px;padding:8px 2px;color:var(--ds-text-secondary)}
+.settings-page .check-row{min-height:40px;padding:8px 0;color:var(--ds-text-secondary)}
 .settings-page .row{gap:10px}
 .settings-page form>p:last-child:has(button,.button){gap:10px;margin-top:20px}
 .settings-page .ds-select-trigger{
@@ -441,6 +454,8 @@ box-shadow:var(--ds-shadow-popup)
 .settings-page .ds-option:hover,.settings-page .ds-option[data-active=true]{border-color:var(--ds-border-subtle);background:var(--ds-bg-hover)}
 .settings-page .ds-option[aria-selected=true]{background:var(--ds-accent-soft)}
 .settings-page .ds-option[aria-selected=true]::after{border-color:var(--ds-accent-hover)}
+</style>)CSS"));
+    html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
 .settings-page .settings-heading-actions{
 display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin:0 0 24px;padding:0 0 22px;
 border-bottom:1px solid var(--ds-border-subtle)
@@ -525,10 +540,12 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 @keyframes dsPopupIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
 @media(max-width:920px){
 .settings-page .settings-shell{grid-template-columns:194px minmax(0,1fr);gap:26px}
-.settings-page .setting-row{grid-template-columns:1fr;gap:9px;align-items:start;padding:15px 2px}
+.settings-page .setting-row{grid-template-columns:1fr;gap:9px;align-items:start;padding:15px 0}
 .settings-page .setting-row .control{justify-content:flex-start;width:100%}
 .settings-page .setting-row .control>.ds-select,.settings-page .setting-row .control>input{width:100%}
 .settings-page .settings-strategy-grid{grid-template-columns:1fr}
+.settings-page .settings-upstream-grid{grid-template-columns:1fr}
+.settings-page .settings-upstream-grid .upstream-url{grid-column:1}
 }
 @media(max-width:760px){
 .settings-page main{padding:24px 18px 58px}
@@ -552,8 +569,6 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 @media(max-width:480px){
 .settings-page .settings-nav{grid-template-columns:1fr}
 .settings-page .settings-nav a{grid-template-columns:16px auto}
-.settings-page .settings-panel>form{padding-left:14px;padding-right:14px}
-.settings-page .settings-panel>form>h3{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}
 .settings-page .settings-panel{--settings-card-inset:14px}
 .settings-page .container-row{grid-template-columns:40px minmax(0,1fr) 36px;gap:10px}
 .settings-page .container-badges{gap:4px}
@@ -1333,44 +1348,88 @@ QString InternalPages::settings(const InternalPageContext &context)
                     .arg(e(t("pamp.title")), e(t("pamp.description")), e(t("pamp.passive_only")),
                          e(t("pamp.passive_only.description")), e(t("pamp.analyze_current")));
     } else if (category == QStringLiteral("connection")) {
-        panel = QStringLiteral(
-            "<h2>%1</h2>"
+        panel = QStringLiteral("<h2>%1</h2>").arg(e(t("settings.category.connection")));
+        if (context.torConflictWarning) {
+            panel += QStringLiteral(
+                "<section class=\"tor-conflict-alert\" role=\"alert\" data-conflict-code=\"%1\">"
+                "<h3>%2</h3><p>%3</p><p class=\"tor-conflict-action\">%4</p><p>%5</p>"
+                "<div class=\"tor-conflict-actions\">"
+                "<a class=\"button primary\" href=\"https://granger.local/__action/connection/apply?mode=automatic\">%6</a>"
+                "<a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:network\">%7</a>"
+                "<a class=\"button secondary\" href=\"#tor-upstream\">%8</a></div></section>")
+                         .arg(e(context.torConflictCode), e(t("tor.conflict.title")),
+                              e(context.torConflictSummary), e(context.torRecommendedAction),
+                              e(t("tor.conflict.fail_closed")), e(t("tor.conflict.retry")),
+                              e(t("tor.conflict.diagnostics")), e(t("tor.conflict.settings")));
+        }
+        panel += QStringLiteral(
             "<section class=\"settings-surface settings-connection-status\">"
-            "<div class=\"settings-surface-header\"><h3>%2</h3></div>"
-            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%3%4%5</div></div>"
-            "</section>"
+            "<div class=\"settings-surface-header\"><h3>%1</h3></div>"
+            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%2%3%4</div></div></section>")
+                     .arg(e(t("label.status")),
+                          infoRow(t("label.route"), s(context.currentRoute), QStringLiteral("settings-route")),
+                          infoRow(t("label.tor"), s(context.torState), QStringLiteral("settings-tor-state")),
+                          infoRow(t("label.bootstrap"), s(context.bridgeBootstrap), QStringLiteral("settings-bootstrap")));
+        panel += QStringLiteral(
             "<section class=\"settings-surface settings-connection-strategy\">"
-            "<div class=\"settings-surface-header\"><h3>%6</h3></div>"
+            "<div class=\"settings-surface-header\"><h3>%1</h3></div>"
             "<div class=\"settings-surface-body\"><div class=\"settings-strategy-grid\">"
-            "<a class=\"button primary\" href=\"https://granger.local/__action/connection/apply?mode=automatic\">%7</a>"
-            "<a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=direct\">%8</a>"
-            "<a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=snowflake\">%9</a>"
-            "</div></div></section>"
+            "<a class=\"button primary\" href=\"https://granger.local/__action/connection/apply?mode=automatic\">%2</a>"
+            "<a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=direct\">%3</a>"
+            "<a class=\"button\" href=\"https://granger.local/__action/connection/apply?mode=snowflake\">%4</a>"
+            "</div></div></section>")
+                     .arg(e(t("settings.connection_strategy")), e(t("settings.automatic")),
+                          e(t("settings.tor_direct")), e(t("settings.snowflake")));
+        panel += QStringLiteral(
             "<section class=\"settings-surface settings-connection-bridges\">"
-            "<div class=\"settings-surface-header\"><h3>%10</h3></div>"
+            "<div class=\"settings-surface-header\"><h3>%1</h3></div>"
             "<form action=\"https://granger.local/__action/bridges/save\" method=\"get\">"
-            "<div class=\"settings-surface-body\"><label class=\"settings-surface-field\"><span>%11</span>"
-            "<input type=\"text\" name=\"line\" placeholder=\"%11\"></label></div>"
-            "<div class=\"settings-surface-footer\"><button type=\"submit\">%12</button>"
-            "<a class=\"button secondary\" href=\"https://granger.local/__action/bridges/import-qr\">%13</a>"
-            "<a class=\"button primary\" href=\"https://granger.local/__action/bridges/apply\">%14</a>"
-            "<a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:bridges\">%15</a>"
-            "</div></form></section>"
+            "<div class=\"settings-surface-body\"><label class=\"settings-surface-field\"><span>%2</span>"
+            "<input type=\"text\" name=\"line\" placeholder=\"%2\"></label></div>"
+            "<div class=\"settings-surface-footer\"><button type=\"submit\">%3</button>"
+            "<a class=\"button secondary\" href=\"https://granger.local/__action/bridges/import-qr\">%4</a>"
+            "<a class=\"button primary\" href=\"https://granger.local/__action/bridges/apply\">%5</a>"
+            "<a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:bridges\">%6</a>"
+            "</div></form></section>")
+                     .arg(e(t("page.bridges.title")), e(t("bridges.paste_line")), e(t("common.save")),
+                          e(t("bridges.import_qr")), e(t("common.apply")), e(t("common.manage")));
+        panel += QStringLiteral(
             "<section class=\"settings-surface settings-connection-external\">"
-            "<div class=\"settings-surface-header\"><h3>%16</h3></div>"
+            "<div class=\"settings-surface-header\"><div><h3>%1</h3><p>%2</p></div></div>"
             "<form action=\"https://granger.local/__action/connection/save-external\" method=\"get\">"
-            "<div class=\"settings-surface-body\"><label class=\"settings-surface-field\"><span>%16</span>"
-            "<input type=\"url\" name=\"url\" value=\"%17\" placeholder=\"socks5://127.0.0.1:9050\"></label></div>"
-            "<div class=\"settings-surface-footer\"><button type=\"submit\">%18</button></div>"
-            "</form></section>")
-                    .arg(e(t("settings.category.connection")), e(t("label.status")),
-                         infoRow(t("label.route"), s(context.currentRoute), QStringLiteral("settings-route")),
-                         infoRow(t("label.tor"), s(context.torState), QStringLiteral("settings-tor-state")),
-                         infoRow(t("label.bootstrap"), s(context.bridgeBootstrap), QStringLiteral("settings-bootstrap")),
-                         e(t("settings.connection_strategy")), e(t("settings.automatic")), e(t("settings.tor_direct")),
-                         e(t("settings.snowflake")), e(t("page.bridges.title")), e(t("bridges.paste_line")),
-                         e(t("common.save")), e(t("bridges.import_qr")), e(t("common.apply")), e(t("common.manage")),
-                         e(t("settings.external_tor")), e(context.externalTorSocksUrl), e(t("settings.save_endpoint")));
+            "<div class=\"settings-surface-body\"><label class=\"settings-surface-field\"><span>%1</span>"
+            "<input type=\"url\" name=\"url\" value=\"%3\" placeholder=\"socks5://127.0.0.1:9050\"></label></div>"
+            "<div class=\"settings-surface-footer\"><button type=\"submit\">%4</button></div></form></section>")
+                     .arg(e(t("settings.external_tor")), e(t("tor.settings.external_description")),
+                          e(context.externalTorSocksUrl), e(t("settings.save_endpoint")));
+        panel += QStringLiteral(
+            "<section id=\"tor-upstream\" class=\"settings-surface settings-connection-upstream\">"
+            "<div class=\"settings-surface-header\"><div><h3>%1</h3><p>%2</p></div></div>"
+            "<form action=\"https://granger.local/__action/connection/save-upstream\" method=\"get\">"
+            "<div class=\"settings-surface-body settings-upstream-grid\">"
+            "<label class=\"settings-surface-field upstream-url\"><span>%3</span>"
+            "<input type=\"url\" name=\"url\" value=\"%4\" placeholder=\"socks5://127.0.0.1:1080\"></label>"
+            "<label class=\"settings-surface-field\"><span>%5</span>"
+            "<input type=\"text\" name=\"username\" value=\"%6\" autocomplete=\"off\"></label>"
+            "<label class=\"settings-surface-field\"><span>%7</span>"
+            "<input type=\"password\" name=\"password\" value=\"\" placeholder=\"%8\" autocomplete=\"new-password\"></label>"
+            "</div><div class=\"settings-surface-footer\"><button type=\"submit\">%9</button></div>"
+            "</form></section>"
+            "<section class=\"settings-surface settings-connection-diagnostics\">"
+            "<div class=\"settings-surface-header\"><h3>%10</h3></div>"
+            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%11%12%13%14</div></div>"
+            "<div class=\"settings-surface-footer\"><a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:network\">%15</a></div>"
+            "</section>")
+                     .arg(e(t("tor.settings.upstream_title")), e(t("tor.settings.upstream_description")),
+                          e(t("tor.settings.proxy_url")), e(context.upstreamProxyUrl),
+                          e(t("tor.settings.username")), e(context.upstreamProxyUsername),
+                          e(t("tor.settings.password")), e(t("tor.settings.password_unchanged")),
+                          e(t("common.save")), e(t("tor.diagnostics.title")),
+                          infoRow(t("tor.diagnostics.strategy"), context.torCurrentStrategy, QStringLiteral("settings-tor-strategy")),
+                          infoRow(t("tor.diagnostics.system_proxy"), context.torSystemProxyStatus, QStringLiteral("settings-system-proxy")),
+                          infoRow(t("tor.diagnostics.tunnel"), context.torTunnelStatus, QStringLiteral("settings-tunnel")),
+                          infoRow(t("tor.diagnostics.local_proxy"), context.torLocalProxyStatus, QStringLiteral("settings-local-proxy")),
+                          e(t("tor.conflict.diagnostics")));
     } else if (category == QStringLiteral("downloads")) {
         panel = QStringLiteral("<h2>%1</h2><p>%2</p><a class=\"button primary\" href=\"https://granger.local/__action/open?page=about:downloads\">%3</a>")
                     .arg(e(t("page.downloads.title")), e(t("settings.downloads_description")), e(t("settings.open_downloads")));
@@ -1529,7 +1588,50 @@ QString InternalPages::settings(const InternalPageContext &context)
 
 QString InternalPages::network(const InternalPageContext &context)
 {
-    return chrome(t("page.network.title"), t("page.network.subtitle"), QStringLiteral("<div class=\"status-page ds-page-stack\"><section class=\"ds-card ds-info-card\"><div class=\"info-list\">%1%2%3</div></section></div>").arg(infoRow(t("label.proxy"), s(context.proxyState)), infoRow(t("label.route"), s(context.currentRoute)), infoRow(t("label.state"), s(context.routeState))));
+    QString body = QStringLiteral("<div class=\"status-page ds-page-stack\">");
+    if (context.torConflictWarning) {
+        body += QStringLiteral(
+            "<section class=\"tor-conflict-alert\" role=\"alert\" data-conflict-code=\"%1\">"
+            "<h2>%2</h2><p>%3</p><p class=\"tor-conflict-action\">%4</p><p>%5</p>"
+            "<div class=\"tor-conflict-actions\">"
+            "<a class=\"button primary\" href=\"https://granger.local/__action/connection/apply?mode=automatic\">%6</a>"
+            "<a class=\"button secondary\" href=\"https://granger.local/__action/settings/category?id=connection\">%7</a>"
+            "</div></section>")
+                    .arg(e(context.torConflictCode), e(t("tor.conflict.title")),
+                         e(context.torConflictSummary), e(context.torRecommendedAction),
+                         e(t("tor.conflict.fail_closed")), e(t("tor.conflict.retry")),
+                         e(t("tor.conflict.settings")));
+    }
+    QString diagnostics;
+    diagnostics += infoRow(t("tor.diagnostics.process"), context.torExecutable.isEmpty()
+        ? t("tor.diagnostics.not_detected") : context.torExecutable);
+    diagnostics += infoRow(t("label.bootstrap"), context.bridgeBootstrap);
+    diagnostics += infoRow(t("tor.diagnostics.strategy"), context.torCurrentStrategy);
+    diagnostics += infoRow(t("tor.diagnostics.transport"), context.torTransport);
+    diagnostics += infoRow(t("tor.diagnostics.system_proxy"), context.torSystemProxyStatus);
+    diagnostics += infoRow(t("tor.diagnostics.tunnel"), context.torTunnelStatus);
+    diagnostics += infoRow(t("tor.diagnostics.local_proxy"), context.torLocalProxyStatus);
+    diagnostics += infoRow(t("tor.diagnostics.ipv4"), context.torIpv4Status);
+    diagnostics += infoRow(t("tor.diagnostics.ipv6"), context.torIpv6Status);
+    diagnostics += infoRow(t("tor.diagnostics.last_error"), context.bridgeError.isEmpty()
+        ? t("tor.diagnostics.none") : context.bridgeError);
+    diagnostics += infoRow(t("tor.diagnostics.probable_conflict"), context.torConflictWarning
+        ? context.torConflictSummary : t("tor.diagnostics.none"));
+    diagnostics += infoRow(t("tor.diagnostics.recommended_action"), context.torConflictWarning
+        ? context.torRecommendedAction
+        : (context.bridgeState == QStringLiteral("Failed")
+               ? t("tor.diagnostics.action.inspect_log") : t("tor.diagnostics.no_action")));
+    body += QStringLiteral(
+        "<section class=\"ds-card ds-info-card\"><div class=\"ds-card-header\"><h2>%1</h2></div>"
+        "<div class=\"info-list\">%2%3%4</div></section>"
+        "<section class=\"ds-card ds-info-card\"><div class=\"ds-card-header\"><h2>%5</h2></div>"
+        "<div class=\"info-list\">%6</div></section>"
+        "<div class=\"ds-action-bar\"><a class=\"button secondary\" href=\"https://granger.local/__action/settings/category?id=connection\">%7</a></div></div>")
+                .arg(e(t("label.status")), infoRow(t("label.proxy"), s(context.proxyState)),
+                     infoRow(t("label.route"), s(context.currentRoute)),
+                     infoRow(t("label.state"), s(context.routeState)),
+                     e(t("tor.diagnostics.title")), diagnostics, e(t("tor.conflict.settings")));
+    return chrome(t("page.network.title"), t("page.network.subtitle"), body);
 }
 
 QString InternalPages::reports(const InternalPageContext &context)

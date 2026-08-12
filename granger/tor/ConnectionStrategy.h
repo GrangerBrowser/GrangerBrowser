@@ -35,6 +35,8 @@ struct ConnectionConfig {
     QString upstreamProxyUrl;
     QString upstreamProxyUsername;
     QString upstreamProxyPassword;
+    QString managedTorSocksEndpoint;
+    QString managedTorControlEndpoint;
 };
 
 class TorBinaryResolver {

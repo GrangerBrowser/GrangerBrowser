@@ -1391,6 +1391,12 @@ MainWindow::~MainWindow()
 {
     if (qApp) qApp->removeEventFilter(this);
 
+    // Member managers outlive this destructor body. Stop their callbacks before
+    // tabs and WebEngine pages are torn down so shutdown cannot re-enter the UI.
+    QObject::disconnect(&m_containers, nullptr, this, nullptr);
+    QObject::disconnect(&m_privacy, nullptr, this, nullptr);
+    QObject::disconnect(&m_tor, nullptr, this, nullptr);
+
     if (m_sessionSaveTimer) m_sessionSaveTimer->stop();
     if (m_historySaveTimer) m_historySaveTimer->stop();
     if (m_downloadHistorySaveTimer) m_downloadHistorySaveTimer->stop();
@@ -1446,8 +1452,6 @@ MainWindow::~MainWindow()
         m_privacy.unregisterExternalProfile(profile);
         delete profile;
     }
-
-    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 }
 
 TorStatus MainWindow::torStatus() const
@@ -2641,6 +2645,7 @@ void MainWindow::wireSignals()
             || status.bridgeState == QStringLiteral("Connected")) {
             m_lastLoggedTorBridgeError.clear();
             m_lastTorFailureDiagnostic.clear();
+            m_torConflictDiagnosis = TorConflictDiagnosis();
         }
         if (!status.bridgeError.isEmpty() && status.bridgeError != m_lastLoggedTorBridgeError) {
             appendBrowserLog(QStringLiteral("Tor bridge status state=%1 bootstrap=%2 reason=%3")
@@ -2652,6 +2657,7 @@ void MainWindow::wireSignals()
         if (status.bridgeState == QStringLiteral("Failed")
             && !status.bridgeError.isEmpty()
             && status.bridgeError != m_lastTorFailureDiagnostic) {
+            diagnoseTorFailure(status);
             QJsonObject diagnostic;
             diagnostic.insert(QStringLiteral("sessionId"), newBridgeSessionId());
             diagnostic.insert(QStringLiteral("kind"), QStringLiteral("tor-runtime-failure"));
@@ -2663,6 +2669,8 @@ void MainWindow::wireSignals()
             diagnostic.insert(QStringLiteral("torrcPath"), status.torrcPath);
             diagnostic.insert(QStringLiteral("socksEndpoint"), status.socksEndpoint);
             diagnostic.insert(QStringLiteral("torOutputTail"), QJsonArray::fromStringList(status.torOutputTail));
+            diagnostic.insert(QStringLiteral("networkEnvironment"), m_networkEnvironment.toJson());
+            diagnostic.insert(QStringLiteral("conflictDiagnosis"), m_torConflictDiagnosis.toJson());
             const QString path = writeBridgeDiagnostic(diagnostic);
             appendBrowserLog(QStringLiteral("Tor runtime failure diagnostic=%1").arg(path));
             m_lastTorFailureDiagnostic = status.bridgeError;
@@ -4912,7 +4920,7 @@ void MainWindow::clearTorSessionAfterDisconnect()
 
 BrowserTab *MainWindow::currentTab() const
 {
-    return m_tabs->currentBrowserTab();
+    return m_tabs ? m_tabs->currentBrowserTab() : nullptr;
 }
 
 BrowserTab *MainWindow::tabForPage(QWebEnginePage *page) const
@@ -6504,6 +6512,7 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
 
     if ((host == QStringLiteral("connection") && path == QStringLiteral("/save-external"))
         || path == QStringLiteral("/connection/save-external")) {
+        const QString returnPage = settingsReturnAddress(tab);
         const QString endpoint = formUrlEncodedValue(url, QStringLiteral("url")).trimmed();
         const QUrl parsed(endpoint);
         const QString scheme = parsed.scheme().toLower();
@@ -6512,32 +6521,54 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
             || parsed.port(-1) < 1
             || (scheme != QStringLiteral("socks5") && scheme != QStringLiteral("socks5h"))) {
             loadInternalPage(tab,
-                             QStringLiteral("about:bridges"),
+                             returnPage,
                              QString(),
-                             QStringLiteral("Invalid external Tor SOCKS endpoint. Use socks5://host:port."));
+                             Localization::text(QStringLiteral("tor.settings.external_invalid")));
+            return;
+        }
+        if (NetworkEnvironmentProbe::proxyTargetsManagedEndpoint(
+                endpoint,
+                {QStringLiteral("127.0.0.1:19050"), QStringLiteral("127.0.0.1:19051")})) {
+            loadInternalPage(tab, returnPage, QString(),
+                             Localization::text(QStringLiteral("tor.settings.proxy_loop")));
             return;
         }
         m_settings.setExternalTorSocksUrl(endpoint);
         loadInternalPage(tab,
-                         QStringLiteral("about:bridges"),
+                         returnPage,
                          QString(),
-                         QStringLiteral("External Tor SOCKS endpoint saved. Apply verifies it without managing the external process."));
+                         Localization::text(QStringLiteral("tor.settings.external_saved")));
         return;
     }
 
     if ((host == QStringLiteral("connection") && path == QStringLiteral("/save-upstream"))
         || path == QStringLiteral("/connection/save-upstream")) {
+        const QString returnPage = settingsReturnAddress(tab);
         const QString proxy = formUrlEncodedValue(url, QStringLiteral("url")).trimmed();
         const QString username = formUrlEncodedValue(url, QStringLiteral("username"));
         QString password = formUrlEncodedValue(url, QStringLiteral("password"));
+        if (proxy.isEmpty()) {
+            m_settings.setUpstreamProxy(QString(), QString(), QString());
+            loadInternalPage(tab, returnPage, QString(),
+                             Localization::text(QStringLiteral("tor.settings.upstream_cleared")));
+            return;
+        }
         const QUrl parsed(proxy);
         const QString scheme = parsed.scheme().toLower();
         const QStringList supported{QStringLiteral("socks4"), QStringLiteral("socks5"), QStringLiteral("socks5h"), QStringLiteral("http"), QStringLiteral("https")};
-        if (!parsed.isValid() || parsed.host().isEmpty() || parsed.port(-1) < 1 || !supported.contains(scheme)) {
+        if (!parsed.isValid() || parsed.host().isEmpty() || parsed.port(-1) < 1 || !supported.contains(scheme)
+            || !parsed.userName().isEmpty() || !parsed.password().isEmpty()) {
             loadInternalPage(tab,
-                             QStringLiteral("about:bridges"),
+                             returnPage,
                              QString(),
-                             QStringLiteral("Invalid upstream proxy. Use socks4://, socks5://, http://, or https:// with an explicit port."));
+                             Localization::text(QStringLiteral("tor.settings.upstream_invalid")));
+            return;
+        }
+        if (NetworkEnvironmentProbe::proxyTargetsManagedEndpoint(
+                proxy,
+                {QStringLiteral("127.0.0.1:19050"), QStringLiteral("127.0.0.1:19051")})) {
+            loadInternalPage(tab, returnPage, QString(),
+                             Localization::text(QStringLiteral("tor.settings.proxy_loop")));
             return;
         }
         if (password.isEmpty() && username == m_settings.upstreamProxyUsername()) {
@@ -6545,16 +6576,16 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
         }
         if (scheme == QStringLiteral("socks4") && (!username.isEmpty() || !password.isEmpty())) {
             loadInternalPage(tab,
-                             QStringLiteral("about:bridges"),
+                             returnPage,
                              QString(),
-                             QStringLiteral("Tor does not support credentials on Socks4Proxy."));
+                             Localization::text(QStringLiteral("tor.settings.socks4_credentials")));
             return;
         }
         m_settings.setUpstreamProxy(proxy, username, password);
         loadInternalPage(tab,
-                         QStringLiteral("about:bridges"),
+                         returnPage,
                          QString(),
-                         QStringLiteral("Upstream proxy saved. Passwords use Windows Credential Manager and are excluded from diagnostics."));
+                         Localization::text(QStringLiteral("tor.settings.upstream_saved")));
         return;
     }
 
@@ -7664,6 +7695,12 @@ InternalPageContext MainWindow::pageContext(const QString &message,
 {
     const SearchModuleStatus search = m_search.status();
     const TorStatus tor = m_tor.status();
+    if (m_networkEnvironment.capturedAt.isEmpty()
+        || page == QStringLiteral("about:network")
+        || (page == QStringLiteral("about:settings")
+            && settingsCategory == QStringLiteral("connection"))) {
+        refreshNetworkEnvironment();
+    }
 
     InternalPageContext context;
     context.homeUrl = m_settings.homeUrl();
@@ -7720,6 +7757,37 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     context.externalTorSocksUrl = m_settings.externalTorSocksUrl();
     context.upstreamProxyUrl = m_settings.upstreamProxyUrl();
     context.upstreamProxyUsername = m_settings.upstreamProxyUsername();
+    const auto detectedStatus = [](bool detected, const QStringList &details = QStringList()) {
+        const QString status = Localization::text(detected
+            ? QStringLiteral("tor.diagnostics.detected")
+            : QStringLiteral("tor.diagnostics.not_detected"));
+        return detected && !details.isEmpty()
+            ? QStringLiteral("%1: %2").arg(status, details.join(QStringLiteral(", ")))
+            : status;
+    };
+    context.torCurrentStrategy = m_activeConnectionStrategy.isEmpty()
+        ? Localization::text(QStringLiteral("tor.diagnostics.none")) : m_activeConnectionStrategy;
+    context.torTransport = tor.bridgeTransport.isEmpty()
+        ? Localization::text(QStringLiteral("tor.diagnostics.none")) : tor.bridgeTransport;
+    context.torSystemProxyStatus = detectedStatus(
+        m_networkEnvironment.systemProxyDetected());
+    context.torTunnelStatus = detectedStatus(
+        m_networkEnvironment.tunnelInterfaceDetected, m_networkEnvironment.tunnelKinds);
+    context.torLocalProxyStatus = detectedStatus(
+        m_networkEnvironment.localProxyDetected(), m_networkEnvironment.localProxyEndpoints);
+    context.torIpv4Status = Localization::text(m_networkEnvironment.ipv4Available
+        ? QStringLiteral("tor.diagnostics.available") : QStringLiteral("tor.diagnostics.unavailable"));
+    context.torIpv6Status = Localization::text(m_networkEnvironment.ipv6Available
+        ? QStringLiteral("tor.diagnostics.available") : QStringLiteral("tor.diagnostics.unavailable"));
+    context.torConflictCode = m_torConflictDiagnosis.code;
+    context.torConflictWarning = !m_automaticActive
+        && tor.bridgeState == QStringLiteral("Failed")
+        && m_torConflictDiagnosis.probableConflict;
+    if (context.torConflictWarning) {
+        context.torConflictSummary = Localization::text(
+            QStringLiteral("tor.diagnostics.conflict.%1").arg(m_torConflictDiagnosis.code));
+        context.torRecommendedAction = Localization::text(m_torConflictDiagnosis.recommendedActionKey);
+    }
     context.language = m_settings.language();
     context.searchImplementation = search.implementation;
     context.resultsPath = search.lastResultsPath;
@@ -11260,6 +11328,19 @@ void MainWindow::updateRouteState(const QString &state, const QString &error)
     if (m_navigation) syncAddressBar();
 }
 
+void MainWindow::refreshNetworkEnvironment()
+{
+    m_networkEnvironment = NetworkEnvironmentProbe::capture(m_settings.upstreamProxyUrl());
+}
+
+void MainWindow::diagnoseTorFailure(const TorStatus &status)
+{
+    refreshNetworkEnvironment();
+    const QString failure = status.bridgeError.isEmpty() ? status.routeState : status.bridgeError;
+    m_torConflictDiagnosis = NetworkEnvironmentProbe::diagnoseTorFailure(
+        m_networkEnvironment, failure, status.bootstrapProgress, m_activeConnectionStrategy);
+}
+
 bool MainWindow::proxyEndpointReachable(const QString &proxy, QString *error) const
 {
     const QUrl url(proxy);
@@ -11364,6 +11445,8 @@ ConnectionConfig MainWindow::connectionConfig() const
     config.upstreamProxyUrl = m_settings.upstreamProxyUrl();
     config.upstreamProxyUsername = m_settings.upstreamProxyUsername();
     config.upstreamProxyPassword = m_settings.upstreamProxyPassword();
+    config.managedTorSocksEndpoint = QStringLiteral("127.0.0.1:19050");
+    config.managedTorControlEndpoint = QStringLiteral("127.0.0.1:19051");
     return config;
 }
 
@@ -11419,6 +11502,8 @@ void MainWindow::startAutomaticConnection()
     m_activeConnectionStrategy.clear();
     m_automaticTransitionPending = false;
     m_automaticActive = true;
+    m_torConflictDiagnosis = TorConflictDiagnosis();
+    refreshNetworkEnvironment();
 
     if (!m_settings.externalTorSocksUrl().isEmpty()) {
         m_automaticQueue.append(QStringLiteral("external"));
@@ -11515,6 +11600,8 @@ void MainWindow::startSavedTorConnection()
     if (mode.isEmpty() || mode == QStringLiteral("disabled")) {
         return;
     }
+    m_torConflictDiagnosis = TorConflictDiagnosis();
+    refreshNetworkEnvironment();
     if (mode == QStringLiteral("automatic")) {
         startAutomaticConnection();
         return;
@@ -11672,23 +11759,42 @@ void MainWindow::updateSettingsConnectionDomIfVisible()
 {
     BrowserTab *tab = currentTab();
     if (!tab || !tab->displayAddress().startsWith(QStringLiteral("about:settings"), Qt::CaseInsensitive)) return;
+    const QUrl currentAddress(tab->displayAddress());
+    const QString category = QUrlQuery(currentAddress).queryItemValue(QStringLiteral("category")).trimmed().toLower();
+    if ((!category.isEmpty() && category != QStringLiteral("connection"))
+        || (category.isEmpty() && m_settingsUi.activeCategory != QStringLiteral("connection"))) {
+        return;
+    }
     const InternalPageContext context = pageContext(QString(),
                                                     QStringLiteral("about:settings"),
                                                     QStringLiteral("connection"));
+    if (context.torConflictWarning) {
+        loadInternalPage(tab, tab->displayAddress());
+        return;
+    }
     const QString script = QStringLiteral(R"JS((function(){
         const values = {
             'settings-route': %1,
             'settings-tor-state': %2,
-            'settings-bootstrap': %3
+            'settings-bootstrap': %3,
+            'settings-tor-strategy': %4,
+            'settings-system-proxy': %5,
+            'settings-tunnel': %6,
+            'settings-local-proxy': %7
         };
         for (const [id, value] of Object.entries(values)) {
             const node = document.getElementById(id);
             if (node && node.textContent !== value) node.textContent = value;
         }
+        document.querySelector('.tor-conflict-alert')?.remove();
     })();)JS")
                                .arg(javascriptString(Localization::statusText(context.currentRoute)),
                                     javascriptString(Localization::statusText(context.torState)),
-                                    javascriptString(Localization::statusText(context.bridgeBootstrap)));
+                                    javascriptString(Localization::statusText(context.bridgeBootstrap)),
+                                    javascriptString(context.torCurrentStrategy),
+                                    javascriptString(context.torSystemProxyStatus),
+                                    javascriptString(context.torTunnelStatus),
+                                    javascriptString(context.torLocalProxyStatus));
     tab->page()->runJavaScript(script);
 }
 

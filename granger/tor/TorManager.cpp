@@ -1,5 +1,7 @@
 #include "granger/tor/TorManager.h"
 
+#include "granger/tor/NetworkEnvironmentProbe.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -174,7 +176,6 @@ void TorManager::setBridgeFailed(const QString &reason)
     m_status.bridgeState = QStringLiteral("Failed");
     m_status.bridgeEnabled = false;
     m_status.routeVerified = false;
-    m_status.bootstrapProgress = -1;
     m_status.bridgeError = reason.trimmed();
     m_status.bootstrapMessage = m_status.bridgeError;
     m_status.routeState = m_status.bridgeError;
@@ -285,6 +286,20 @@ bool TorManager::applyBridgeConfig(const QString &torrcPath,
     m_status.torrcVerified = true;
 
     stopManagedTor();
+    QString endpointError;
+    if (!NetworkEnvironmentProbe::endpointAvailableForListen(socksEndpoint, &endpointError)) {
+        const QString reason = QStringLiteral("managed Tor SOCKS endpoint unavailable: %1").arg(endpointError);
+        setBridgeFailed(reason);
+        if (error) *error = reason;
+        return false;
+    }
+    if (!m_controlEndpoint.isEmpty()
+        && !NetworkEnvironmentProbe::endpointAvailableForListen(m_controlEndpoint, &endpointError)) {
+        const QString reason = QStringLiteral("managed Tor control endpoint unavailable: %1").arg(endpointError);
+        setBridgeFailed(reason);
+        if (error) *error = reason;
+        return false;
+    }
     m_status.bridgeTransport = bridgeTransport.trimmed();
     m_status.bridgeState = QStringLiteral("Starting Tor");
     m_status.bootstrapProgress = 0;

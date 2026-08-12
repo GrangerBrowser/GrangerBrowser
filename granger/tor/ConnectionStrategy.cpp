@@ -1,5 +1,7 @@
 #include "granger/tor/ConnectionStrategy.h"
 
+#include "granger/tor/NetworkEnvironmentProbe.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -225,6 +227,21 @@ bool validSocksCredentials(const ConnectionConfig &config, QString *error)
         return false;
     }
     return true;
+}
+
+bool proxyAvoidsManagedTorLoop(const QString &proxyUrl,
+                               const ConnectionConfig &config,
+                               QString *error)
+{
+    if (!NetworkEnvironmentProbe::proxyTargetsManagedEndpoint(
+            proxyUrl,
+            {config.managedTorSocksEndpoint, config.managedTorControlEndpoint})) {
+        return true;
+    }
+    if (error) {
+        *error = QStringLiteral("proxy loop: endpoint targets a Granger managed Tor SOCKS/control port");
+    }
+    return false;
 }
 }
 
@@ -620,7 +637,8 @@ bool ExternalTorSocksStrategy::validateConfiguration(const TorRuntime &, const Q
     return validProxyUrl(config.externalTorSocksUrl,
                          {QStringLiteral("socks5"), QStringLiteral("socks5h")},
                          nullptr,
-                         error);
+                         error)
+        && proxyAvoidsManagedTorLoop(config.externalTorSocksUrl, config, error);
 }
 bool ExternalTorSocksStrategy::prepareTorrc(TorrcBuilder &, const TorRuntime &, const QVector<BridgeProfile> &, const ConnectionConfig &, QString *) const
 {
@@ -634,14 +652,17 @@ QString UpstreamSocksTorStrategy::transportType() const { return QStringLiteral(
 QStringList UpstreamSocksTorStrategy::requirements() const { return {QStringLiteral("tor"), QStringLiteral("configured upstream SOCKS proxy")}; }
 bool UpstreamSocksTorStrategy::validateConfiguration(const TorRuntime &runtime, const QVector<BridgeProfile> &, const ConnectionConfig &config, QString *error) const
 {
-    if (!runtime.hasTor()) {
-        if (error) *error = runtime.torMissingMessage();
-        return false;
-    }
     if (!validProxyUrl(config.upstreamProxyUrl,
                        {QStringLiteral("socks4"), QStringLiteral("socks5"), QStringLiteral("socks5h")},
                        nullptr,
                        error)) {
+        return false;
+    }
+    if (!proxyAvoidsManagedTorLoop(config.upstreamProxyUrl, config, error)) {
+        return false;
+    }
+    if (!runtime.hasTor()) {
+        if (error) *error = runtime.torMissingMessage();
         return false;
     }
     if (config.upstreamProxyUrl.startsWith(QStringLiteral("socks4:"), Qt::CaseInsensitive)
@@ -675,14 +696,18 @@ QString UpstreamHttpTorStrategy::transportType() const { return QStringLiteral("
 QStringList UpstreamHttpTorStrategy::requirements() const { return {QStringLiteral("tor"), QStringLiteral("configured upstream HTTP/HTTPS proxy")}; }
 bool UpstreamHttpTorStrategy::validateConfiguration(const TorRuntime &runtime, const QVector<BridgeProfile> &, const ConnectionConfig &config, QString *error) const
 {
+    if (!validProxyUrl(config.upstreamProxyUrl,
+                       {QStringLiteral("http"), QStringLiteral("https")},
+                       nullptr,
+                       error)
+        || !proxyAvoidsManagedTorLoop(config.upstreamProxyUrl, config, error)) {
+        return false;
+    }
     if (!runtime.hasTor()) {
         if (error) *error = runtime.torMissingMessage();
         return false;
     }
-    return validProxyUrl(config.upstreamProxyUrl,
-                         {QStringLiteral("http"), QStringLiteral("https")},
-                         nullptr,
-                         error);
+    return true;
 }
 bool UpstreamHttpTorStrategy::prepareTorrc(TorrcBuilder &builder, const TorRuntime &, const QVector<BridgeProfile> &, const ConnectionConfig &config, QString *error) const
 {
