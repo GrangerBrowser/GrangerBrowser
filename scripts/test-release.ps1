@@ -78,6 +78,19 @@ if ($looseUiAssets.Count -ne 0 -or $sourceAssetDirectories.Count -ne 0) {
     throw "Acceptance package contains loose UI source assets: $($unexpectedUiAssets -join ', ')"
 }
 
+$forbiddenFullPampDirectories = @(Get-ChildItem -LiteralPath $copiedPackage -Recurse -Directory | Where-Object {
+    $_.Name.ToLowerInvariant() -in @('pentest', 'pamp')
+})
+$pythonRuntimeArtifacts = @(Get-ChildItem -LiteralPath $copiedPackage -Recurse -File | Where-Object {
+    $_.Extension.ToLowerInvariant() -in @('.py', '.pyc', '.pyz', '.pyd', '.whl') -or
+    $_.Name.ToLowerInvariant() -in @('python.exe', 'pythonw.exe') -or
+    $_.Name -like 'python*.dll'
+})
+if ($forbiddenFullPampDirectories.Count -ne 0 -or $pythonRuntimeArtifacts.Count -ne 0) {
+    $unexpectedPampRuntime = @($forbiddenFullPampDirectories.FullName) + @($pythonRuntimeArtifacts.FullName)
+    throw "Acceptance package contains an unreviewed full Pamp/Python runtime: $($unexpectedPampRuntime -join ', ')"
+}
+
 function Invoke-GrangerBrowser {
     param([string[]]$Arguments, [switch]$AllowNonZero)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -708,6 +721,8 @@ userAgentProfile=default
         TestedCopyRemovedAfterReport = $true
         CurrentDirectory = $unrelatedCwd
         PythonOnPath = $pythonOnPath
+        FullPampDirectoryCount = $forbiddenFullPampDirectories.Count
+        PythonRuntimeArtifactCount = $pythonRuntimeArtifacts.Count
         BrandingMetadata = $brandingMetadata
         LegacyNamedEntryCount = $legacyNamedEntries.Count
         LegacyUserVisibleTextMatchCount = @($legacyTextMatches).Count

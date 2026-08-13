@@ -78,8 +78,16 @@ try {
         -Destination "release/.staging" -SkipBuild
     if ($LASTEXITCODE -ne 0) { throw "Package script failed." }
 
+    $forbiddenFullPampDirectories = @(Get-ChildItem -LiteralPath $staging -Recurse -Directory | Where-Object {
+        $_.Name.ToLowerInvariant() -in @('pentest', 'pamp')
+    })
+    if ($forbiddenFullPampDirectories.Count -ne 0) {
+        throw "Full Pamp directories were packaged: $($forbiddenFullPampDirectories.FullName -join ', ')"
+    }
     $pythonArtifacts = @(Get-ChildItem -LiteralPath $staging -Recurse -File | Where-Object {
-        $_.Extension -in @('.py', '.pyc') -or $_.Name -like 'python*.dll'
+        $_.Extension.ToLowerInvariant() -in @('.py', '.pyc', '.pyz', '.pyd', '.whl') -or
+        $_.Name.ToLowerInvariant() -in @('python.exe', 'pythonw.exe') -or
+        $_.Name -like 'python*.dll'
     })
     if ($pythonArtifacts.Count -ne 0) {
         throw "Python runtime artifacts were packaged: $($pythonArtifacts.FullName -join ', ')"

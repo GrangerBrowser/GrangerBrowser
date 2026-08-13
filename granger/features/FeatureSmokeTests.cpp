@@ -1377,7 +1377,9 @@ int runFeatureSmokeTests(QApplication &app,
     results.record(QStringLiteral("Pamp Lite is compiled and full Pamp is not silently packaged"),
                    QFileInfo(QStringLiteral(":/legal/pamp-lite-attribution.md")).exists()
                        && !QFileInfo(QDir(AppPaths::applicationRoot())
-                                         .filePath(QStringLiteral("pentest"))).exists());
+                                         .filePath(QStringLiteral("pentest"))).exists()
+                       && !QFileInfo(QDir(AppPaths::applicationRoot())
+                                         .filePath(QStringLiteral("pamp"))).exists());
 
     results.record(QStringLiteral("compiled AI and application icons are independent of root source files"),
                    QFileInfo(QStringLiteral(":/icons/ai.png")).exists()
@@ -1483,6 +1485,7 @@ int runFeatureSmokeTests(QApplication &app,
                        QString::fromUtf8(QJsonDocument(emptyPanelDiagnostics)
                                              .toJson(QJsonDocument::Compact)));
         emptyDownloadPanel.hide();
+        settleEvents(20);
 
         DownloadPanel downloadPanel;
         downloadPanel.setDownloads(

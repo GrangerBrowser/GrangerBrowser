@@ -145,6 +145,12 @@ $appLocalPythonDlls = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -Fi
 if ($appLocalPythonDlls.Count -ne 0) {
     throw "Package validation failed; app-local Python DLLs are not part of the reviewed browser runtime."
 }
+$forbiddenPythonPayloads = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File | Where-Object {
+    $_.Extension.ToLowerInvariant() -in @(".py", ".pyc", ".pyz", ".pyd", ".whl")
+})
+if ($forbiddenPythonPayloads.Count -ne 0) {
+    throw "Package validation failed; Python source or module payloads are not part of the reviewed browser runtime."
+}
 
 $versionInfo = (Get-Item -LiteralPath (Join-Path $resolvedPackage "GrangerBrowser.exe")).VersionInfo
 if ($versionInfo.ProductName -ne "Granger Browser" -or

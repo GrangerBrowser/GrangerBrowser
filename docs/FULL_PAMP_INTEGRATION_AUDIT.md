@@ -1,6 +1,6 @@
 # Full Pamp integration audit
 
-Audit date: 2026-08-11
+Audit date: 2026-08-13
 
 ## Scope
 
@@ -26,6 +26,11 @@ The tracked Pamp test suite was run with `PYTHONDONTWRITEBYTECODE=1`:
 The test result verifies the currently installed development environment. It
 does not prove that Pamp can be embedded safely in Granger Browser.
 
+The audit was repeated on 2026-08-13 with `PYTHONDONTWRITEBYTECODE=1` against
+the same revision and the pre-existing dirty checkout state. Python 3.14.5 ran
+all 50 tracked unit tests in 1.241 seconds: 50 passed and 0 failed. The test run
+did not add another checkout change. No active target scan was launched.
+
 ## Production decision
 
 Full Pamp is deliberately not packaged in Granger Browser. The audited source
@@ -49,8 +54,11 @@ It would only hide an unsafe integration.
 
 The packaged browser contains the native C++ Pamp Lite implementation and its
 attribution. It must not contain a `pentest` or full-Pamp directory, a Python
-executable, or app-local Python DLLs. The release packaging script enforces this
-invariant.
+executable, app-local Python DLLs, or Python source/module payloads. Package
+creation, canonical promotion, and copied-package acceptance independently
+reject full-Pamp directories and `.py`, `.pyc`, `.pyz`, `.pyd`, or `.whl`
+payloads. The packaged feature smoke also verifies that Pamp Lite attribution is
+compiled while neither a `pentest` nor `pamp` runtime directory is present.
 
 ## Requirements before integration
 
