@@ -404,7 +404,7 @@ QJsonObject PampLiteEngine::toJson(const PampLiteReport &report)
     return QJsonObject{{QStringLiteral("version"), 2},
                        {QStringLiteral("engine"), QStringLiteral("Granger Browser Pamp Lite passive routed analyzer")},
                        {QStringLiteral("attribution"),
-                        QStringLiteral("Clean-room native integration inspired by Pamp report concepts; no pentest runtime dependency")},
+                        QStringLiteral("Clean-room native integration inspired by Pamp report concepts; no full Pamp runtime dependency")},
                        {QStringLiteral("reportId"), report.id},
                        {QStringLiteral("createdAt"), report.createdAt},
                        {QStringLiteral("target"), report.target},

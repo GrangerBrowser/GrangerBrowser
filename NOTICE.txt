@@ -25,8 +25,8 @@ are licensed under GPL-3.0-only. Their source metadata is documented in
 
 No Python runtime is required to start or use the packaged desktop browser.
 
-Granger Browser Pamp Lite is a clean-room native C++ passive analyzer. The local
-`pentest` project was reviewed for high-level report concepts but has no
+Granger Browser Pamp Lite is a clean-room native C++ passive analyzer. The
+separate full Pamp project was reviewed for high-level report concepts but has no
 repository-level license grant, so none of its Python code, templates, active
 scanners, branding, or assets are included. Details are recorded in
 `granger/pamp_lite/ATTRIBUTION.md`.

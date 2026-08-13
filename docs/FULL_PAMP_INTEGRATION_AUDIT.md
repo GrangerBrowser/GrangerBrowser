@@ -4,7 +4,7 @@ Audit date: 2026-08-13
 
 ## Scope
 
-The sibling `pentest` checkout is the full Python Pamp application. It is not
+The sibling `pamp` checkout is the full Python Pamp application. It is not
 Pamp Lite and is not part of the Granger Browser source tree or runtime.
 
 Audited revision:
@@ -31,6 +31,13 @@ the same revision and the pre-existing dirty checkout state. Python 3.14.5 ran
 all 50 tracked unit tests in 1.241 seconds: 50 passed and 0 failed. The test run
 did not add another checkout change. No active target scan was launched.
 
+The checkout directory was then renamed in place from `pentest` to `pamp`.
+Its Git revision, tracked modifications, runtime reports, and untracked case
+data were preserved. `scripts/test-pamp-runtime.ps1` verifies the current
+directory contract, imports the runtime, runs the tracked suite, and exercises
+a real CLI startup followed by the normal Exit command. The acceptance does not
+start a target scan or contact a network service.
+
 ## Production decision
 
 Full Pamp is deliberately not packaged in Granger Browser. The audited source
@@ -47,6 +54,12 @@ does not currently satisfy the browser's production route and licensing gates:
 5. Active scanning behavior requires a separate authorization and product
    policy; it must not be invoked implicitly from ordinary browsing.
 
+There was no external full-Pamp process launcher in Granger before the folder
+rename, so there was no production runtime lookup to rewrite. The browser's
+existing Pamp action remains the native routed Pamp Lite implementation. Adding
+a Python launcher solely to make the rename appear integrated would bypass the
+verified-route boundary described above and would be a privacy regression.
+
 Copying or obfuscating the Python files would not fix any of these properties.
 It would only hide an unsafe integration.
 
@@ -59,6 +72,11 @@ creation, canonical promotion, and copied-package acceptance independently
 reject full-Pamp directories and `.py`, `.pyc`, `.pyz`, `.pyd`, or `.whl`
 payloads. The packaged feature smoke also verifies that Pamp Lite attribution is
 compiled while neither a `pentest` nor `pamp` runtime directory is present.
+
+References to `pentest` that remain in release validation are compatibility
+rejection gates. They ensure that an obsolete directory name cannot be copied
+back into a package; they are not lookup paths and are never used to launch
+code.
 
 ## Requirements before integration
 

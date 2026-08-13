@@ -7,8 +7,6 @@
 # Local owner asset drops; canonical tracked copies live in granger/resources.
 /settings_icon/
 /icons_for_browser/
-/Chat-bot/
-/Support-block/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt
@@ -96,6 +94,6 @@ Desktop.ini
 *.user
 *.suo
 
-# Separate local Pamp repository reviewed during the clean-room integration.
-# It has its own Git history and contains runtime reports/case data.
-/pentest/
+# Separate full Pamp runtime checkout. It has its own Git history and contains
+# runtime reports/case data; the packaged browser does not copy it.
+/pamp/

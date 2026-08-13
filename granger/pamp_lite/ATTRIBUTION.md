@@ -2,7 +2,7 @@
 
 Granger Browser Pamp Lite is a clean-room native C++ implementation. It uses the
 general idea of a structured, explainable security report after an architectural
-review of the local `pentest`/Pamp material, but it does not copy that project's
+review of the separate full Pamp material, but it does not copy that project's
 Python implementation, templates, branding, active scanners, or assets.
 
 The reviewed project has no repository-level license file. For that reason no
