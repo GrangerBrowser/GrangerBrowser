@@ -2742,6 +2742,23 @@ int runQrTestSuite(const QString &outputPath)
         results.append(item);
         ok = ok && passed;
     }
+    const granger::QrDecodeResult cryptoBotQr = granger::QrBridgeDecoder::decodeImage(
+        QStringLiteral(":/support/cryptobot-qr.jpg"));
+    const QString cryptoBotQrTarget = QStringLiteral(
+        "https://t.me/CryptoBot?start=IVw0NCEQJkCx");
+    const bool cryptoBotQrPassed = cryptoBotQr.errors.isEmpty()
+        && cryptoBotQr.imageFormat == QStringLiteral("jpeg")
+        && cryptoBotQr.imageWidth == 2000 && cryptoBotQr.imageHeight == 2000
+        && cryptoBotQr.payloads == QStringList{cryptoBotQrTarget};
+    QJsonObject cryptoBotQrCase;
+    cryptoBotQrCase.insert(QStringLiteral("name"), QStringLiteral("cryptobot-styled-qr"));
+    cryptoBotQrCase.insert(QStringLiteral("passed"), cryptoBotQrPassed);
+    cryptoBotQrCase.insert(QStringLiteral("payloads"), QJsonArray::fromStringList(cryptoBotQr.payloads));
+    cryptoBotQrCase.insert(QStringLiteral("errors"), QJsonArray::fromStringList(cryptoBotQr.errors));
+    cryptoBotQrCase.insert(QStringLiteral("width"), cryptoBotQr.imageWidth);
+    cryptoBotQrCase.insert(QStringLiteral("height"), cryptoBotQr.imageHeight);
+    results.append(cryptoBotQrCase);
+    ok = ok && cryptoBotQrPassed;
     const granger::QrDecodeResult missingImage = granger::QrBridgeDecoder::decodeImage(QStringLiteral("Z:/granger/missing/bridge.png"));
     const bool preciseMissingImageError = missingImage.payloads.isEmpty()
         && missingImage.errors == QStringList{granger::Localization::text(QStringLiteral("qr.image_open_failed"))};

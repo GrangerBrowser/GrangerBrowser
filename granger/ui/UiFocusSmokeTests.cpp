@@ -3,6 +3,7 @@
 #include "granger/browser/BrowserContextMenu.h"
 #include "granger/browser/BrowserProfile.h"
 #include "granger/browser/BrowserTab.h"
+#include "granger/bridges/QrBridgeDecoder.h"
 #include "granger/core/AppPaths.h"
 #include "granger/i18n/Localization.h"
 #include "granger/search/SearchManager.h"
@@ -31,6 +32,7 @@
 #include <QFontMetrics>
 #include <QGraphicsOpacityEffect>
 #include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -380,7 +382,83 @@ int runUiFocusSmoke(QApplication &app,
                        && aiIconImage.size() == QSize(64, 64)
                        && aiIconHash == aiIconAsset.value(QStringLiteral("embeddedSha256")).toString()
                        && aiIconScales,
-                   aiIconHash, aiIconAsset.value(QStringLiteral("embeddedSha256")).toString());
+                    aiIconHash, aiIconAsset.value(QStringLiteral("embeddedSha256")).toString());
+
+    const QJsonObject supportAssets = assetManifest.value(QStringLiteral("supportProject")).toObject();
+    const QJsonArray supportIconAssets = supportAssets.value(QStringLiteral("cryptoIcons")).toArray();
+    const QHash<QString, QString> expectedSupportIconHashes{
+        {QStringLiteral("ton"), QStringLiteral("4C2D367215B363E834164AE5A3AC696E301987A2ED21326F180B58C3086D6FB0")},
+        {QStringLiteral("btc"), QStringLiteral("EF8F5164866BCCD378027A9765AA9B484B9B823C1ADCC72E8D4667E28B3500FC")},
+        {QStringLiteral("eth"), QStringLiteral("DE08A994E4EE82A90878AAF993D22AF3033EA2513BDB9FB070BF28524CC92C28")},
+        {QStringLiteral("trc20"), QStringLiteral("CC81DF78080199B29E2B3F605B359CA377103F374666840FA1ECC0F554DC911B")},
+        {QStringLiteral("sol"), QStringLiteral("441585CE60475A58F76A8D22D52C4FEE38C8B39E32F0D93A19161B2882FCC2E9")}
+    };
+    bool supportIconsValid = supportIconAssets.size() == expectedSupportIconHashes.size();
+    for (const QJsonValue &value : supportIconAssets) {
+        const QJsonObject entry = value.toObject();
+        const QString id = entry.value(QStringLiteral("id")).toString();
+        const QString resourcePath = entry.value(QStringLiteral("resource")).toString();
+        QFile resource(resourcePath);
+        const bool opened = resource.open(QIODevice::ReadOnly);
+        const QByteArray bytes = opened ? resource.readAll() : QByteArray();
+        QImage image;
+        const bool decoded = image.loadFromData(bytes, "PNG");
+        const QString hash = QString::fromLatin1(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex().toUpper());
+        supportIconsValid = supportIconsValid && expectedSupportIconHashes.contains(id)
+            && resourcePath.startsWith(QStringLiteral(":/support/"))
+            && opened && decoded && image.size() == QSize(128, 128) && image.hasAlphaChannel()
+            && hash == expectedSupportIconHashes.value(id)
+            && hash == entry.value(QStringLiteral("embeddedSha256")).toString();
+    }
+    results.record(QStringLiteral("all five project-support icons are exact compiled RGBA resources"),
+                   supportIconsValid, QString::number(supportIconAssets.size()), QStringLiteral("5"));
+
+    const QJsonObject supportBannerAsset = supportAssets.value(QStringLiteral("banner")).toObject();
+    const QString supportBannerResource = supportBannerAsset.value(QStringLiteral("resource")).toString();
+    QFile supportBannerFile(supportBannerResource);
+    const bool supportBannerOpened = supportBannerFile.open(QIODevice::ReadOnly);
+    const QByteArray supportBannerBytes = supportBannerOpened ? supportBannerFile.readAll() : QByteArray();
+    QImageReader supportBannerReader(supportBannerResource);
+    const QString supportBannerHash = QString::fromLatin1(
+        QCryptographicHash::hash(supportBannerBytes, QCryptographicHash::Sha256).toHex().toUpper());
+    results.record(QStringLiteral("project-support banner preserves the supplied 37-frame GIF"),
+                   supportBannerOpened && supportBannerReader.canRead()
+                       && supportBannerReader.supportsAnimation()
+                       && supportBannerReader.size() == QSize(1200, 320)
+                       && supportBannerReader.imageCount() == 37
+                       && supportBannerHash == supportBannerAsset.value(QStringLiteral("embeddedSha256")).toString(),
+                   QStringLiteral("frames=%1 hash=%2").arg(supportBannerReader.imageCount()).arg(supportBannerHash));
+
+    const QJsonObject supportStaticAsset = supportAssets.value(QStringLiteral("bannerStatic")).toObject();
+    QFile supportStaticFile(supportStaticAsset.value(QStringLiteral("resource")).toString());
+    const bool supportStaticOpened = supportStaticFile.open(QIODevice::ReadOnly);
+    const QByteArray supportStaticBytes = supportStaticOpened ? supportStaticFile.readAll() : QByteArray();
+    QImage supportStaticImage;
+    const bool supportStaticDecoded = supportStaticImage.loadFromData(supportStaticBytes, "PNG");
+    const QString supportStaticHash = QString::fromLatin1(
+        QCryptographicHash::hash(supportStaticBytes, QCryptographicHash::Sha256).toHex().toUpper());
+    results.record(QStringLiteral("project-support Reduced Motion frame is an integrity-checked compiled PNG"),
+                   supportStaticOpened && supportStaticDecoded
+                       && supportStaticImage.size() == QSize(1200, 320)
+                       && supportStaticHash == supportStaticAsset.value(QStringLiteral("embeddedSha256")).toString(),
+                   supportStaticHash, supportStaticAsset.value(QStringLiteral("embeddedSha256")).toString());
+
+    const QJsonObject supportQrAsset = supportAssets.value(QStringLiteral("cryptoBotQr")).toObject();
+    const QString supportQrResource = supportQrAsset.value(QStringLiteral("resource")).toString();
+    QFile supportQrFile(supportQrResource);
+    const bool supportQrOpened = supportQrFile.open(QIODevice::ReadOnly);
+    const QByteArray supportQrBytes = supportQrOpened ? supportQrFile.readAll() : QByteArray();
+    const QString supportQrHash = QString::fromLatin1(
+        QCryptographicHash::hash(supportQrBytes, QCryptographicHash::Sha256).toHex().toUpper());
+    const QrDecodeResult supportQrDecode = QrBridgeDecoder::decodeImage(supportQrResource);
+    results.record(QStringLiteral("supplied CryptoBot QR decodes to the exact fixed target"),
+                   supportQrOpened
+                       && supportQrHash == supportQrAsset.value(QStringLiteral("embeddedSha256")).toString()
+                       && supportQrDecode.imageWidth == 2000 && supportQrDecode.imageHeight == 2000
+                       && supportQrDecode.payloads == QStringList{InternalPages::supportCryptoBotQrUrl()},
+                   supportQrDecode.payloads.join(QStringLiteral(" | ")),
+                   InternalPages::supportCryptoBotQrUrl());
 
     struct SettingsIconExpectation {
         QString category;
@@ -456,6 +534,7 @@ int runUiFocusSmoke(QApplication &app,
         {QStringLiteral("downloads"), QStringLiteral(":/icons/downloads.svg")},
         {QStringLiteral("reports"), QStringLiteral(":/icons/reports.svg")},
         {QStringLiteral("advanced"), QStringLiteral(":/icons/site-controls.svg")},
+        {QStringLiteral("support"), QStringLiteral(":/icons/container-star.svg")},
         {QStringLiteral("about"), QStringLiteral(":/icons/browser.svg")}
     };
     bool unchangedSettingsIconsValid = true;
@@ -471,7 +550,7 @@ int runUiFocusSmoke(QApplication &app,
     }
     results.record(QStringLiteral("six owner Settings PNG resources are compiled without replacing other icons"),
                    settingsIconResourcesValid && unchangedSettingsIconsValid
-                       && expectedSettingsNavigationIconSources.size() == 12,
+                       && expectedSettingsNavigationIconSources.size() == 13,
                    QString::number(settingsIconAssets.size()), QStringLiteral("6"));
 
     struct BrowserIconExpectation {
@@ -2042,9 +2121,9 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                  }),
                  navigationGroups:document.querySelectorAll('.settings-nav-group').length,
                  navigationLinks:document.querySelectorAll('.settings-nav a').length,
-                 navigationIcons:[...document.querySelectorAll('.settings-nav a img')].length===12
-                     &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/png;base64,')).length===6
-                     &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/svg+xml;base64,')).length===6,
+                  navigationIcons:[...document.querySelectorAll('.settings-nav a img')].length===13
+                      &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/png;base64,')).length===6
+                      &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/svg+xml;base64,')).length===7,
                  navigationIconSources:Object.fromEntries(
                      [...document.querySelectorAll('.settings-nav a')].map(link=>[
                          new URL(link.href).searchParams.get('id')||'',
@@ -2054,7 +2133,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                      const icons=[...document.querySelectorAll('.settings-nav-icon img')];
                      const spread=values=>Math.max(...values)-Math.min(...values);
                      const rects=icons.map(icon=>icon.getBoundingClientRect());
-                     return icons.length===12
+                     return icons.length===13
                          &&icons.every(icon=>{
                              const image=icon.getBoundingClientRect();
                              const box=icon.parentElement.getBoundingClientRect();
@@ -2107,7 +2186,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             settingsIconMappingMismatches.append(it.key());
         }
     }
-    const bool settingsIconMappingExact = settingsNavigationIconSources.size() == 12
+    const bool settingsIconMappingExact = settingsNavigationIconSources.size() == 13
         && settingsIconMappingMismatches.isEmpty();
     results.record(QStringLiteral("Settings UI migration preserves profile and site-rule controls"),
                    settingsLayout.value(QStringLiteral("profileSection")).toBool()
@@ -2130,10 +2209,10 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        && settingsLayout.value(QStringLiteral("enhanced")).toBool()
                        && settingsLayout.value(QStringLiteral("nativeHidden")).toBool()
                        && settingsLayout.value(QStringLiteral("accessible")).toBool());
-    results.record(QStringLiteral("Settings navigation maps six owner PNGs and preserves six existing SVGs"),
+    results.record(QStringLiteral("Settings navigation maps six owner PNGs and preserves seven existing SVGs"),
                    settingsIconMappingExact,
                    settingsIconMappingMismatches.join(QStringLiteral(", ")),
-                   QStringLiteral("exact 12-category resource mapping"));
+                   QStringLiteral("exact 13-category resource mapping"));
     const QJsonObject settingsNavigationDetails{
         {QStringLiteral("groups"), settingsLayout.value(QStringLiteral("navigationGroups")).toInt()},
         {QStringLiteral("links"), settingsLayout.value(QStringLiteral("navigationLinks")).toInt()},
@@ -2149,7 +2228,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     };
     results.record(QStringLiteral("Settings navigation is grouped, local, and exposes the active category"),
                    settingsNavigationDetails.value(QStringLiteral("groups")).toInt() == 4
-                       && settingsNavigationDetails.value(QStringLiteral("links")).toInt() == 12
+                       && settingsNavigationDetails.value(QStringLiteral("links")).toInt() == 13
                        && settingsNavigationDetails.value(QStringLiteral("icons")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("iconGeometry")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("current")).toBool()
@@ -2422,13 +2501,27 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                         QWebEngineScript::MainWorld, 1000).toBool();
     }, 6000);
     BrowserTab *privacyTransferTab = window->currentTabForDiagnostics();
-    evaluate(privacyTransferTab ? privacyTransferTab->page() : nullptr,
-             QStringLiteral("(()=>{const d=document.getElementById('privacy-config');if(!d)return false;d.open=true;d.scrollIntoView({block:'center'});return true})()"));
     settle(180);
+    const bool privacyTransferExpanded = waitFor([&] {
+        return evaluate(
+                   privacyTransferTab ? privacyTransferTab->page() : nullptr,
+                   QStringLiteral(R"JS((()=>{
+                       const details=document.getElementById('privacy-config');
+                       if(!details)return false;
+                       details.open=true;
+                       details.scrollIntoView({block:'center'});
+                       return details.open
+                           &&details.querySelectorAll('.config-transfer-group').length===2
+                           &&details.querySelectorAll('a.button,form button').length===3;
+                   })())JS"))
+            .toBool();
+    }, 2000);
+    settle(120);
     const QVariantMap transferLayout = evaluate(
         privacyTransferTab ? privacyTransferTab->page() : nullptr,
         QStringLiteral(R"JS((()=>{
             const details=document.getElementById('privacy-config');
+            if(details)details.open=true;
             const groups=[...details?.querySelectorAll('.config-transfer-group')||[]];
             const actions=[...details?.querySelectorAll('a.button,form button')||[]];
             const rects=actions.map(action=>action.getBoundingClientRect());
@@ -2449,7 +2542,8 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1
             };
         })())JS")).toMap();
-    bool transferLayoutPassed = privacyTransferReady && transferLayout.size() == 7;
+    bool transferLayoutPassed = privacyTransferReady && privacyTransferExpanded
+        && transferLayout.size() == 7;
     for (auto it = transferLayout.constBegin(); it != transferLayout.constEnd(); ++it) {
         transferLayoutPassed = transferLayoutPassed && it.value().toBool();
     }
@@ -2628,10 +2722,11 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     const QVector<int> requestedWidths{1440, 1280, 1024, 800, 560};
     const QStringList settingsCategories{QStringLiteral("general"), QStringLiteral("search"),
                                          QStringLiteral("privacy"), QStringLiteral("connection"),
-                                         QStringLiteral("containers"), QStringLiteral("isolated"),
-                                         QStringLiteral("pamp"), QStringLiteral("downloads"),
-                                         QStringLiteral("advanced"), QStringLiteral("reports"),
-                                         QStringLiteral("danger"), QStringLiteral("about")};
+                                          QStringLiteral("containers"), QStringLiteral("isolated"),
+                                          QStringLiteral("pamp"), QStringLiteral("downloads"),
+                                          QStringLiteral("advanced"), QStringLiteral("reports"),
+                                          QStringLiteral("danger"), QStringLiteral("support"),
+                                          QStringLiteral("about")};
     window->showNormal();
     for (const int requestedWidth : requestedWidths) {
         const int targetWidth = qMax(480, qMin(requestedWidth, settingsAvailable.width() - 32));
@@ -3061,6 +3156,121 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             QStringLiteral("12b-reports-settings-footer-ru.png"), window);
     evaluate(reportsSettingsTab ? reportsSettingsTab->page() : nullptr,
              QStringLiteral("window.scrollTo(0,0)"));
+
+    window->openAddressForDiagnostics(QStringLiteral("about:settings?category=support"));
+    const bool supportReady = waitFor([&] {
+        BrowserTab *supportTab = window->currentTabForDiagnostics();
+        return supportTab && !supportTab->isLoading()
+            && evaluate(supportTab->page(), QStringLiteral(
+                   "document.querySelectorAll('.support-wallet').length===5"
+                   "&&!!document.querySelector('.support-cryptobot')"),
+                        QWebEngineScript::MainWorld, 1000).toBool();
+    }, 6000);
+    BrowserTab *supportTab = window->currentTabForDiagnostics();
+    const QVariantMap supportState = evaluate(
+        supportTab ? supportTab->page() : nullptr,
+        QStringLiteral(R"JS((()=>{
+            const root=document.scrollingElement;
+            const cards=[...document.querySelectorAll('.support-wallet')];
+            const rects=cards.map(card=>card.getBoundingClientRect());
+            const copyButtons=[...document.querySelectorAll('[data-support-copy-id]')];
+            const source=document.documentElement.outerHTML.toLowerCase();
+            const banner=document.getElementById('support-banner-image');
+            const qr=document.querySelector('.support-qr img');
+            const crypto=document.querySelector('.support-cryptobot-open');
+            const visible=element=>{const r=element.getBoundingClientRect();return r.width>0&&r.height>0};
+            const cardWidths=rects.map(rect=>Math.round(rect.width));
+            return {
+                title:document.querySelector('.support-intro h2')?.textContent.trim()||'',
+                cards:cards.length,
+                walletIds:cards.map(card=>card.dataset.walletId),
+                copyIds:copyButtons.map(button=>button.dataset.supportCopyId),
+                equalCards:cardWidths.length>0&&Math.max(...cardWidths)-Math.min(...cardWidths)<=1,
+                addressesVisible:cards.every(card=>!!card.querySelector('.support-address code')?.textContent.trim()),
+                bannerLocal:banner?.src.startsWith('qrc:/support/banner')||false,
+                bannerLoaded:!!banner?.complete&&banner.naturalWidth===1200&&banner.naturalHeight===320,
+                bannerSource:banner?.getAttribute('src')||'',
+                bannerAnimated:banner?.dataset.animated||'',
+                bannerRatio:banner?Math.abs(banner.getBoundingClientRect().width/banner.getBoundingClientRect().height-3.75)<.08:false,
+                qrData:qr?.src.startsWith('data:image/jpeg;base64,')||false,
+                qrLoaded:!!qr?.complete&&qr.naturalWidth===2000&&qr.naturalHeight===2000,
+                qrSquare:qr?Math.abs(qr.getBoundingClientRect().width-qr.getBoundingClientRect().height)<=1:false,
+                cryptoHref:crypto?.getAttribute('href')||'',
+                noExternalResources:[...document.images].every(image=>image.src.startsWith('data:')||image.src.startsWith('qrc:/'))
+                    &&[...document.scripts].every(script=>!script.src),
+                noSensitiveFeatures:!source.includes('walletconnect')&&!source.includes('balance lookup')
+                    &&!source.includes('seed phrase')&&!source.includes('private key'),
+                controlsFocusable:[...copyButtons,crypto].filter(Boolean).every(element=>element.tabIndex>=0&&visible(element)),
+                noHorizontalOverflow:root.scrollWidth<=root.clientWidth+1,
+                reduced:document.querySelector('.support-page')?.dataset.reducedMotion||''
+            };
+        })())JS")).toMap();
+    const QStringList expectedWalletIds{QStringLiteral("ton"), QStringLiteral("btc"),
+                                        QStringLiteral("eth"), QStringLiteral("trc20"),
+                                        QStringLiteral("sol")};
+    const bool supportReducedMotion = AnimationPolicy::reducedMotion();
+    const bool supportLayoutPassed = reportsRussianActive && supportReady
+        && supportState.value(QStringLiteral("title")).toString()
+            == Localization::text(QStringLiteral("settings.category.support"))
+        && supportState.value(QStringLiteral("cards")).toInt() == 5
+        && supportState.value(QStringLiteral("walletIds")).toStringList() == expectedWalletIds
+        && supportState.value(QStringLiteral("copyIds")).toStringList() == expectedWalletIds
+        && supportState.value(QStringLiteral("equalCards")).toBool()
+        && supportState.value(QStringLiteral("addressesVisible")).toBool()
+        && supportState.value(QStringLiteral("bannerLocal")).toBool()
+        && supportState.value(QStringLiteral("bannerLoaded")).toBool()
+        && supportState.value(QStringLiteral("bannerSource")).toString()
+            == (supportReducedMotion ? QStringLiteral("qrc:/support/banner-static.png")
+                                     : QStringLiteral("qrc:/support/banner.gif"))
+        && supportState.value(QStringLiteral("bannerAnimated")).toString()
+            == (supportReducedMotion ? QStringLiteral("false") : QStringLiteral("true"))
+        && supportState.value(QStringLiteral("bannerRatio")).toBool()
+        && supportState.value(QStringLiteral("qrData")).toBool()
+        && supportState.value(QStringLiteral("qrLoaded")).toBool()
+        && supportState.value(QStringLiteral("qrSquare")).toBool()
+        && supportState.value(QStringLiteral("cryptoHref")).toString()
+            == QStringLiteral("https://granger.local/__action/support/cryptobot")
+        && supportState.value(QStringLiteral("noExternalResources")).toBool()
+        && supportState.value(QStringLiteral("noSensitiveFeatures")).toBool()
+        && supportState.value(QStringLiteral("controlsFocusable")).toBool()
+        && supportState.value(QStringLiteral("noHorizontalOverflow")).toBool()
+        && supportState.value(QStringLiteral("reduced")).toString()
+            == (supportReducedMotion ? QStringLiteral("true") : QStringLiteral("false"));
+    results.record(QStringLiteral("project-support Settings page is local, aligned, accessible, and responsive"),
+                   supportLayoutPassed,
+                   QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(supportState))
+                                         .toJson(QJsonDocument::Compact)));
+
+    bool allSupportCopiesExact = supportReady;
+    QJsonObject copiedAddresses;
+    for (const QString &id : expectedWalletIds) {
+        if (QClipboard *clipboard = QApplication::clipboard()) clipboard->clear();
+        window->openAddressForDiagnostics(
+            QStringLiteral("https://granger.local/__action/support/copy?id=%1").arg(id));
+        const QString expectedAddress = InternalPages::supportAddress(id);
+        const bool copied = waitFor([&] {
+            return QApplication::clipboard()
+                && QApplication::clipboard()->text() == expectedAddress;
+        }, 2000);
+        copiedAddresses.insert(id, QApplication::clipboard() ? QApplication::clipboard()->text() : QString());
+        allSupportCopiesExact = allSupportCopiesExact && copied;
+    }
+    const QVariantMap copiedFeedback = evaluate(
+        supportTab ? supportTab->page() : nullptr,
+        QStringLiteral(R"JS((()=>{const buttons=[...document.querySelectorAll('[data-support-copy-id]')];const button=buttons.find(item=>item.dataset.supportCopyId==='sol');return {copied:button?.dataset.copied||'',label:button?.querySelector('.support-copy-label')?.textContent||'',copiedIds:buttons.filter(item=>item.dataset.copied==='true').map(item=>item.dataset.supportCopyId),othersRestored:buttons.filter(item=>item!==button).every(item=>item.dataset.copied==='false'&&item.querySelector('.support-copy-label')?.textContent===item.dataset.defaultLabel)}})())JS")).toMap();
+    results.record(QStringLiteral("all five support actions copy the exact native-owned addresses"),
+                   allSupportCopiesExact
+                       && copiedFeedback.value(QStringLiteral("copied")).toString() == QStringLiteral("true")
+                       && copiedFeedback.value(QStringLiteral("label")).toString()
+                           == Localization::text(QStringLiteral("support.copied"))
+                       && copiedFeedback.value(QStringLiteral("copiedIds")).toStringList()
+                           == QStringList{QStringLiteral("sol")}
+                       && copiedFeedback.value(QStringLiteral("othersRestored")).toBool(),
+                   QString::fromUtf8(QJsonDocument(copiedAddresses).toJson(QJsonDocument::Compact)));
+    results.record(QStringLiteral("CryptoBot support action uses the exact fixed target"),
+                   InternalPages::supportCryptoBotUrl()
+                       == QStringLiteral("https://t.me/send?start=IVw0NCEQJkCx"));
+    capture(QStringLiteral("settingsSupport"), QStringLiteral("12c-settings-support-ru.png"), window);
 
     window->openAddressForDiagnostics(QStringLiteral("about:reports"));
     const bool logViewerReady = waitFor([&] {

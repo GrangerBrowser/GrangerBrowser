@@ -194,13 +194,15 @@ $looseUiAssetNames = @(
     "DuckDuck.png", "Google.png", "bing.png", "brave.png", "startpage.png",
     "mojeek.png", "yandex.png", "onion.png", "emma watson.png", "emma watson.jpg",
     "surface-9c42.jpg", "ai.png", "icons8-chatbot-64.png", "icon.jpg", "icon-source.jpg", "app-icon.png", "app-icon.svg",
-    "GrangerBrowser.ico"
+    "GrangerBrowser.ico", "bitcoin.png", "Gram.png", "Ethereum Eth-1.png", "trc20.png", "Solana Sol.png",
+    "CryptoBot_QR.jpg", "EmmaWatson.gif", "ton.png", "ethereum.png", "tron.png", "solana.png",
+    "cryptobot-qr.jpg", "banner.gif", "banner-static.png"
 )
 $looseUiAssets = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -File | Where-Object {
     $looseUiAssetNames -contains $_.Name
 })
 $sourceAssetDirectories = @(Get-ChildItem -LiteralPath $resolvedPackage -Recurse -Directory | Where-Object {
-    $_.Name -eq "poiskoviki"
+    $_.Name -in @("poiskoviki", "Support-block", "Chat-bot")
 })
 if ($looseUiAssets.Count -ne 0 -or $sourceAssetDirectories.Count -ne 0) {
     $unexpectedUiAssets = @($looseUiAssets.FullName) + @($sourceAssetDirectories.FullName)
