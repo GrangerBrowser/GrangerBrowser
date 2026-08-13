@@ -201,5 +201,96 @@
     "embeddedSize": [64, 64],
     "embeddedSha256": "8D8EC69A2CAC4ECE41F937BB838270B1016D0212FFBFEA0BA5E61F88E327A1F7",
     "displaySizes": [16, 20, 24, 32]
+  },
+  "supportProject": {
+    "resourceMode": "compiled Qt resource embedding",
+    "banner": {
+      "source": "Support-block/EmmaWatson.gif",
+      "canonicalSource": "support/banner.gif",
+      "sourceFormat": "GIF",
+      "sourceSize": [1200, 320],
+      "frameCount": 37,
+      "durationMs": 3700,
+      "sourceSha256": "FBC41FCF240E8DA3C7638A98E67C684847E87B9655A889575C198391F2423EF6",
+      "resource": ":/support/banner.gif",
+      "embeddedSha256": "FBC41FCF240E8DA3C7638A98E67C684847E87B9655A889575C198391F2423EF6"
+    },
+    "bannerStatic": {
+      "derivedFrom": "first frame of Support-block/EmmaWatson.gif",
+      "canonicalSource": "support/banner-static.png",
+      "format": "PNG",
+      "size": [1200, 320],
+      "resource": ":/support/banner-static.png",
+      "embeddedSha256": "1E9217F67F6AB8A3C6042ADE4C7E4FE2CABCE1DFBCD0538EB5AF7E253DF2CA49"
+    },
+    "cryptoIcons": [
+      {
+        "id": "ton",
+        "source": "Support-block/Gram.png",
+        "canonicalSource": "support/ton.png",
+        "sourceFormat": "PNG",
+        "sourceSize": [128, 128],
+        "sourceMode": "RGBA",
+        "sourceSha256": "4C2D367215B363E834164AE5A3AC696E301987A2ED21326F180B58C3086D6FB0",
+        "resource": ":/support/ton.png",
+        "embeddedSha256": "4C2D367215B363E834164AE5A3AC696E301987A2ED21326F180B58C3086D6FB0"
+      },
+      {
+        "id": "btc",
+        "source": "Support-block/bitcoin.png",
+        "canonicalSource": "support/bitcoin.png",
+        "sourceFormat": "PNG",
+        "sourceSize": [128, 128],
+        "sourceMode": "RGBA",
+        "sourceSha256": "EF8F5164866BCCD378027A9765AA9B484B9B823C1ADCC72E8D4667E28B3500FC",
+        "resource": ":/support/bitcoin.png",
+        "embeddedSha256": "EF8F5164866BCCD378027A9765AA9B484B9B823C1ADCC72E8D4667E28B3500FC"
+      },
+      {
+        "id": "eth",
+        "source": "Support-block/Ethereum Eth-1.png",
+        "canonicalSource": "support/ethereum.png",
+        "sourceFormat": "PNG",
+        "sourceSize": [128, 128],
+        "sourceMode": "RGBA",
+        "sourceSha256": "DE08A994E4EE82A90878AAF993D22AF3033EA2513BDB9FB070BF28524CC92C28",
+        "resource": ":/support/ethereum.png",
+        "embeddedSha256": "DE08A994E4EE82A90878AAF993D22AF3033EA2513BDB9FB070BF28524CC92C28"
+      },
+      {
+        "id": "trc20",
+        "source": "Support-block/trc20.png",
+        "canonicalSource": "support/tron.png",
+        "sourceFormat": "PNG",
+        "sourceSize": [128, 128],
+        "sourceMode": "RGBA",
+        "sourceSha256": "CC81DF78080199B29E2B3F605B359CA377103F374666840FA1ECC0F554DC911B",
+        "resource": ":/support/tron.png",
+        "embeddedSha256": "CC81DF78080199B29E2B3F605B359CA377103F374666840FA1ECC0F554DC911B"
+      },
+      {
+        "id": "sol",
+        "source": "Support-block/Solana Sol.png",
+        "canonicalSource": "support/solana.png",
+        "sourceFormat": "PNG",
+        "sourceSize": [128, 128],
+        "sourceMode": "RGBA",
+        "sourceSha256": "441585CE60475A58F76A8D22D52C4FEE38C8B39E32F0D93A19161B2882FCC2E9",
+        "resource": ":/support/solana.png",
+        "embeddedSha256": "441585CE60475A58F76A8D22D52C4FEE38C8B39E32F0D93A19161B2882FCC2E9"
+      }
+    ],
+    "cryptoBotQr": {
+      "source": "Support-block/CryptoBot_QR.jpg",
+      "canonicalSource": "support/cryptobot-qr.jpg",
+      "sourceFormat": "JPEG",
+      "sourceSize": [2000, 2000],
+      "sourceMode": "RGB",
+      "sourceSha256": "A560C21D586AA2C09FD45E0C5968F09C229D8C277F0CC4631509DF3B1CE59222",
+      "resource": ":/support/cryptobot-qr.jpg",
+      "embeddedSha256": "A560C21D586AA2C09FD45E0C5968F09C229D8C277F0CC4631509DF3B1CE59222",
+      "decodedPayload": "https://t.me/CryptoBot?start=IVw0NCEQJkCx"
+    },
+    "cryptoBotButtonTarget": "https://t.me/send?start=IVw0NCEQJkCx"
   }
 }

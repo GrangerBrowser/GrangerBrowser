@@ -81,6 +81,16 @@
     <qresource prefix="/start-page">
         <file alias="surface-9c42">start-page/surface-9c42.jpg</file>
     </qresource>
+    <qresource prefix="/support">
+        <file alias="banner.gif">support/banner.gif</file>
+        <file alias="banner-static.png">support/banner-static.png</file>
+        <file alias="bitcoin.png">support/bitcoin.png</file>
+        <file alias="cryptobot-qr.jpg">support/cryptobot-qr.jpg</file>
+        <file alias="ethereum.png">support/ethereum.png</file>
+        <file alias="solana.png">support/solana.png</file>
+        <file alias="ton.png">support/ton.png</file>
+        <file alias="tron.png">support/tron.png</file>
+    </qresource>
     <qresource prefix="/ui-assets">
         <file alias="manifest-v1.json">ui-assets-manifest.json</file>
     </qresource>

@@ -480,6 +480,34 @@ box-shadow:var(--ds-shadow-popup)
 .settings-page .reports-check-grid .check-row{align-items:center;min-height:var(--ds-control-height);padding:8px 0}
 .settings-page .reports-clear-grid{margin-top:4px}
 .settings-page .reports-settings-footer{padding:var(--settings-footer-padding-y) var(--settings-card-inset)}
+.settings-page .support-page{display:grid;gap:24px;min-width:0}
+.settings-page .support-banner{width:100%;margin:0;overflow:hidden;border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);background:#edf5f4;box-shadow:var(--ds-shadow-card)}
+.settings-page .support-banner img{display:block;width:100%;height:auto;aspect-ratio:15/4;object-fit:contain}
+.settings-page .support-intro{padding-bottom:20px;border-bottom:1px solid var(--ds-border-subtle)}
+.settings-page .support-intro h2{margin:0 0 8px;font-size:22px}
+.settings-page .support-intro p{max-width:680px;margin:0;color:var(--ds-text-secondary)}
+.settings-page .support-section{display:grid;gap:12px;min-width:0}
+.settings-page .support-section>h3{margin:0;color:var(--ds-text);font-size:15px}
+.settings-page .support-wallet-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
+.settings-page .support-wallet{display:grid;grid-template-rows:auto 1fr auto;gap:14px;min-width:0;min-height:170px;padding:16px;border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);background:var(--ds-bg-surface);transition:background-color var(--ds-fast) ease,border-color var(--ds-fast) ease}
+.settings-page .support-wallet:hover{border-color:var(--ds-border);background:var(--ds-bg-hover)}
+.settings-page .support-wallet-header{display:flex;align-items:center;gap:11px;margin:0;padding:0;border:0}
+.settings-page .support-wallet-header>img{width:32px;height:32px;flex:0 0 32px;object-fit:contain}
+.settings-page .support-wallet-header>div{display:grid;gap:2px;min-width:0}
+.settings-page .support-wallet-header h3{margin:0;color:var(--ds-text);font-size:15px;line-height:1.25}
+.settings-page .support-wallet-header span{color:var(--ds-text-muted);font-size:11px;font-weight:650}
+.settings-page .support-address{min-width:0;align-self:center;padding:10px 11px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-control)}
+.settings-page .support-address code{display:block;min-width:0;overflow:hidden;color:var(--ds-text-secondary);font:12px/1.45 "Cascadia Mono","Consolas",monospace;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .support-copy{justify-self:start;gap:8px;max-width:100%}
+.settings-page .support-copy img{width:16px;height:16px;flex:0 0 16px;opacity:.84}
+.settings-page .support-copy[data-copied=true]{border-color:rgba(93,183,143,.52);background:rgba(56,128,94,.15);color:#bce8d2}
+.settings-page .support-cryptobot{display:grid;grid-template-columns:minmax(0,1fr) 174px;gap:24px;align-items:center;padding:18px;overflow:hidden}
+.settings-page .support-cryptobot-copy{min-width:0}
+.settings-page .support-cryptobot-copy h3{margin:0 0 6px;color:var(--ds-text);font-size:16px}
+.settings-page .support-cryptobot-copy p{margin:0 0 16px;color:var(--ds-text-secondary)}
+.settings-page .support-qr{display:grid;place-items:center;width:174px;height:174px;padding:8px;border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);background:#fff}
+.settings-page .support-qr img{display:block;width:156px;height:156px;object-fit:contain}
+.settings-page .support-voluntary{margin:0;padding:14px 16px;border-left:2px solid var(--ds-accent);border-radius:0 var(--ds-radius-md) var(--ds-radius-md) 0;background:var(--ds-accent-soft);color:var(--ds-text-secondary)}
 @keyframes settingsPanelIn{from{opacity:.72;transform:translateY(2px)}to{opacity:1;transform:none}}
 </style>)CSS"));
     html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
@@ -592,6 +620,10 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .settings-heading-actions{flex-direction:column;gap:16px}
 .settings-page .settings-heading-actions>.button{width:auto;max-width:100%;align-self:flex-start}
 .settings-page .settings-grid,.settings-page .check-grid{grid-template-columns:1fr}
+.settings-page .support-wallet-grid{grid-template-columns:1fr}
+.settings-page .support-cryptobot{grid-template-columns:1fr}
+.settings-page .support-qr{width:174px;max-width:100%;height:auto;aspect-ratio:1;justify-self:start}
+.settings-page .support-qr img{width:100%;height:auto;aspect-ratio:1}
 .settings-page .site-rule-grid{grid-template-columns:1fr}
 .settings-page .site-rule-grid .rule-target{grid-column:1}
 }
@@ -601,10 +633,13 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page{--settings-card-inset:14px}
 .settings-page .container-row{grid-template-columns:40px minmax(0,1fr) 36px;gap:10px}
 .settings-page .container-badges{gap:4px}
+.settings-page .support-page{gap:20px}
+.settings-page .support-wallet{padding:14px}
+.settings-page .support-copy,.settings-page .support-cryptobot-open{width:100%}
 }
 @media(prefers-reduced-motion:reduce){
 .settings-page .container-menu-popover,.settings-page .settings-panel{animation:none}
-.settings-page .container-row,.settings-page .settings-nav a{transition:none!important}
+.settings-page .container-row,.settings-page .settings-nav a,.settings-page .support-wallet,.settings-page .support-copy{transition:none!important}
 }
 body.settings-page.reduced-motion .settings-panel,body.settings-page.reduced-motion .container-menu-popover{animation:none}
 body.settings-page.reduced-motion *,body.settings-page.reduced-motion *::before,body.settings-page.reduced-motion *::after{transition-duration:0s!important;animation-duration:0s!important}
@@ -932,6 +967,11 @@ QString localImageDataUrl(const QString &resourcePath)
     QString mimeType;
     if (resourcePath.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)) {
         mimeType = QStringLiteral("image/png");
+    } else if (resourcePath.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
+               || resourcePath.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive)) {
+        mimeType = QStringLiteral("image/jpeg");
+    } else if (resourcePath.endsWith(QStringLiteral(".gif"), Qt::CaseInsensitive)) {
+        mimeType = QStringLiteral("image/gif");
     } else if (resourcePath.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive)) {
         mimeType = QStringLiteral("image/svg+xml");
     }
@@ -942,6 +982,26 @@ QString localImageDataUrl(const QString &resourcePath)
         : QString();
     cache.insert(resourcePath, dataUrl);
     return dataUrl;
+}
+
+QString supportWalletCard(const QString &id,
+                          const QString &name,
+                          const QString &network,
+                          const QString &address,
+                          const QString &iconResource)
+{
+    const QString icon = localImageDataUrl(iconResource);
+    const QString copyIcon = localImageDataUrl(QStringLiteral(":/icons/copy.svg"));
+    const QString copyLabel = t("support.copy_address");
+    const QString copyAria = t("support.copy_address_aria").arg(name);
+    return QStringLiteral(R"HTML(
+<article class="support-wallet" data-wallet-id="%1">
+  <header class="support-wallet-header"><img src="%2" alt="" aria-hidden="true"><div><h3>%3</h3><span>%4</span></div></header>
+  <div class="support-address" title="%5"><code>%5</code></div>
+  <a class="button secondary support-copy" data-support-copy-id="%1" data-default-label="%6" href="https://granger.local/__action/support/copy?id=%1" aria-label="%7"><img src="%8" alt="" aria-hidden="true"><span class="support-copy-label" aria-live="polite">%6</span></a>
+</article>)HTML")
+        .arg(e(id), e(icon), e(name), e(network), e(address), e(copyLabel),
+             e(copyAria), e(copyIcon));
 }
 
 QString categoryLink(const QString &id, const QString &label, const QString &active,
@@ -1036,6 +1096,28 @@ QString InternalPages::titleFor(const QString &address)
     return QStringLiteral("Granger Browser");
 }
 
+QString InternalPages::supportAddress(const QString &id)
+{
+    static const QHash<QString, QString> addresses{
+        {QStringLiteral("ton"), QStringLiteral("UQCMUP3GW7s5i0dYOKgDc0b-mr6X0JhwopbQ30YUbzTdZKPd")},
+        {QStringLiteral("btc"), QStringLiteral("bc1qma7vz58qpfdzpwlglszhkdekgljem7typ9hqmx")},
+        {QStringLiteral("eth"), QStringLiteral("0xE7Fc4717d4C5143A930ca7a78B41A3B1D1c5491A")},
+        {QStringLiteral("trc20"), QStringLiteral("TArhix8ELQe4mprBCDSz8rUYVSEsZZzv2j")},
+        {QStringLiteral("sol"), QStringLiteral("FZae1xKXcB9CPrkf6VbUTNUcKiMmLS462NimKdr4LVFJ")}
+    };
+    return addresses.value(id.trimmed().toLower());
+}
+
+QString InternalPages::supportCryptoBotUrl()
+{
+    return QStringLiteral("https://t.me/send?start=IVw0NCEQJkCx");
+}
+
+QString InternalPages::supportCryptoBotQrUrl()
+{
+    return QStringLiteral("https://t.me/CryptoBot?start=IVw0NCEQJkCx");
+}
+
 QString InternalPages::granger(const InternalPageContext &context, const QString &query)
 {
     return homePage(context, query);
@@ -1114,6 +1196,8 @@ QString InternalPages::settings(const InternalPageContext &context)
                                 QStringLiteral(":/icons/site-controls.svg"));
     systemLinks += categoryLink(QStringLiteral("danger"), t("settings.category.danger"), category,
                                 QStringLiteral(":/settings-icons/danger-zone.png"));
+    systemLinks += categoryLink(QStringLiteral("support"), t("settings.category.support"), category,
+                                QStringLiteral(":/icons/container-star.svg"));
     systemLinks += categoryLink(QStringLiteral("about"), t("settings.category.about"), category,
                                 QStringLiteral(":/icons/browser.svg"));
     const QString nav = settingsNavGroup(t("settings.nav.browser"), browserLinks)
@@ -1590,6 +1674,49 @@ QString InternalPages::settings(const InternalPageContext &context)
                              dangerMessage, e(t("danger.understand")),
                              e(t("danger.delete_download_files")), e(t("danger.review")));
         }
+    } else if (category == QStringLiteral("support")) {
+        const QString animatedBanner = QStringLiteral("qrc:/support/banner.gif");
+        const QString staticBanner = QStringLiteral("qrc:/support/banner-static.png");
+        const QString bannerSource = context.reducedMotion ? staticBanner : animatedBanner;
+        QString wallets;
+        wallets += supportWalletCard(QStringLiteral("ton"), QStringLiteral("TON"),
+                                     QStringLiteral("TON"), InternalPages::supportAddress(QStringLiteral("ton")),
+                                     QStringLiteral(":/support/ton.png"));
+        wallets += supportWalletCard(QStringLiteral("btc"), QStringLiteral("Bitcoin"),
+                                     QStringLiteral("BTC"), InternalPages::supportAddress(QStringLiteral("btc")),
+                                     QStringLiteral(":/support/bitcoin.png"));
+        wallets += supportWalletCard(QStringLiteral("eth"), QStringLiteral("Ethereum"),
+                                     QStringLiteral("ETH"), InternalPages::supportAddress(QStringLiteral("eth")),
+                                     QStringLiteral(":/support/ethereum.png"));
+        wallets += supportWalletCard(QStringLiteral("trc20"), QStringLiteral("TRON"),
+                                     QStringLiteral("TRC20"), InternalPages::supportAddress(QStringLiteral("trc20")),
+                                     QStringLiteral(":/support/tron.png"));
+        wallets += supportWalletCard(QStringLiteral("sol"), QStringLiteral("Solana"),
+                                     QStringLiteral("SOL"), InternalPages::supportAddress(QStringLiteral("sol")),
+                                     QStringLiteral(":/support/solana.png"));
+        panel = QStringLiteral(R"HTML(
+<div class="support-page" data-reduced-motion="__REDUCED__">
+  <figure class="support-banner"><img id="support-banner-image" src="__BANNER__" data-static-src="__STATIC_BANNER__" data-animated="__ANIMATED__" width="1200" height="320" alt="__BANNER_ALT__" decoding="async"></figure>
+  <section class="support-intro"><h2>__TITLE__</h2><p>__DESCRIPTION__</p></section>
+  <section class="support-section" aria-labelledby="support-crypto-heading"><h3 id="support-crypto-heading">__CRYPTO_TITLE__</h3><div class="support-wallet-grid">__WALLETS__</div></section>
+  <section class="support-cryptobot settings-surface" aria-labelledby="support-cryptobot-heading"><div class="support-cryptobot-copy"><h3 id="support-cryptobot-heading">CryptoBot</h3><p>__CRYPTOBOT_DESCRIPTION__</p><a class="button primary support-cryptobot-open" href="https://granger.local/__action/support/cryptobot">__CRYPTOBOT_OPEN__</a></div><div class="support-qr"><img src="__QR__" width="2000" height="2000" alt="__QR_ALT__"></div></section>
+  <p class="support-voluntary">__VOLUNTARY__</p>
+  <script>(()=>{const banner=document.getElementById('support-banner-image');if(!banner||banner.dataset.animated!=='true')return;const animated=banner.src;const still=banner.dataset.staticSrc;const sync=()=>{const target=document.hidden?still:animated;if(target&&banner.src!==target)banner.src=target};document.addEventListener('visibilitychange',sync,{passive:true});sync()})();</script>
+</div>)HTML");
+        panel.replace(QStringLiteral("__REDUCED__"), context.reducedMotion ? QStringLiteral("true") : QStringLiteral("false"));
+        panel.replace(QStringLiteral("__BANNER__"), e(bannerSource));
+        panel.replace(QStringLiteral("__STATIC_BANNER__"), e(staticBanner));
+        panel.replace(QStringLiteral("__ANIMATED__"), context.reducedMotion ? QStringLiteral("false") : QStringLiteral("true"));
+        panel.replace(QStringLiteral("__BANNER_ALT__"), e(t("support.banner_alt")));
+        panel.replace(QStringLiteral("__TITLE__"), e(t("settings.category.support")));
+        panel.replace(QStringLiteral("__DESCRIPTION__"), e(t("support.description")));
+        panel.replace(QStringLiteral("__CRYPTO_TITLE__"), e(t("support.cryptocurrency")));
+        panel.replace(QStringLiteral("__WALLETS__"), wallets);
+        panel.replace(QStringLiteral("__CRYPTOBOT_DESCRIPTION__"), e(t("support.cryptobot_description")));
+        panel.replace(QStringLiteral("__CRYPTOBOT_OPEN__"), e(t("support.cryptobot_open")));
+        panel.replace(QStringLiteral("__QR__"), e(localImageDataUrl(QStringLiteral(":/support/cryptobot-qr.jpg"))));
+        panel.replace(QStringLiteral("__QR_ALT__"), e(t("support.cryptobot_qr_alt")));
+        panel.replace(QStringLiteral("__VOLUNTARY__"), e(t("support.voluntary")));
     } else if (category == QStringLiteral("about")) {
         panel = QStringLiteral("<h2>%1</h2><div class=\"info-list\">%2%3%4</div><p>%5</p>")
                     .arg(e(t("settings.about_title")), infoRow(t("label.version"), context.applicationVersion),

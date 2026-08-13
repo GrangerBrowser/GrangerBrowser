@@ -79,6 +79,43 @@ encrypted, and remains extractable by a sufficiently motivated analyst. The
 filename suggests an Icons8 origin but contains no license grant; the project
 owner must confirm redistribution terms before public distribution.
 
+## Project support page
+
+The project owner supplied the following local files in `Support-block`. They
+were copied byte-for-byte into the canonical source resource tree; no artwork
+was downloaded, recolored, cropped, or sent to an external service.
+
+| Purpose | Supplied file | Format and pixels | Source SHA-256 | Compiled resource |
+| --- | --- | --- | --- | --- |
+| Bitcoin | `bitcoin.png` | PNG RGBA, 128 x 128 | `EF8F5164866BCCD378027A9765AA9B484B9B823C1ADCC72E8D4667E28B3500FC` | `:/support/bitcoin.png` |
+| TON | `Gram.png` | PNG RGBA, 128 x 128 | `4C2D367215B363E834164AE5A3AC696E301987A2ED21326F180B58C3086D6FB0` | `:/support/ton.png` |
+| Ethereum | `Ethereum Eth-1.png` | PNG RGBA, 128 x 128 | `DE08A994E4EE82A90878AAF993D22AF3033EA2513BDB9FB070BF28524CC92C28` | `:/support/ethereum.png` |
+| Solana | `Solana Sol.png` | PNG RGBA, 128 x 128 | `441585CE60475A58F76A8D22D52C4FEE38C8B39E32F0D93A19161B2882FCC2E9` | `:/support/solana.png` |
+| TRON / TRC20 | `trc20.png` | PNG RGBA, 128 x 128 | `CC81DF78080199B29E2B3F605B359CA377103F374666840FA1ECC0F554DC911B` | `:/support/tron.png` |
+| CryptoBot QR | `CryptoBot_QR.jpg` | JPEG RGB, 2000 x 2000 | `A560C21D586AA2C09FD45E0C5968F09C229D8C277F0CC4631509DF3B1CE59222` | `:/support/cryptobot-qr.jpg` |
+| Animated banner | `EmmaWatson.gif` | GIF, 1200 x 320, 37 frames / 3700 ms | `FBC41FCF240E8DA3C7638A98E67C684847E87B9655A889575C198391F2423EF6` | `:/support/banner.gif` |
+
+The reduced-motion fallback is a locally extracted first frame at
+`granger/resources/support/banner-static.png`, compiled as
+`:/support/banner-static.png`. It remains 1200 x 320 and has SHA-256
+`1E9217F67F6AB8A3C6042ADE4C7E4FE2CABCE1DFBCD0538EB5AF7E253DF2CA49`.
+This is the only derived support-page image.
+
+Independent decoding and the packaged `quirc` regression test confirm that the
+supplied QR contains `https://t.me/CryptoBot?start=IVw0NCEQJkCx`. The requested
+button target is separately fixed to
+`https://t.me/send?start=IVw0NCEQJkCx`. The start token is identical, but the two
+URLs are not byte-identical; the supplied QR was preserved instead of silently
+regenerating it.
+
+All support assets use the existing compiled Qt resource mechanism. The
+packaged browser has no runtime lookup of `Support-block`, `Chat-bot`, or a
+Desktop path, and release acceptance rejects loose copies of those source
+assets. This is embedding and integrity-tested packaging, not cryptographic
+encryption; compiled client resources can still be extracted by a sufficiently
+motivated analyst. The project owner must confirm redistribution and trademark
+requirements for every supplied image before public distribution.
+
 ## Component glyphs
 
 `:/icons/check.svg` and `:/icons/chevron-down.svg` are original, project-authored

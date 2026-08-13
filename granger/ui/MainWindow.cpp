@@ -5245,7 +5245,7 @@ void MainWindow::loadInternalPage(BrowserTab *tab,
                                             QStringLiteral("containers"), QStringLiteral("isolated"),
                                             QStringLiteral("pamp"), QStringLiteral("danger"),
                                             QStringLiteral("downloads"), QStringLiteral("reports"),
-                                            QStringLiteral("advanced"),
+                                            QStringLiteral("advanced"), QStringLiteral("support"),
                                             QStringLiteral("about")};
         if (!categories.contains(settingsCategory)) settingsCategory = m_settingsUi.activeCategory;
         if (!categories.contains(settingsCategory)) settingsCategory = QStringLiteral("general");
@@ -5392,6 +5392,50 @@ void MainWindow::handleInternalAction(BrowserTab *tab, const QUrl &url)
 
     if (host == QStringLiteral("ai-chat") || path == QStringLiteral("/ai-chat")) {
         openAiChatTab(tab);
+        return;
+    }
+
+    if (path == QStringLiteral("/support/copy")) {
+        const bool supportPage = tab->displayAddress().compare(
+            QStringLiteral("about:settings?category=support"), Qt::CaseInsensitive) == 0;
+        const QString id = query.queryItemValue(QStringLiteral("id")).trimmed().toLower();
+        const QString address = supportPage ? InternalPages::supportAddress(id) : QString();
+        if (address.isEmpty()) return;
+        if (QClipboard *clipboard = QApplication::clipboard()) clipboard->setText(address);
+        const int feedbackMs = qMax(1200, AnimationPolicy::duration(AnimationKind::Popup) * 10);
+        const QString script = QStringLiteral(R"JS((()=>{
+const id=%1,copied=%2;
+const button=[...document.querySelectorAll('[data-support-copy-id]')].find(item=>item.dataset.supportCopyId===id);
+if(!button)return;
+const label=button.querySelector('.support-copy-label');
+if(!label)return;
+clearTimeout(globalThis.__grangerSupportCopyReset);
+document.querySelectorAll('[data-support-copy-id]').forEach(item=>{
+  if(item===button)return;
+  item.dataset.copied='false';
+  const otherLabel=item.querySelector('.support-copy-label');
+  if(otherLabel)otherLabel.textContent=item.dataset.defaultLabel||'';
+});
+button.dataset.copied='true';
+label.textContent=copied;
+globalThis.__grangerSupportCopyReset=setTimeout(()=>{
+  if(!button.isConnected)return;
+  button.dataset.copied='false';
+  label.textContent=button.dataset.defaultLabel||'';
+},%3);
+})())JS")
+                                   .arg(javascriptString(id),
+                                        javascriptString(Localization::text(QStringLiteral("support.copied"))))
+                                   .arg(feedbackMs);
+        tab->page()->runJavaScript(script);
+        return;
+    }
+
+    if (path == QStringLiteral("/support/cryptobot")) {
+        if (tab->displayAddress().compare(QStringLiteral("about:settings?category=support"),
+                                          Qt::CaseInsensitive) == 0) {
+            openNewTab(InternalPages::supportCryptoBotUrl());
+        }
         return;
     }
 

@@ -176,6 +176,9 @@ struct InternalPageContext {
 class InternalPages final {
 public:
     static QString titleFor(const QString &address);
+    static QString supportAddress(const QString &id);
+    static QString supportCryptoBotUrl();
+    static QString supportCryptoBotQrUrl();
     static QString granger(const InternalPageContext &context, const QString &query = QString());
     static QString privacy(const InternalPageContext &context);
     static QString tor(const InternalPageContext &context);
