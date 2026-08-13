@@ -191,15 +191,15 @@
     "icoSha256": "F5CB56E53EC469685805316DA48800CB9E5EBADAD4120E8341C5557E5CED8B93"
   },
   "aiChatIcon": {
-    "source": "ai.png",
+    "source": "Chat-bot/icons8-chatbot-64.png",
+    "canonicalSource": "icons/ai.png",
     "sourceFormat": "PNG",
-    "sourceSize": [1536, 1024],
+    "sourceSize": [64, 64],
     "sourceMode": "RGBA",
-    "sourceSha256": "77DDD1B25A5A20220B64533381B98FCA312538BCD24B2C80A12346742289B8A7",
-    "crop": [544, 267, 992, 715],
+    "sourceSha256": "8D8EC69A2CAC4ECE41F937BB838270B1016D0212FFBFEA0BA5E61F88E327A1F7",
     "resource": ":/icons/ai.png",
-    "embeddedSize": [512, 512],
-    "embeddedSha256": "0EA35D0A60B848C0C50E7F84FA229C930F6BCB99A4EB9501004F9AC266AC28AD",
+    "embeddedSize": [64, 64],
+    "embeddedSha256": "8D8EC69A2CAC4ECE41F937BB838270B1016D0212FFBFEA0BA5E61F88E327A1F7",
     "displaySizes": [16, 20, 24, 32]
   }
 }

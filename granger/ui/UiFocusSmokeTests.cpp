@@ -370,11 +370,14 @@ int runUiFocusSmoke(QApplication &app,
     for (const int size : {16, 20, 24, 32}) {
         aiIconScales = aiIconScales && !aiChatIcon.pixmap(size, size).isNull();
     }
-    results.record(QStringLiteral("AI Chat icon is an integrity-checked compiled ai.png derivative"),
+    results.record(QStringLiteral("AI Chat icon is the integrity-checked supplied 64x64 asset"),
                    aiIconOpened && aiIconDecoded && aiIconImage.hasAlphaChannel()
-                       && aiIconAsset.value(QStringLiteral("source")).toString() == QStringLiteral("ai.png")
+                       && aiIconAsset.value(QStringLiteral("source")).toString()
+                           == QStringLiteral("Chat-bot/icons8-chatbot-64.png")
+                       && aiIconAsset.value(QStringLiteral("canonicalSource")).toString()
+                           == QStringLiteral("icons/ai.png")
                        && aiIconResource == QStringLiteral(":/icons/ai.png")
-                       && aiIconImage.size() == QSize(512, 512)
+                       && aiIconImage.size() == QSize(64, 64)
                        && aiIconHash == aiIconAsset.value(QStringLiteral("embeddedSha256")).toString()
                        && aiIconScales,
                    aiIconHash, aiIconAsset.value(QStringLiteral("embeddedSha256")).toString());

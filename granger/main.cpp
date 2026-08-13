@@ -4878,11 +4878,14 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
         for (const int size : {16, 20, 24, 32}) {
             aiDisplaySizesValid = aiDisplaySizesValid && !aiIcon.pixmap(size, size).isNull();
         }
-        record(QStringLiteral("ai.png is an integrity-checked compiled AI Chat icon"),
+        record(QStringLiteral("supplied 64x64 AI Chat icon is integrity-checked and compiled"),
                manifestOpened && aiOpened && aiDecoded && aiImage.hasAlphaChannel()
-                   && aiEntry.value(QStringLiteral("source")).toString() == QStringLiteral("ai.png")
+                   && aiEntry.value(QStringLiteral("source")).toString()
+                       == QStringLiteral("Chat-bot/icons8-chatbot-64.png")
+                   && aiEntry.value(QStringLiteral("canonicalSource")).toString()
+                       == QStringLiteral("icons/ai.png")
                    && aiResource == QStringLiteral(":/icons/ai.png")
-                   && aiImage.size() == QSize(512, 512)
+                   && aiImage.size() == QSize(64, 64)
                    && aiHash == aiEntry.value(QStringLiteral("embeddedSha256")).toString()
                    && aiDisplaySizesValid,
                aiHash, aiEntry.value(QStringLiteral("embeddedSha256")).toString());

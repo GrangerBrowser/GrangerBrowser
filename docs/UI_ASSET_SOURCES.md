@@ -1,7 +1,7 @@
 # Granger Browser UI asset sources
 
 This inventory records the visual assets supplied locally by the project owner on
-2026-07-18 and 2026-07-22. No replacement artwork was downloaded and no image was sent to an
+2026-07-18, 2026-07-22, and 2026-08-13. No replacement artwork was downloaded and no image was sent to an
 external conversion or optimization service.
 
 ## Search providers
@@ -63,18 +63,21 @@ wallpaper, the project owner is responsible for redistribution rights.
 
 ## AI Chat icon
 
-The project-owner-supplied `ai.png` is a 1536 x 1024 RGBA PNG with SHA-256
-`77DDD1B25A5A20220B64533381B98FCA312538BCD24B2C80A12346742289B8A7`.
-Its transparent 448 x 448 center crop at source coordinates
-`(544, 267)-(992, 715)` was downscaled locally with high-quality bicubic
-resampling to the 512 x 512 `:/icons/ai.png` Qt resource. The embedded PNG has
-SHA-256 `0EA35D0A60B848C0C50E7F84FA229C930F6BCB99A4EB9501004F9AC266AC28AD`.
+The current project-owner-supplied asset is
+`Chat-bot/icons8-chatbot-64.png`, a 64 x 64 RGBA PNG with SHA-256
+`8D8EC69A2CAC4ECE41F937BB838270B1016D0212FFBFEA0BA5E61F88E327A1F7`.
+It was copied byte-for-byte to the canonical `granger/resources/icons/ai.png`
+source and compiled as `:/icons/ai.png`; no crop, recoloring, resampling, upload,
+or conversion service was used. The embedded resource has the same dimensions
+and SHA-256. Its alpha channel and Qt rendering at 16, 20, 24, and 32 pixels are
+covered by the UI smoke test.
 
-The source artwork was not uploaded or sent to a conversion service. The same
-compiled Qt resource supplies the start-page control and its tab fallback icon;
-there is no runtime lookup of the root `ai.png`. The resource is packaged and
-integrity-checked, not cryptographically encrypted, and remains extractable by
-a sufficiently motivated analyst.
+The same compiled Qt resource supplies the start-page control and its tab
+fallback icon. There is no runtime lookup of `Chat-bot`, the Desktop path, or a
+loose PNG. The resource is packaged and integrity-checked, not cryptographically
+encrypted, and remains extractable by a sufficiently motivated analyst. The
+filename suggests an Icons8 origin but contains no license grant; the project
+owner must confirm redistribution terms before public distribution.
 
 ## Component glyphs
 

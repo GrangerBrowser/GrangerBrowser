@@ -64,7 +64,7 @@ if ($legacyNamedEntries.Count -ne 0 -or @($legacyTextMatches).Count -ne 0) {
 $looseUiAssetNames = @(
     "DuckDuck.png", "Google.png", "bing.png", "brave.png", "startpage.png",
     "mojeek.png", "yandex.png", "onion.png", "emma watson.png", "emma watson.jpg",
-    "surface-9c42.jpg", "ai.png", "icon.jpg", "icon-source.jpg", "app-icon.png", "app-icon.svg",
+    "surface-9c42.jpg", "ai.png", "icons8-chatbot-64.png", "icon.jpg", "icon-source.jpg", "app-icon.png", "app-icon.svg",
     "GrangerBrowser.ico"
 )
 $looseUiAssets = @(Get-ChildItem -LiteralPath $copiedPackage -Recurse -File | Where-Object {

@@ -7,6 +7,7 @@
 # Local owner asset drops; canonical tracked copies live in granger/resources.
 /settings_icon/
 /icons_for_browser/
+/Chat-bot/
 /cmake-build-*/
 /CMakeFiles/
 CMakeCache.txt
