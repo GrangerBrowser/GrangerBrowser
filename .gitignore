@@ -120,3 +120,5 @@ Desktop.ini
 
 # Pamp source is tracked. Its generated reports, cases, and caches are excluded
 # by pamp/.gitignore; the packaged browser still does not copy the full runtime.
+
+/release/
