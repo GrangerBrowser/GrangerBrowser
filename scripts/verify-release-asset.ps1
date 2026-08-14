@@ -43,6 +43,9 @@ if (Test-Path -LiteralPath $outputRoot) {
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 
 $headers = @{ "User-Agent" = "Granger-Browser-release-verifier" }
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+    $headers.Authorization = "Bearer $($env:GITHUB_TOKEN)"
+}
 Invoke-WebRequest -Uri "$assetBase/$AssetName" -Headers $headers -OutFile $zipPath -UseBasicParsing
 Invoke-WebRequest -Uri "$assetBase/$checksumName" -Headers $headers -OutFile $checksumPath -UseBasicParsing
 
