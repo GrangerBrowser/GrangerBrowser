@@ -13,8 +13,21 @@ CMakeCache.txt
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
+CTestTestfile.cmake
+Testing/
 *_autogen/
 *._autogen/
+.cache/
+.clangd/
+
+# Editor backups, rejected patches, and local scratch output
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+*~
 
 # Compiled and deployed binaries
 *.obj
@@ -57,10 +70,21 @@ compile_commands.json
 *.log
 *.dmp
 *.crash
+*.stackdump
+*.trace
 *.lock
+crashpad/
 SingletonCookie
 SingletonLock
 SingletonSocket
+
+# Coverage and profiler output
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+coverage/
 
 # Local configuration and credentials
 .env
