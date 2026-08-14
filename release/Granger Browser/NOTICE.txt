@@ -1,0 +1,49 @@
+Granger Browser
+
+Granger Browser is a native C++/Qt desktop application. The packaged browser engine is
+Qt WebEngine and is Chromium-based.
+
+The release package contains third-party Qt runtime components, the Tor Expert
+Bundle, and the ISC-licensed quirc QR decoder by Daniel Beer. Their notices and
+license texts are copied into the release `licenses` directory by
+`scripts/package-release.ps1`.
+
+Qt modules are distributed under the license options stated by the Qt Project
+for each module and build. This notice is not a substitute for the applicable
+Qt license texts or distribution obligations. Those texts and obligations must
+be reviewed and included as required before publishing a binary package.
+
+The Tor Expert Bundle retains the Tor Project and bundled-library license texts
+provided in its `docs` directory. Packaging copies those files without replacing
+their terms.
+
+Search-provider vector marks from Simple Icons are packaged locally under CC0
+1.0. Product names and marks remain the property of their respective owners.
+The Mojeek icon comes from Mojeek's official logo resources and is used only to
+identify that search provider.
+
+EasyList and EasyPrivacy snapshots are attributed to The EasyList authors
+(https://easylist.to/) and are used under CC BY-SA 3.0-or-later. Granger Browser
+does not claim authorship of those lists. Exact snapshot metadata and hashes
+are packaged in `licenses/EasyList-SOURCES.md`.
+
+Optional AdGuard URL Tracking Protection and Russian filter data are fetched
+from AdGuard's official update service into user-writable application data and
+are licensed under GPL-3.0-only. Their source metadata is documented in
+`licenses/CONTENT_FILTER_SOURCES.md`.
+
+No Python runtime is required to start or use the packaged desktop browser.
+
+Granger Browser Pamp Lite is a clean-room native C++ passive analyzer. The
+separate full Pamp project was reviewed for high-level report concepts but has no
+repository-level license grant, so none of its Python code, templates, active
+scanners, branding, or assets are included. Details are recorded in
+`granger/pamp_lite/ATTRIBUTION.md`.
+
+Project-owner-supplied wallpaper, application icon, AI Chat icon, support-page
+artwork, and provider marks are inventoried in `docs/UI_ASSET_SOURCES.md`.
+Inventory and embedding do not establish redistribution rights. Those rights
+must be confirmed, or the affected assets replaced, before public distribution.
+
+No project-wide Granger Browser license is currently granted. See
+`DISTRIBUTION.md` for the release prerequisites that remain open.

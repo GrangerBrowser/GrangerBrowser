@@ -18,3 +18,18 @@
 /granger/resources/privacy/easylist.txt -text
 /granger/resources/privacy/easyprivacy.txt -text
 /third_party/** -text
+
+# Packaged runtime binaries are versioned through Git LFS. Text documentation,
+# notices, scripts, and the release manifest remain ordinary Git objects.
+"release/Granger Browser/*.dll" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/*.exe" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/*.png" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.dll" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.exe" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.pak" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.bin" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.dat" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.qm" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/**/*.png" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/runtime/tor/data/geoip" filter=lfs diff=lfs merge=lfs -text
+"release/Granger Browser/runtime/tor/data/geoip6" filter=lfs diff=lfs merge=lfs -text
