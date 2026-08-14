@@ -8,15 +8,17 @@ Granger Browser does not promise anonymity. Tor status is reported separately fo
 > pre-release browser. Use a dedicated test profile when evaluating source
 > builds and review the security limitations before relying on it.
 
-## Run The Packaged Browser
+## Build And Run
 
-Launch:
+The source repository does not contain a prebuilt executable. Build and validate
+the package as described in [BUILDING.md](BUILDING.md), then launch:
 
 ```text
 release\Granger Browser\GrangerBrowser.exe
 ```
 
-No terminal, Python installation, Qt SDK, or source checkout is required. To create Start menu and desktop shortcuts:
+The validated package does not require a terminal, Python installation, Qt SDK,
+or source checkout at runtime. To create Start menu and desktop shortcuts:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\release\Granger Browser\Create-Shortcuts.ps1"
@@ -81,6 +83,10 @@ No project-wide license has been selected or added. Third-party components keep
 their own licenses and attribution as documented in [NOTICE.txt](NOTICE.txt)
 and `third_party/`. Do not infer an MIT, GPL, MPL, or other grant for the
 Granger Browser source until the repository owner selects one explicitly.
+
+Public source or binary distribution is not approved by this repository state.
+The remaining ownership, asset-rights, and binary-distribution checks are listed
+in [DISTRIBUTION.md](DISTRIBUTION.md).
 
 ## Security Notes
 

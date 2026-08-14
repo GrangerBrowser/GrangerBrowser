@@ -16,6 +16,27 @@ is not already present:
 .\scripts\install-qt-6.11.1.ps1
 ```
 
+## Tor Packaging Input
+
+`output/tor-expert` is intentionally ignored by Git. Obtain the Windows x86-64
+Tor Expert Bundle from an official Tor Project distribution channel, verify the
+download independently, and extract it so these inputs exist:
+
+```text
+output\tor-expert\tor\tor.exe
+output\tor-expert\data\geoip
+output\tor-expert\data\geoip6
+output\tor-expert\tor\pluggable_transports\lyrebird.exe
+output\tor-expert\tor\pluggable_transports\pt_config.json
+output\tor-expert\docs\
+```
+
+The current acceptance baseline was built from
+`tor-expert-bundle-windows-x86_64-15.0.17.tar.gz` with SHA-256
+`5F91E9426BF641DFE539DC28029088C72BED0B1D8F1C79104A0F89273CB3EBE1`.
+It contains Tor 0.4.9.11 and lyrebird 0.8.1. A future bundle update must record
+its source, checksum, and runtime versions before a public binary release.
+
 ## Canonical Release
 
 ```powershell
@@ -80,6 +101,10 @@ release\Granger Browser\
 The harness copies the release to a path containing spaces, launches it from an unrelated current directory, removes Python and the Qt SDK from `PATH`, checks the persistent WebEngine profile and User-Agent, runs new-tab/internal-route, product, navigation, bridge, QR, privacy, and persistence tests, loads a real HTTPS page, verifies all connection-strategy torrc files with bundled Tor, launches a real obfs4 pluggable transport to `conn_pt`, verifies real toolbar download progress while closing the source tab, checks all search-provider navigations, closes a normal browser window, and verifies no managed processes remain.
 
 External provider challenges are recorded honestly. A Google `sorry` page is not counted as a loaded search-results page.
+
+The acceptance gate establishes technical behavior; it does not grant a project
+license or resolve third-party redistribution rights. Review
+[DISTRIBUTION.md](DISTRIBUTION.md) before publishing source or binaries.
 
 ## Mutable Data
 

@@ -85,6 +85,7 @@ New-Item -ItemType Directory -Path $releaseSidebarScreenshots -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot "granger/resources/qr-fixtures/release-bridge.png") -Destination (Join-Path $resolvedPackage "bridge.png")
 Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "BUILDING.md") -Destination $resolvedPackage
+Copy-Item -LiteralPath (Join-Path $projectRoot "DISTRIBUTION.md") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "SECURITY.md") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $resolvedPackage
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GRANGER_BROWSER_RELEASE_REPORT.md") -Destination $releaseDocs
@@ -112,7 +113,7 @@ $required = @(
     "GrangerBrowser.exe", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
     "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
-    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md",
+    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md",
     "docs/screenshots/sidebar-layout-stability/sidebar-hidden.png", "docs/screenshots/sidebar-layout-stability/sidebar-rail.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-tabs-expanded.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-tabs-collapsed.png", "docs/screenshots/sidebar-layout-stability/sidebar-collapsed.png",
