@@ -1,110 +1,168 @@
+<div align="center">
+
 # Granger Browser
 
-Granger Browser is a native Windows privacy browser built with C++20, Qt Widgets, and Qt WebEngine. Qt WebEngine is Chromium-based. Python is not required to launch the packaged browser.
+### Privacy-focused Chromium browser with built-in Tor routing.
 
-Granger Browser does not promise anonymity. Tor status is reported separately for configuration, bootstrap, and browser-route verification.
+Native Windows browser written in C++20 and Qt 6, combining
+Chromium compatibility, configurable privacy protection and managed Tor
+inside a standalone desktop application.
 
-> **Development status:** this repository contains an actively developed,
-> pre-release browser. Use a dedicated test profile when evaluating source
-> builds and review the security limitations before relying on it.
+[Download for Windows](../../releases/latest) ·
+[Build from Source](BUILDING.md) ·
+[Security](SECURITY.md) ·
+[Documentation](docs/)
 
-## Portable Windows Download
+</div>
 
-Download `Granger-Browser-v0.4.1-windows-x64.zip` from the
-[Granger Browser 0.4.1 release](https://github.com/zakhar-git/Granger-Browser/releases/tag/v0.4.1),
-verify the accompanying `.sha256` file, extract the complete `Granger Browser`
-folder, and launch:
+---
 
-```text
-Granger Browser\GrangerBrowser.exe
-```
+## Overview
 
-The release ZIP contains the `Granger Browser` folder at its root. Do not use GitHub's automatically generated
-`Source code (zip)` as the portable package; `main` contains source and build scripts, not the packaged runtime. See
-[Windows portability](docs/WINDOWS_PORTABILITY.md) for verification details.
+Granger Browser is a native privacy-oriented browser for Windows built
+with C++20, Qt Widgets and Qt WebEngine.
 
-The validated package does not require a terminal, Python installation, Qt SDK,
-or source checkout at runtime. To create Start menu and desktop shortcuts:
+It combines a Chromium-based browsing engine with privacy controls,
+isolated browsing environments, content blocking and integrated Tor
+routing without requiring Python, a separate Tor Browser installation
+or a development environment.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\release\Granger Browser\Create-Shortcuts.ps1"
-```
+> **Beta software**
+>
+> Granger is under active development. Some functionality may change
+> between releases and platform-specific issues may still occur.
 
-## Build And Run
+## Highlights
 
-Build and validate the package from source as described in
-[BUILDING.md](BUILDING.md), then launch the canonical executable under
-`release\Granger Browser`. A Git clone contains the source tree only; the
-dedicated GitHub Release asset is the supported end-user download.
+- **Integrated Tor** — Direct Tor, bridges, obfs4, WebTunnel, Snowflake
+  and external/upstream proxy configurations.
+- **Privacy profiles** — configurable fingerprinting, WebRTC, Canvas,
+  WebGL, cookies, scripts and storage policies.
+- **Content blocking** — EasyList/EasyPrivacy-based network and cosmetic
+  filtering with local rule processing.
+- **Spaces** — isolated browsing environments with separate identities.
+- **Site controls** — per-origin JavaScript, WebAssembly, WebGL,
+  cookies, WebRTC, autoplay and permission policies.
+- **HTTPS-First** — secure navigation with configurable HTTP exceptions.
+- **Native desktop UI** — vertical tabs, downloads, history, bookmarks,
+  settings and session restoration.
+- **Portable Windows build** — extract and run without Qt, Python or
+  Visual Studio installed.
 
-## Desktop Features
+## Screenshots
 
-- Compact browser toolbar with Back, Forward, Reload/Stop, site information, address/search field, downloads, settings, and new tab.
-- Vertical tabs with collapsed, hover-expanded, and pinned states.
-- Persistent profile, cookies, cache, session, bookmarks, history, and download history.
-- Search providers: DuckDuckGo, Google, Bing, Brave Search, Startpage, Mojeek, and Onion Search through Ahmia.
-- Search suggestions are disabled by default and clearly disclose provider requests when enabled.
-- Chromium default, Firefox-compatible, Chrome-compatible, and custom User-Agent profiles. Compatibility profiles do not change the browser engine.
-- Managed Tor strategies: Direct, obfs4, WebTunnel, Snowflake, meek_lite, vanilla bridges, external Tor SOCKS, upstream SOCKS, and upstream HTTP CONNECT.
+<!-- Replace these with actual Granger screenshots -->
 
-## Tor Bridge Behavior
+| Browser | Privacy |
+| --- | --- |
+| ![Granger Browser](docs/images/browser.png) | ![Privacy Settings](docs/images/privacy.png) |
 
-Bridge input is parsed into transport, endpoint, optional fingerprint, and key/value options while preserving the complete Bridge payload used in torrc. Supported current transports include `obfs4`, `webtunnel`, `snowflake`, and vanilla bridges; the parser retains generic transport syntax for future extensions.
+| Tor | Settings |
+| --- | --- |
+| ![Tor](docs/images/tor.png) | ![Settings](docs/images/settings.png) |
 
-Save persists bridge profiles. Apply resolves the bundled Tor Expert Bundle and `lyrebird`, writes a dedicated torrc under the user data directory, runs `tor.exe --verify-config -f <torrc>`, starts the managed Tor process, captures real bootstrap output, and verifies browser traffic through the Tor Project check endpoint.
+## Download
 
-`Connected` is only shown after browser route verification. A valid but unreachable bridge remains saved and reports the actual Tor connection failure.
+### Windows x64
 
-## Data Locations
+Download the newest portable build from:
 
-Mutable data is stored outside the package under:
+**[Latest Granger Browser Release](../../releases/latest)**
 
-```text
-%LOCALAPPDATA%\Granger\Granger Browser\
-```
+Then:
 
-The profile, cache, state, logs, Tor data, and generated torrc use subdirectories there. Test harnesses can override roots with `GRANGER_DATA_ROOT` and `GRANGER_SETTINGS_ROOT`.
+1. Download `Granger-Browser-*-windows-x64.zip`
+2. Verify the provided SHA-256 checksum
+3. Extract the complete archive
+4. Run `GrangerBrowser.exe`
 
-## Build And Package
+No Python, Qt SDK or Visual Studio installation is required.
 
-Requirements:
+> Do not download GitHub's automatically generated **Source code**
+> archives if you only want to run Granger. Use the Windows portable
+> asset attached to the release.
 
-- Visual Studio 2022, MSVC x64
+---
+
+## Privacy
+
+Granger exposes privacy controls directly instead of presenting a
+single opaque "private mode".
+
+Protection includes:
+
+- Canvas and graphical API protection
+- WebRTC restrictions
+- third-party cookie blocking
+- Referer reduction
+- Global Privacy Control
+- tracking parameter removal
+- redirect tracking protection
+- script and iframe controls
+- WebAssembly controls
+- persistent-storage policies
+- per-site privacy rules
+
+Granger does **not** claim that enabling these options automatically
+makes a user anonymous.
+
+## Tor
+
+Tor support is integrated into the browser and its connection state is
+tracked separately across:
+
+**Configuration → Bootstrap → Browser Route Verification**
+
+Supported strategies include:
+
+- Direct Tor
+- obfs4
+- WebTunnel
+- Snowflake
+- meek_lite
+- vanilla bridges
+- external Tor SOCKS
+- upstream SOCKS
+- upstream HTTP CONNECT
+
+Granger does not report **Connected** merely because the Tor process is
+running. Browser traffic must pass route verification first.
+
+## Content Blocking
+
+Granger includes local network and cosmetic filtering with support for:
+
+- EasyList
+- EasyPrivacy
+- tracking protection
+- known browser mining domains
+- social widgets
+- regional filtering
+- URL tracking-parameter removal
+- user-defined blocked domains
+
+Filtering is performed locally without sending visited URLs to an
+external filtering service.
+
+---
+
+## Build from Source
+
+### Requirements
+
+- Windows 10/11 x64
+- Visual Studio 2022
+- MSVC x64
 - CMake 3.24+
-- Qt 6.11.1 with Widgets, Svg, Network, WebEngineWidgets, WebChannel, and Positioning
+- Qt 6.11.1
 
-Build, package, test, and atomically replace the canonical release:
+Required Qt modules:
+
+`Widgets`, `Svg`, `Network`, `WebEngineWidgets`, `WebChannel`,
+`Positioning`
+
+Build:
 
 ```powershell
-.\scripts\build-release.ps1 -QtRoot "$env:USERPROFILE\Qt\6.11.1\msvc2022_64"
-```
-
-The pinned Qt runtime can be installed from Qt's official repositories with
-`.\scripts\install-qt-6.11.1.ps1`; every downloaded archive is checked against
-its published SHA-1 before extraction.
-
-Temporary compiler output stays under `build\desktop`. Packaging uses `release\.staging` only while validation runs, then replaces `release\Granger Browser` and removes staging. A focused `release\.ui-stage` package is also temporary and is removed by the canonical build orchestrator. `package-release.ps1` rejects direct writes to the canonical directory, and the scripts never create candidate or final-sanity directories.
-
-See [BUILDING.md](BUILDING.md) for the package layout and acceptance details. The verified release record is in [docs/GRANGER_BROWSER_RELEASE_REPORT.md](docs/GRANGER_BROWSER_RELEASE_REPORT.md).
-
-Development work is performed on focused branches and merged through review.
-See [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) for the repository workflow.
-
-## License Status
-
-No project-wide license has been selected or added. Third-party components keep
-their own licenses and attribution as documented in [NOTICE.txt](NOTICE.txt)
-and `third_party/`. Do not infer an MIT, GPL, MPL, or other grant for the
-Granger Browser source until the repository owner selects one explicitly.
-
-The repository and packaged releases are publicly accessible, but public access
-does not create a license grant for project-authored source. Ownership,
-asset-rights, and third-party binary-distribution obligations remain documented
-in [DISTRIBUTION.md](DISTRIBUTION.md).
-
-## Security Notes
-
-- User-Agent spoofing is compatibility-only. TLS, Client Hints, WebGL, codecs, rendering, and other Chromium identity surfaces remain Chromium-specific.
-- Search providers may present CAPTCHAs or anti-automation challenges based on the current network.
-- The release binary is not digitally signed. Windows may display an unknown-publisher warning.
-- Use only in lawful and ethical contexts.
+.\scripts\build-release.ps1 `
+    -QtRoot "$env:USERPROFILE\Qt\6.11.1\msvc2022_64"
