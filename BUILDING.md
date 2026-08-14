@@ -1,6 +1,6 @@
 # Building Granger Browser
 
-Granger Browser 0.4.0 is a native C++20/Qt 6 application. The release target is a GUI-subsystem executable named `GrangerBrowser.exe`; it does not open a console and does not invoke Python.
+Granger Browser 0.4.1 is a native C++20/Qt 6 application. The release target is a GUI-subsystem executable named `GrangerBrowser.exe`; it does not open a console and does not invoke Python.
 
 ## Requirements
 
@@ -63,10 +63,11 @@ For compile-only development work:
 
 Internally, the release orchestrator calls `package-release.ps1`. It runs
 `windeployqt` for the Release target while excluding QML debugger plugins, adds
-the app-local VC143 runtime, packages Qt WebEngine resources/locales, bundles
+the app-local VC143 runtime, pins Qt paths with package-local `qt.conf`, packages
+Qt WebEngine resources/locales and the redistributable D3D compiler/DXC runtime, bundles
 Tor, geoip data, `lyrebird`, `conjure-client`, `pt_config.json`, notices,
 assets, and shortcut creation, validates required files, and writes
-`release-manifest.json` with SHA-256 hashes.
+`deployment-metadata.json` plus `release-manifest.json` with SHA-256 hashes.
 
 `package-release.ps1` is staging-only and rejects the canonical
 `release\Granger Browser` path. It accepts only `release\.staging`, used by the
@@ -80,8 +81,9 @@ The optional NMEA positioning plugin is removed because it requires Qt SerialPor
 The orchestrator also runs `test-windows-portability.ps1`. This build-time gate
 parses every packaged EXE and DLL without relying on `dumpbin`, requires x64
 PE32+ files, resolves direct and delay-load imports, verifies the package
-manifest, rejects Git LFS pointers and machine-specific user paths, and confirms
-that QML debugger tooling is absent.
+manifest and Authenticode signatures of upstream runtime files, invokes the
+Windows Loader on critical Qt/WebEngine DLLs, rejects Git LFS pointers and
+machine-specific user paths, and confirms that QML debugger tooling is absent.
 
 ## Release Layout
 
@@ -90,6 +92,10 @@ release\Granger Browser\
   GrangerBrowser.exe
   Qt6*.dll
   QtWebEngineProcess.exe
+  qt.conf
+  d3dcompiler_47.dll
+  dxcompiler.dll
+  dxil.dll
   platforms\qwindows.dll
   resources\
   translations\qtwebengine_locales\
@@ -101,6 +107,7 @@ release\Granger Browser\
   runtime\tor\pluggable_transports\pt_config.json
   licenses\
   Create-Shortcuts.ps1
+  deployment-metadata.json
   release-manifest.json
 ```
 
@@ -110,7 +117,7 @@ release\Granger Browser\
 .\scripts\test-release.ps1 -PackageDirectory "release\Granger Browser"
 ```
 
-The harness copies the release to a path containing spaces, launches it from an unrelated current directory, removes Python and the Qt SDK from `PATH`, checks the persistent WebEngine profile and User-Agent, runs new-tab/internal-route, product, navigation, bridge, QR, privacy, and persistence tests, loads a real HTTPS page, verifies all connection-strategy torrc files with bundled Tor, launches a real obfs4 pluggable transport to `conn_pt`, verifies real toolbar download progress while closing the source tab, checks all search-provider navigations, closes a normal browser window, and verifies no managed processes remain.
+The harness copies the release to a path containing spaces, launches it from an unrelated current directory, removes Python and the Qt SDK from `PATH`, poisons external `QTWEBENGINE_*` paths to prove that the package-local helper wins, checks the persistent WebEngine profile and User-Agent, runs new-tab/internal-route, product, navigation, bridge, QR, privacy, and persistence tests, loads a real HTTPS page, verifies all connection-strategy torrc files with bundled Tor, launches a real obfs4 pluggable transport to `conn_pt`, verifies real toolbar download progress while closing the source tab, checks all search-provider navigations, closes a normal browser window, and verifies no managed processes remain.
 
 External provider challenges are recorded honestly. A Google `sorry` page is not counted as a loaded search-results page.
 
@@ -119,11 +126,11 @@ license or resolve third-party redistribution rights. Review
 [DISTRIBUTION.md](DISTRIBUTION.md) before publishing source or binaries.
 
 After acceptance, `create-portable-archive.ps1` writes
-`output\distribution\Granger-Browser-<version>-windows-x64.zip` and its
+`output\distribution\Granger-Browser-v<version>-windows-x64.zip` and its
 `.sha256` checksum. It reopens the archive and verifies that the archived EXE is
 the complete PE file from the canonical package. Publish that ZIP as a GitHub
 Release asset; GitHub's generated source archives are not portable application
-packages and can contain Git LFS pointer text.
+packages.
 
 ## Mutable Data
 

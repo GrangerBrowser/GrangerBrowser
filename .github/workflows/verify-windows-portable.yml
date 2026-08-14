@@ -1,0 +1,53 @@
+name: Verify Windows portable release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify
+        required: true
+        default: v0.4.1
+      asset_name:
+        description: Optional exact asset name
+        required: false
+      legacy_smoke:
+        description: Run only the clean-environment helper and renderer smoke
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify published portable package
+        shell: pwsh
+        run: |
+          $arguments = @{
+            Repository = "${{ github.repository }}"
+            Tag = "$env:RELEASE_TAG"
+          }
+          $assetName = "${{ inputs.asset_name }}"
+          if (-not [string]::IsNullOrWhiteSpace($assetName)) {
+            $arguments.AssetName = $assetName
+          }
+          if ("${{ inputs.legacy_smoke }}" -eq "true") {
+            $arguments.LegacySmoke = $true
+          }
+          ./scripts/verify-release-asset.ps1 @arguments
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable-verification
+          path: output/remote-release-verification/*.json
+          if-no-files-found: warn

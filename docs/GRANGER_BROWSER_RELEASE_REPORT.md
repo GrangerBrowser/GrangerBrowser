@@ -1,6 +1,6 @@
-# Granger Browser 0.4.0 release record
+# Granger Browser 0.4.1 release record
 
-Updated: 2026-08-12
+Updated: 2026-08-14
 
 This document records the release boundary and the reproducible acceptance
 procedure for Granger Browser. It is intentionally short. Detailed privacy,
@@ -25,7 +25,7 @@ orchestrator writes its machine-readable result to `release/build-report.json`.
 
 | Component | Release value |
 | --- | --- |
-| Product | Granger Browser 0.4.0 |
+| Product | Granger Browser 0.4.1 |
 | Language | C++20 |
 | UI | Qt Widgets 6.11.1 |
 | Browser engine | Qt WebEngine 6.11.1 / Chromium 140.0.7339.225 |
@@ -37,6 +37,14 @@ orchestrator writes its machine-readable result to `release/build-report.json`.
 The Qt installer script downloads official Qt archives and verifies their
 published hashes before extraction. The packaged browser does not require a
 Python runtime or a Qt SDK.
+
+The Windows package uses `windeployqt` and `qtpaths` from the same Qt 6.11.1
+`msvc2022_64` distribution used by the build. Package-local `qt.conf` and
+startup runtime selection bind Qt WebEngine to the adjacent helper, resources,
+and locales even when the parent environment contains stale `QTWEBENGINE_*`
+variables. The package also contains the signed Qt D3D compiler support file,
+Windows SDK DXC/DXIL redistributables, and app-local VC143 runtime. Exact source
+versions and hashes are recorded in `deployment-metadata.json`.
 
 ## Architecture boundary
 
@@ -136,7 +144,8 @@ Run the canonical gate from the repository root:
   -BuildDirectory build\desktop
 ```
 
-The gate includes product, new-tab/internal-route, navigation, feature, UI,
+The gate includes PE architecture/import parsing, Windows Loader checks for
+critical Qt DLLs, product, new-tab/internal-route, navigation, feature, UI,
 privacy, privacy-diagnostics, bridge, QR, connection-strategy, branding,
 migration, DevTools, persistence, download, visual, stability, DPI, performance,
 and copied-package checks. Tor validates generated strategy configurations, and
