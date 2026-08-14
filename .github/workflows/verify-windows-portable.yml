@@ -23,13 +23,17 @@ permissions:
 
 jobs:
   verify:
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download and verify published portable package
         shell: pwsh
         run: |
@@ -47,8 +51,8 @@ jobs:
           ./scripts/verify-release-asset.ps1 @arguments
       - name: Upload verification report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: windows-portable-verification
+          name: windows-portable-verification-${{ matrix.os }}
           path: output/remote-release-verification/*.json
           if-no-files-found: warn
