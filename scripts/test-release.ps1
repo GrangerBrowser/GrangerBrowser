@@ -7,6 +7,9 @@ $sourcePackage = [IO.Path]::GetFullPath((Join-Path $projectRoot $PackageDirector
 if (-not (Test-Path -LiteralPath (Join-Path $sourcePackage "GrangerBrowser.exe"))) {
     throw "Packaged executable not found under $sourcePackage"
 }
+$portability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `
+    -PackageDirectory $sourcePackage.Substring([IO.Path]::GetFullPath($projectRoot).TrimEnd('\').Length + 1)
+if (-not $portability.OK) { throw "Windows portability validation failed before acceptance." }
 
 $testRoot = Join-Path $projectRoot "output/release acceptance/path with spaces"
 $copiedPackage = Join-Path $testRoot "copied release/Granger Browser"
@@ -113,8 +116,42 @@ $oldData = $env:GRANGER_DATA_ROOT
 $oldSettings = $env:GRANGER_SETTINGS_ROOT
 $oldDownloads = $env:GRANGER_DOWNLOAD_ROOT
 $oldFeatureFixture = $env:GRANGER_FEATURE_FIXTURE_ROOT
+$developmentEnvironmentVariables = @(
+    "QTDIR",
+    "CMAKE_PREFIX_PATH",
+    "QT_PLUGIN_PATH",
+    "QT_QPA_PLATFORM_PLUGIN_PATH",
+    "QTWEBENGINEPROCESS_PATH",
+    "QTWEBENGINE_RESOURCES_PATH",
+    "QTWEBENGINE_LOCALES_PATH",
+    "QML_IMPORT_PATH",
+    "QML2_IMPORT_PATH",
+    "VSINSTALLDIR",
+    "VCINSTALLDIR",
+    "VCToolsInstallDir",
+    "VCToolsRedistDir",
+    "WindowsSdkDir",
+    "INCLUDE",
+    "LIB",
+    "LIBPATH",
+    "GRANGER_RUNTIME_ROOT",
+    "GRANGER_TOR_PATH",
+    "GRANGER_LYREBIRD_PATH",
+    "GRANGER_TRANSPORT_PATH",
+    "DARKSEARCH_RUNTIME_ROOT",
+    "DARKSEARCH_TOR_PATH",
+    "DARKSEARCH_LYREBIRD_PATH",
+    "DARKSEARCH_TRANSPORT_PATH"
+)
+$oldDevelopmentEnvironment = @{}
+foreach ($name in $developmentEnvironmentVariables) {
+    $oldDevelopmentEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 try {
     $env:PATH = "$(Join-Path $env:SystemRoot 'System32');$env:SystemRoot"
+    foreach ($name in $developmentEnvironmentVariables) {
+        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
     $env:GRANGER_DATA_ROOT = $dataRoot
     $env:GRANGER_SETTINGS_ROOT = $settingsRoot
     $env:GRANGER_DOWNLOAD_ROOT = Join-Path $testRoot "downloads"
@@ -729,6 +766,7 @@ userAgentProfile=default
         PythonOnPath = $pythonOnPath
         FullPampDirectoryCount = $forbiddenFullPampDirectories.Count
         PythonRuntimeArtifactCount = $pythonRuntimeArtifacts.Count
+        WindowsPortability = $portability
         BrandingMetadata = $brandingMetadata
         LegacyNamedEntryCount = $legacyNamedEntries.Count
         LegacyUserVisibleTextMatchCount = @($legacyTextMatches).Count
@@ -796,5 +834,8 @@ userAgentProfile=default
     $env:GRANGER_SETTINGS_ROOT = $oldSettings
     $env:GRANGER_DOWNLOAD_ROOT = $oldDownloads
     $env:GRANGER_FEATURE_FIXTURE_ROOT = $oldFeatureFixture
+    foreach ($name in $developmentEnvironmentVariables) {
+        [Environment]::SetEnvironmentVariable($name, $oldDevelopmentEnvironment[$name], "Process")
+    }
 }
 Write-Host "Release acceptance passed in $testRoot"

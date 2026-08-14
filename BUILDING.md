@@ -61,7 +61,12 @@ For compile-only development work:
   -BuildDirectory build\desktop
 ```
 
-Internally, the release orchestrator calls `package-release.ps1`. It runs `windeployqt`, adds the app-local VC143 runtime, packages Qt WebEngine resources/locales, bundles Tor, geoip data, `lyrebird`, `pt_config.json`, notices, assets, and shortcut creation, validates required files, and writes `release-manifest.json` with SHA-256 hashes.
+Internally, the release orchestrator calls `package-release.ps1`. It runs
+`windeployqt` for the Release target while excluding QML debugger plugins, adds
+the app-local VC143 runtime, packages Qt WebEngine resources/locales, bundles
+Tor, geoip data, `lyrebird`, `conjure-client`, `pt_config.json`, notices,
+assets, and shortcut creation, validates required files, and writes
+`release-manifest.json` with SHA-256 hashes.
 
 `package-release.ps1` is staging-only and rejects the canonical
 `release\Granger Browser` path. It accepts only `release\.staging`, used by the
@@ -71,6 +76,12 @@ it removes stale staging directories after confirming that no process is
 running from them.
 
 The optional NMEA positioning plugin is removed because it requires Qt SerialPort, which Granger Browser does not ship or use. The WinRT and polling positioning plugins remain.
+
+The orchestrator also runs `test-windows-portability.ps1`. This build-time gate
+parses every packaged EXE and DLL without relying on `dumpbin`, requires x64
+PE32+ files, resolves direct and delay-load imports, verifies the package
+manifest, rejects Git LFS pointers and machine-specific user paths, and confirms
+that QML debugger tooling is absent.
 
 ## Release Layout
 
@@ -86,6 +97,7 @@ release\Granger Browser\
   runtime\tor\data\geoip
   runtime\tor\data\geoip6
   runtime\tor\pluggable_transports\lyrebird.exe
+  runtime\tor\pluggable_transports\conjure-client.exe
   runtime\tor\pluggable_transports\pt_config.json
   licenses\
   Create-Shortcuts.ps1
@@ -105,6 +117,13 @@ External provider challenges are recorded honestly. A Google `sorry` page is not
 The acceptance gate establishes technical behavior; it does not grant a project
 license or resolve third-party redistribution rights. Review
 [DISTRIBUTION.md](DISTRIBUTION.md) before publishing source or binaries.
+
+After acceptance, `create-portable-archive.ps1` writes
+`output\distribution\Granger-Browser-<version>-windows-x64.zip` and its
+`.sha256` checksum. It reopens the archive and verifies that the archived EXE is
+the complete PE file from the canonical package. Publish that ZIP as a GitHub
+Release asset; GitHub's generated source archives are not portable application
+packages and can contain Git LFS pointer text.
 
 ## Mutable Data
 

@@ -78,6 +78,10 @@ try {
         -Destination "release/.staging" -SkipBuild
     if ($LASTEXITCODE -ne 0) { throw "Package script failed." }
 
+    $portability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `
+        -PackageDirectory "release/.staging"
+    if (-not $portability.OK) { throw "Windows portability validation failed." }
+
     $forbiddenFullPampDirectories = @(Get-ChildItem -LiteralPath $staging -Recurse -Directory | Where-Object {
         $_.Name.ToLowerInvariant() -in @('pentest', 'pamp')
     })
@@ -121,6 +125,10 @@ try {
     }
     if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Recurse -Force }
 
+    $portableArchive = & (Join-Path $PSScriptRoot "create-portable-archive.ps1") `
+        -PackageDirectory "release/Granger Browser"
+    if (-not $portableArchive.OK) { throw "Portable archive creation failed." }
+
     $unexpected = @(Get-ChildItem -LiteralPath $releaseRoot -Directory -Force | Where-Object {
         $_.Name -ne 'Granger Browser'
     })
@@ -133,6 +141,10 @@ try {
         CanonicalRelease = $canonical
         Executable = Join-Path $canonical "GrangerBrowser.exe"
         ExecutableSHA256 = (Get-FileHash -LiteralPath (Join-Path $canonical "GrangerBrowser.exe") -Algorithm SHA256).Hash
+        PortableArchive = $portableArchive.Archive
+        PortableArchiveSize = $portableArchive.ArchiveSize
+        PortableArchiveSHA256 = $portableArchive.ArchiveSHA256
+        WindowsPortability = $portability
         Acceptance = Join-Path $projectRoot "output/release acceptance/path with spaces/release-acceptance.json"
         PythonRuntimeArtifacts = 0
         TemporaryStagingRemoved = (-not (Test-Path -LiteralPath $staging) -and

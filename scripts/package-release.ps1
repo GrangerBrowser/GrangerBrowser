@@ -44,11 +44,16 @@ Copy-Item -LiteralPath $sourceExecutable -Destination (Join-Path $resolvedPackag
 
 $windeployqt = Join-Path $QtRoot "bin/windeployqt.exe"
 if (-not (Test-Path -LiteralPath $windeployqt)) { throw "windeployqt.exe was not found under $QtRoot" }
-& $windeployqt --release --compiler-runtime --no-system-d3d-compiler --dir $resolvedPackage (Join-Path $resolvedPackage "GrangerBrowser.exe")
+& $windeployqt --release --compiler-runtime --no-system-d3d-compiler `
+    --skip-plugin-types qmltooling --dir $resolvedPackage (Join-Path $resolvedPackage "GrangerBrowser.exe")
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed." }
 $nmeaPlugin = Join-Path $resolvedPackage "position/qtposition_nmea.dll"
 if (Test-Path -LiteralPath $nmeaPlugin) {
     Remove-Item -LiteralPath $nmeaPlugin -Force
+}
+$qmlDebuggerDirectory = Join-Path $resolvedPackage "qmltooling"
+if (Test-Path -LiteralPath $qmlDebuggerDirectory) {
+    throw "windeployqt deployed QML debugger tooling into the production package."
 }
 
 $vcRoots = Get-ChildItem -Path (Join-Path $env:ProgramFiles "Microsoft Visual Studio/2022") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
@@ -92,6 +97,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GRANGER_BROWSER_RELEASE_REP
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/FULL_PAMP_INTEGRATION_AUDIT.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/CROSS_DEVICE_PRIVACY_TESTING.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GIT_WORKFLOW.md") -Destination $releaseDocs
+Copy-Item -LiteralPath (Join-Path $projectRoot "docs/WINDOWS_PORTABILITY.md") -Destination $releaseDocs
 Copy-Item -Path (Join-Path $projectRoot "docs/screenshots/sidebar-layout-stability/*.png") `
     -Destination $releaseSidebarScreenshots
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $licenses
@@ -113,7 +119,7 @@ $required = @(
     "GrangerBrowser.exe", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
     "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
-    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md",
+    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md", "docs/WINDOWS_PORTABILITY.md",
     "docs/screenshots/sidebar-layout-stability/sidebar-hidden.png", "docs/screenshots/sidebar-layout-stability/sidebar-rail.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-tabs-expanded.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-tabs-collapsed.png", "docs/screenshots/sidebar-layout-stability/sidebar-collapsed.png",
@@ -123,7 +129,8 @@ $required = @(
     "docs/screenshots/sidebar-layout-stability/duckduckgo-after-toggle-stress.png", "docs/screenshots/sidebar-layout-stability/sidebar-100.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-150.png", "docs/screenshots/sidebar-layout-stability/sidebar-200.png",
     "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "bridge.png", "runtime/tor/tor.exe",
-    "runtime/tor/data/geoip", "runtime/tor/data/geoip6", "runtime/tor/pluggable_transports/lyrebird.exe"
+    "runtime/tor/data/geoip", "runtime/tor/data/geoip6", "runtime/tor/pluggable_transports/lyrebird.exe",
+    "runtime/tor/pluggable_transports/conjure-client.exe", "runtime/tor/pluggable_transports/pt_config.json"
 )
 foreach ($relative in $required) {
     $candidate = Join-Path $resolvedPackage $relative
