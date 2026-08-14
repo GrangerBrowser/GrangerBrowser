@@ -27,7 +27,6 @@ if ([IO.Path]::GetFileName($AssetName) -ne $AssetName -or
     throw "AssetName must be a plain ZIP file name."
 }
 $checksumName = "$assetName.sha256"
-$assetBase = "https://github.com/$Repository/releases/download/$Tag"
 $zipPath = Join-Path $outputRoot $AssetName
 $checksumPath = Join-Path $outputRoot $checksumName
 $extractRoot = Join-Path $outputRoot "extracted"
@@ -42,12 +41,31 @@ if (Test-Path -LiteralPath $outputRoot) {
 }
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 
-$headers = @{ "User-Agent" = "Granger-Browser-release-verifier" }
+$headers = @{
+    "User-Agent" = "Granger-Browser-release-verifier"
+    "Accept" = "application/vnd.github+json"
+    "X-GitHub-Api-Version" = "2022-11-28"
+}
 if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
     $headers.Authorization = "Bearer $($env:GITHUB_TOKEN)"
 }
-Invoke-WebRequest -Uri "$assetBase/$AssetName" -Headers $headers -OutFile $zipPath -UseBasicParsing
-Invoke-WebRequest -Uri "$assetBase/$checksumName" -Headers $headers -OutFile $checksumPath -UseBasicParsing
+$release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/$Tag" `
+    -Headers $headers -Method Get
+function Save-ReleaseAsset {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    $asset = @($release.assets | Where-Object { $_.name -ceq $Name }) | Select-Object -First 1
+    if (-not $asset) { throw "Release $Tag does not contain $Name." }
+    $downloadHeaders = $headers.Clone()
+    $downloadHeaders.Accept = "application/octet-stream"
+    Invoke-WebRequest -Uri ([string]$asset.url) -Headers $downloadHeaders `
+        -OutFile $Destination -UseBasicParsing
+}
+Save-ReleaseAsset -Name $AssetName -Destination $zipPath
+Save-ReleaseAsset -Name $checksumName -Destination $checksumPath
 
 $checksumLine = (Get-Content -LiteralPath $checksumPath -Raw -Encoding ASCII).Trim()
 if ($checksumLine -notmatch '^([A-Fa-f0-9]{64})\s+\*?(.+)$' -or $Matches[2] -ne $AssetName) {
