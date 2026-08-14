@@ -178,6 +178,12 @@ Server 2025 (`10.0.26100`) x64 virtual machines. Both runners loaded
 `https://example.com` through Qt WebEngine after external `QTWEBENGINE_*` paths
 were deliberately pointed at an incomplete helper directory.
 
+A separate managed-Direct test of the GitHub-downloaded package validated the
+generated torrc, observed real Tor bootstrap progress from 0 through 100
+percent, and completed browser-route verification through Tor. The test used
+isolated data and settings roots; the temporary exit address is not part of the
+release record.
+
 These hosted results are not represented as physical Windows 10 or Windows 11
 tests. No physical Windows 10 machine was available during this release cycle,
 and the separately reported Windows 11 computer was not remotely accessible for
