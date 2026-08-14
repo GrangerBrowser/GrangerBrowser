@@ -1,106 +1,92 @@
 <div align="center">
 
-Granger Browser
+# Granger Browser
 
-Privacy-focused Windows browser with integrated Tor, isolated browsing environments and built-in privacy controls.
+### Privacy-focused Windows browser with integrated Tor, isolated browsing environments and built-in privacy controls.
 
 Native C++20 · Qt 6 · Chromium · Tor
 
 <br>
 
-
-
-
-
-
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-202124?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/zakhar-git/Granger-Browser/releases/latest)
+[![C++](https://img.shields.io/badge/C%2B%2B-20-202124?style=for-the-badge&logo=cplusplus&logoColor=white)](#build-from-source)
+[![Qt](https://img.shields.io/badge/Qt-6.11.1-202124?style=for-the-badge&logo=qt&logoColor=41CD52)](#technology)
+[![Status](https://img.shields.io/badge/Status-Beta-B33951?style=for-the-badge)](#project-status)
+[![Tor](https://img.shields.io/badge/Tor-Integrated-202124?style=for-the-badge&logo=torproject&logoColor=7D4698)](#tor)
 
 <br>
 
-Download latest build ·
-Build from source ·
-Security ·
-Documentation
+**[Download latest build](https://github.com/zakhar-git/Granger-Browser/releases/latest)** ·
+**[Build from source](BUILDING.md)** ·
+**[Security](SECURITY.md)** ·
+**[Documentation](docs/)**
 
 </div>
+
+---
 
 <p align="center">
   <img src="screen/browser-main.png" width="100%" alt="Granger Browser main interface">
 </p>
 
-What is Granger?
+## What is Granger?
 
-Granger Browser is a native privacy-oriented desktop browser for Windows.
+**Granger Browser** is a native privacy-oriented desktop browser for Windows.
 
-It is built with C++20, Qt Widgets and Qt WebEngine, using Chromium as the underlying web engine while adding its own privacy controls, Tor routing, isolated browsing environments, site permissions, content filtering and native desktop UI.
+It is built with **C++20, Qt Widgets and Qt WebEngine**, using Chromium as the underlying web engine while adding its own privacy controls, Tor routing, isolated browsing environments, site permissions, content filtering and native desktop UI.
 
 Granger is designed around a simple principle:
 
-Privacy features should be visible, controllable and measurable — not hidden behind a single "private mode" switch.
+> **Privacy features should be visible, controllable and measurable — not hidden behind a single "private mode" switch.**
 
-Granger does not claim to provide perfect anonymity, make a device untraceable or eliminate every form of browser fingerprinting.
+Granger does **not** claim to provide perfect anonymity, make a device untraceable or eliminate every form of browser fingerprinting.
 
-It is an actively developed browser and should currently be treated as beta software.
+It is an actively developed browser and should currently be treated as **beta software**.
 
-Highlights
+---
+
+## Highlights
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-🧅 Integrated Tor
+### 🧅 Integrated Tor
 
 Managed Tor routing directly inside the browser.
 
 Supports:
 
-Direct Tor
-
-obfs4
-
-WebTunnel
-
-Snowflake
-
-meek_lite
-
-vanilla bridges
-
-external Tor SOCKS
-
-upstream SOCKS
-
-upstream HTTP CONNECT
+- Direct Tor
+- obfs4
+- WebTunnel
+- Snowflake
+- meek_lite
+- vanilla bridges
+- external Tor SOCKS
+- upstream SOCKS
+- upstream HTTP CONNECT
 
 No verified privacy route means browsing is not silently downgraded to a direct connection.
 
 </td>
 <td width="50%" valign="top">
 
-🛡 Privacy Controls
+### 🛡 Privacy Controls
 
 Configurable protection for several browser surfaces, including:
 
-WebRTC
-
-Canvas
-
-WebGL
-
-storage
-
-cookies
-
-permissions
-
-scripts
-
-WebAssembly
-
-Referer
-
-tracking parameters
-
-Global Privacy Control
+- WebRTC
+- Canvas
+- WebGL
+- storage
+- cookies
+- permissions
+- scripts
+- WebAssembly
+- Referer
+- tracking parameters
+- Global Privacy Control
 
 </td>
 </tr>
@@ -108,23 +94,18 @@ Global Privacy Control
 <tr>
 <td width="50%" valign="top">
 
-🧩 Isolated Spaces
+### 🧩 Isolated Spaces
 
 Separate browsing environments built around independent WebEngine profiles.
 
 Spaces can isolate:
 
-cookies
-
-sessions
-
-cache
-
-local storage
-
-authentication state
-
-browsing identity
+- cookies
+- sessions
+- cache
+- local storage
+- authentication state
+- browsing identity
 
 Useful when multiple identities should not share the same browser state.
 
@@ -132,23 +113,18 @@ Useful when multiple identities should not share the same browser state.
 
 <td width="50%" valign="top">
 
-🚫 Content Blocking
+### 🚫 Content Blocking
 
 Local blocking and privacy filtering based on maintained rule sets.
 
 Includes support for:
 
-EasyList
-
-EasyPrivacy
-
-cosmetic filtering
-
-tracking domains
-
-tracking URL parameters
-
-custom blocked domains
+- EasyList
+- EasyPrivacy
+- cosmetic filtering
+- tracking domains
+- tracking URL parameters
+- custom blocked domains
 
 Visited URLs are not sent to a remote filtering service just to decide whether a request should be blocked.
 
@@ -158,159 +134,124 @@ Visited URLs are not sent to a remote filtering service just to decide whether a
 <tr>
 <td width="50%" valign="top">
 
-🔐 Site Controls
+### 🔐 Site Controls
 
 Per-origin controls for sensitive browser capabilities.
 
 Depending on the current configuration, site controls can cover:
 
-JavaScript
-
-WebAssembly
-
-WebGL
-
-cookies
-
-WebRTC
-
-autoplay
-
-permissions
-
-storage behavior
+- JavaScript
+- WebAssembly
+- WebGL
+- cookies
+- WebRTC
+- autoplay
+- permissions
+- storage behavior
 
 </td>
 
 <td width="50%" valign="top">
 
-🖥 Native Desktop UI
+### 🖥 Native Desktop UI
 
 Granger is not an Electron shell.
 
 The interface includes:
 
-vertical tabs
-
-collapsible sidebar
-
-Spaces
-
-downloads
-
-history
-
-bookmarks
-
-settings
-
-session restoration
-
-Tor status
-
-internal privacy pages
+- vertical tabs
+- collapsible sidebar
+- Spaces
+- downloads
+- history
+- bookmarks
+- settings
+- session restoration
+- Tor status
+- internal privacy pages
 
 </td>
 </tr>
 </table>
 
-Screenshots
+---
 
-Browser
+## Screenshots
+
+### Browser
 
 <p align="center">
   <img src="screen/browser-main.png" width="95%" alt="Granger Browser">
 </p>
 
-Settings
+### Settings
 
 <p align="center">
   <img src="screen/settings.png" width="95%" alt="Granger Browser settings">
 </p>
 
-Download
+---
 
-Windows x64
+## Download
+
+### Windows x64
 
 Download the current portable build from:
 
-GitHub Releases →
+### **[GitHub Releases →](https://github.com/zakhar-git/Granger-Browser/releases/latest)**
 
 Use the asset named similar to:
 
+```text
 Granger-Browser-vX.X.X-windows-x64.zip
+```
 
 Then:
 
-Download the Windows x64 ZIP.
-
-Verify its published SHA-256 checksum.
-
-Extract the entire archive.
-
-Launch GrangerBrowser.exe.
+1. Download the Windows x64 ZIP.
+2. Verify its published SHA-256 checksum.
+3. Extract the **entire archive**.
+4. Launch `GrangerBrowser.exe`.
 
 The portable package includes the Qt, WebEngine and Tor runtime components required by the browser.
 
-You do not need:
+You do **not** need:
 
-Python
-
-Qt SDK
-
-Visual Studio
-
-CMake
-
-a source checkout
+- Python
+- Qt SDK
+- Visual Studio
+- CMake
+- a source checkout
 
 to launch the packaged browser.
 
-Do not download GitHub's automatically generated Source code (zip) or Source code (tar.gz) if you only want to run Granger.
+> **Do not download GitHub's automatically generated `Source code (zip)` or `Source code (tar.gz)` if you only want to run Granger.**
+>
+> Those archives contain the repository source tree, not the supported portable Windows package.
 
-Those archives contain the repository source tree, not the supported portable Windows package.
+---
 
-Supported Platforms
+## Supported Platforms
 
-Platform
+| Platform | Status |
+|---|---|
+| Windows 11 x64 | Primary target |
+| Windows 10 x64 | Supported target, testing coverage may vary |
+| Windows ARM64 | Not currently provided |
+| Windows x86 | Not supported |
+| Linux | Not currently supported |
+| macOS | Not currently supported |
+| Windows 7 / 8 / 8.1 | Not supported |
 
-Status
-
-Windows 11 x64
-
-Primary target
-
-Windows 10 x64
-
-Supported target, testing coverage may vary
-
-Windows ARM64
-
-Not currently provided
-
-Windows x86
-
-Not supported
-
-Linux
-
-Not currently supported
-
-macOS
-
-Not currently supported
-
-Windows 7 / 8 / 8.1
-
-Not supported
-
-Granger currently ships as a Windows x64 browser.
+Granger currently ships as a **Windows x64 browser**.
 
 Cross-platform support may be considered later, but the current codebase and release pipeline are focused on modern 64-bit Windows systems.
 
-Project Status
+---
 
-Granger Browser is currently beta software.
+## Project Status
+
+> **Granger Browser is currently beta software.**
 
 The project is under active development.
 
@@ -318,11 +259,13 @@ Some privacy behavior, user interface components, internal architecture and comp
 
 Current releases should not be treated as a finished security product.
 
-Known issue
+### Known issue
 
-On at least one physical Windows 11 x64 system, Granger has reproduced a Qt WebEngine renderer failure where browser tabs display:
+On at least one physical **Windows 11 x64** system, Granger has reproduced a Qt WebEngine renderer failure where browser tabs display:
 
+```text
 Tab crashed
+```
 
 The main application itself launches, but the renderer subprocess may terminate.
 
@@ -332,24 +275,23 @@ Because hardware, graphics drivers, Windows runtime state and WebEngine behavior
 
 If you encounter this issue, please include:
 
-Windows version
-
-CPU/GPU
-
-Granger version
-
-whether every tab crashes or only specific pages
-
-any relevant logs
+- Windows version
+- CPU/GPU
+- Granger version
+- whether every tab crashes or only specific pages
+- any relevant logs
 
 when reporting it.
 
-Tor
+---
+
+## Tor
 
 Granger includes managed Tor support instead of treating Tor as a simple boolean status.
 
 Connection state is conceptually separated into:
 
+```text
 Configuration
       ↓
 Tor process
@@ -359,28 +301,21 @@ Bootstrap
 Browser route verification
       ↓
 Connected
+```
 
-Granger should not report a verified connection merely because tor.exe started successfully.
+Granger should not report a verified connection merely because `tor.exe` started successfully.
 
 Supported connection strategies currently include:
 
-Direct
-
-obfs4
-
-WebTunnel
-
-Snowflake
-
-meek_lite
-
-vanilla bridges
-
-external Tor SOCKS
-
-upstream SOCKS
-
-upstream HTTP CONNECT
+- Direct
+- obfs4
+- WebTunnel
+- Snowflake
+- meek_lite
+- vanilla bridges
+- external Tor SOCKS
+- upstream SOCKS
+- upstream HTTP CONNECT
 
 Bridge input is preserved for generated Tor configuration while the application also parses transport information for validation and UI state.
 
@@ -388,251 +323,200 @@ A bridge may be syntactically valid and still fail because the bridge is offline
 
 That condition is reported as an actual connection failure rather than silently falling back to a direct browser connection.
 
-Privacy Model
+---
+
+## Privacy Model
 
 Granger follows several broad principles:
 
-Standardize where possible
+### Standardize where possible
 
 Reducing variation can be preferable to generating random fingerprint values.
 
 Randomizing every browser surface can make a browser more unique rather than less identifiable.
 
-Minimize exposed information
+### Minimize exposed information
 
 Unnecessary APIs and identifying surfaces should expose as little useful entropy as reasonably possible.
 
-Isolate identities
+### Isolate identities
 
 Separate profiles and Spaces are intended to reduce cross-session and cross-identity state sharing.
 
-Fail closed for protected routing
+### Fail closed for protected routing
 
 A failure in the configured privacy route should not silently convert protected browsing into normal direct browsing.
 
-Privacy Features
+---
+
+## Privacy Features
 
 Depending on the active configuration, Granger includes protection and controls for:
 
-WebRTC exposure
-
-Canvas extraction
-
-WebGL
-
-WebGPU
-
-audio fingerprinting surfaces
-
-hardware information
-
-screen geometry normalization
-
-timezone and locale
-
-plugins
-
-MIME types
-
-media device enumeration
-
-third-party cookies
-
-storage
-
-tracking URL parameters
-
-Global Privacy Control
-
-Referer reduction
-
-permissions
-
-script execution
-
-WebAssembly
-
-local site policies
+- WebRTC exposure
+- Canvas extraction
+- WebGL
+- WebGPU
+- audio fingerprinting surfaces
+- hardware information
+- screen geometry normalization
+- timezone and locale
+- plugins
+- MIME types
+- media device enumeration
+- third-party cookies
+- storage
+- tracking URL parameters
+- Global Privacy Control
+- Referer reduction
+- permissions
+- script execution
+- WebAssembly
+- local site policies
 
 Exact behavior can change as privacy work continues.
 
-Granger intentionally does not claim that these protections make every user indistinguishable from every other browser user.
+Granger intentionally does **not** claim that these protections make every user indistinguishable from every other browser user.
 
-Spaces
+---
+
+## Spaces
 
 Spaces provide separate browser identities using independent WebEngine profiles.
 
 A Space can maintain its own:
 
-tabs
-
-cookies
-
-cache
-
-authentication
-
-storage
-
-browsing state
+- tabs
+- cookies
+- cache
+- authentication
+- storage
+- browsing state
 
 Moving a tab between Spaces requires creating it under the target profile rather than simply reusing the same WebEngine identity.
 
 This is designed to provide stronger separation than a purely visual tab grouping system.
 
-Search
+---
+
+## Search
 
 Built-in search provider support includes:
 
-DuckDuckGo
-
-Google
-
-Bing
-
-Brave Search
-
-Startpage
-
-Mojeek
-
-Onion Search through Ahmia
+- DuckDuckGo
+- Google
+- Bing
+- Brave Search
+- Startpage
+- Mojeek
+- Onion Search through Ahmia
 
 Search suggestions are disabled by default.
 
 When enabled, suggestions necessarily send the typed search prefix to the selected suggestion provider.
 
-Compatibility Profiles
+---
+
+## Compatibility Profiles
 
 Granger can expose compatibility-oriented User-Agent profiles, including:
 
-Chromium default
-
-Firefox-compatible
-
-Chrome-compatible
-
-custom User-Agent
+- Chromium default
+- Firefox-compatible
+- Chrome-compatible
+- custom User-Agent
 
 These profiles are intended for compatibility testing.
 
-Changing the User-Agent does not change the underlying engine.
+> Changing the User-Agent does **not** change the underlying engine.
 
 Granger remains a Qt WebEngine / Chromium browser.
 
 TLS behavior, Client Hints, codecs, rendering behavior and many other engine-level surfaces may still identify Chromium.
 
-Data Storage
+---
+
+## Data Storage
 
 Mutable browser data is stored outside the portable package under:
 
+```text
 %LOCALAPPDATA%\Granger\Granger Browser\
+```
 
 This can include:
 
-browser profile
-
-cache
-
-persistent state
-
-history
-
-bookmarks
-
-download history
-
-logs
-
-Tor data
-
-generated Tor configuration
+- browser profile
+- cache
+- persistent state
+- history
+- bookmarks
+- download history
+- logs
+- Tor data
+- generated Tor configuration
 
 Test infrastructure can use custom data roots through supported development environment variables.
 
-Technology
+---
+
+## Technology
 
 Granger currently uses:
 
-Component
-
-Technology
-
-Language
-
-C++20
-
-Desktop UI
-
-Qt Widgets
-
-Browser engine
-
-Qt WebEngine / Chromium
-
-Qt
-
-6.11.1
-
-Networking privacy
-
-Tor
-
-Build system
-
-CMake
-
-Primary compiler
-
-MSVC 2022 x64
-
-Primary platform
-
-Windows x64
+| Component | Technology |
+|---|---|
+| Language | C++20 |
+| Desktop UI | Qt Widgets |
+| Browser engine | Qt WebEngine / Chromium |
+| Qt | 6.11.1 |
+| Networking privacy | Tor |
+| Build system | CMake |
+| Primary compiler | MSVC 2022 x64 |
+| Primary platform | Windows x64 |
 
 Qt WebEngine is Chromium-based, but Granger is not Chromium itself and does not claim feature parity with Chrome, Chromium, Firefox, Tor Browser or Mullvad Browser.
 
-Build from Source
+---
 
-Requirements
+## Build from Source
 
-Visual Studio 2022
+### Requirements
 
-MSVC x64 toolchain
-
-CMake 3.24+
-
-Qt 6.11.1
+- Visual Studio 2022
+- MSVC x64 toolchain
+- CMake 3.24+
+- Qt 6.11.1
 
 Required Qt modules include:
 
-Widgets
-
-Svg
-
-Network
-
-WebEngineWidgets
-
-WebChannel
-
-Positioning
+- Widgets
+- Svg
+- Network
+- WebEngineWidgets
+- WebChannel
+- Positioning
 
 Build and package:
 
+```powershell
 .\scripts\build-release.ps1 `
     -QtRoot "$env:USERPROFILE\Qt\6.11.1\msvc2022_64"
+```
 
 For complete instructions, see:
 
-BUILDING.md
+**[BUILDING.md](BUILDING.md)**
 
 The repository contains source code and build tooling.
 
-The end-user portable build is distributed separately through GitHub Releases.
+The end-user portable build is distributed separately through **GitHub Releases**.
 
-Repository Structure
+---
 
+## Repository Structure
+
+```text
 Granger-Browser/
 ├── granger/          # Main Granger Browser source
 ├── pamp/             # Pamp source
@@ -646,53 +530,51 @@ Granger-Browser/
 ├── DISTRIBUTION.md
 ├── SECURITY.md
 └── README.md
+```
 
-Generated build directories and packaged runtime binaries are intentionally excluded from main.
+Generated build directories and packaged runtime binaries are intentionally excluded from `main`.
 
-Security Limitations
+---
+
+## Security Limitations
 
 Granger is a privacy-oriented browser, not a proof of anonymity.
 
 Important limitations include:
 
-No browser can eliminate all fingerprinting techniques.
-
-Tor does not protect against every endpoint, account or behavioral correlation attack.
-
-Logging into an identifying account can identify the user regardless of network routing.
-
-Browser compatibility may require exposing some APIs.
-
-User-Agent spoofing alone does not hide the underlying browser engine.
-
-Some websites may block Tor exits.
-
-CAPTCHAs and anti-bot systems may behave differently over Tor.
-
-Bridges can become unavailable or blocked.
-
-A compromised operating system can defeat browser-level privacy protections.
-
-Extensions, downloaded files and external applications may create additional privacy risks.
-
-Cross-device fingerprint uniformity is not assumed without testing across multiple physical systems.
+- No browser can eliminate all fingerprinting techniques.
+- Tor does not protect against every endpoint, account or behavioral correlation attack.
+- Logging into an identifying account can identify the user regardless of network routing.
+- Browser compatibility may require exposing some APIs.
+- User-Agent spoofing alone does not hide the underlying browser engine.
+- Some websites may block Tor exits.
+- CAPTCHAs and anti-bot systems may behave differently over Tor.
+- Bridges can become unavailable or blocked.
+- A compromised operating system can defeat browser-level privacy protections.
+- Extensions, downloaded files and external applications may create additional privacy risks.
+- Cross-device fingerprint uniformity is not assumed without testing across multiple physical systems.
 
 Do not interpret Granger's privacy controls as a guarantee against identification.
 
-Windows Security Warnings
+---
+
+## Windows Security Warnings
 
 Current public binaries may not be digitally code-signed.
 
-Windows SmartScreen or other security software may therefore display an Unknown publisher warning.
+Windows SmartScreen or other security software may therefore display an **Unknown publisher** warning.
 
 Always download Granger from the official repository release page and verify the published SHA-256 checksum when available.
 
 Do not download replacement Granger DLL files from third-party DLL websites.
 
-Reporting Bugs
+---
+
+## Reporting Bugs
 
 Bug reports are especially useful when they include:
 
+```text
 Granger version:
 Windows version:
 CPU:
@@ -703,12 +585,15 @@ Steps to reproduce:
 Expected result:
 Actual result:
 Logs/screenshots:
+```
 
 Please avoid publishing private browsing data, authentication tokens, bridge credentials or other sensitive information in public issues.
 
-Security-sensitive reports should follow SECURITY.md.
+Security-sensitive reports should follow **[SECURITY.md](SECURITY.md)**.
 
-Development
+---
+
+## Development
 
 Granger is actively developed and the internal design is still evolving.
 
@@ -718,9 +603,11 @@ Before changing privacy-sensitive code, understand the existing routing and isol
 
 In particular, changes must not introduce a silent direct-network fallback when a protected route fails.
 
-License Status
+---
 
-There is currently no project-wide open-source license grant for Granger Browser's project-authored source code.
+## License Status
+
+There is currently **no project-wide open-source license grant** for Granger Browser's project-authored source code.
 
 The repository is publicly readable, but public availability alone does not grant permission to copy, modify, redistribute or relicense project-owned source code.
 
@@ -728,15 +615,15 @@ Third-party components retain their own licenses and attribution requirements.
 
 See:
 
-NOTICE.txt
-
-DISTRIBUTION.md
-
-third_party/
+- [NOTICE.txt](NOTICE.txt)
+- [DISTRIBUTION.md](DISTRIBUTION.md)
+- `third_party/`
 
 for additional information.
 
-Disclaimer
+---
+
+## Disclaimer
 
 Granger Browser is provided for legitimate privacy, research, development and general browsing purposes.
 
@@ -744,36 +631,33 @@ The project is under active development.
 
 No guarantee is made regarding:
 
-anonymity
-
-uninterrupted Tor availability
-
-compatibility with every website
-
-compatibility with every Windows configuration
-
-resistance to all fingerprinting methods
-
-protection against a compromised host operating system
+- anonymity
+- uninterrupted Tor availability
+- compatibility with every website
+- compatibility with every Windows configuration
+- resistance to all fingerprinting methods
+- protection against a compromised host operating system
 
 Users are responsible for understanding the limitations of the software and their own threat model.
 
+---
+
 <div align="center">
 
-Granger Browser
+## Granger Browser
 
-Privacy is a system, not a switch.
+**Privacy is a system, not a switch.**
 
 C++20 · Qt 6 · Chromium · Tor
 
 <br>
 
-Download
+[Download](https://github.com/zakhar-git/Granger-Browser/releases/latest)
 ·
-Build
+[Build](BUILDING.md)
 ·
-Security
+[Security](SECURITY.md)
 ·
-Issues
+[Issues](https://github.com/zakhar-git/Granger-Browser/issues)
 
 </div>
