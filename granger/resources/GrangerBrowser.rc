@@ -23,11 +23,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Granger Browser Project\0"
             VALUE "FileDescription", "Granger Browser privacy browser\0"
-            VALUE "FileVersion", "0.4.1\0"
+            VALUE "FileVersion", "0.4.2\0"
             VALUE "InternalName", "GrangerBrowser\0"
             VALUE "OriginalFilename", "GrangerBrowser.exe\0"
             VALUE "ProductName", "Granger Browser\0"
-            VALUE "ProductVersion", "0.4.1\0"
+            VALUE "ProductVersion", "0.4.2\0"
         END
     END
     BLOCK "VarFileInfo"

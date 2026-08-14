@@ -258,6 +258,8 @@ $requiredFiles = @(
     "qt.conf",
     "deployment-metadata.json",
     "d3dcompiler_47.dll",
+    "icu.dll",
+    "icuuc.dll",
     "dxcompiler.dll",
     "dxil.dll",
     "platforms/qwindows.dll",
@@ -330,7 +332,7 @@ foreach ($entry in $deploymentMetadata.RuntimeFiles) {
     }
 }
 foreach ($relativePath in @("Qt6Core.dll", "Qt6WebEngineCore.dll", "QtWebEngineProcess.exe",
-                             "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll",
+                             "d3dcompiler_47.dll", "icu.dll", "icuuc.dll", "dxcompiler.dll", "dxil.dll",
                              "MSVCP140.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")) {
     if (-not $metadataPaths.Contains($relativePath)) {
         throw "Deployment metadata does not cover $relativePath"
@@ -342,6 +344,8 @@ $signedRuntimeFiles = @(
     @{ Path = "Qt6WebEngineCore.dll"; Publisher = "The Qt Company" },
     @{ Path = "QtWebEngineProcess.exe"; Publisher = "The Qt Company" },
     @{ Path = "d3dcompiler_47.dll"; Publisher = "Microsoft" },
+    @{ Path = "icu.dll"; Publisher = "Microsoft Windows" },
+    @{ Path = "icuuc.dll"; Publisher = "Microsoft Windows" },
     @{ Path = "dxcompiler.dll"; Publisher = "Microsoft" },
     @{ Path = "dxil.dll"; Publisher = "Microsoft" },
     @{ Path = "MSVCP140.dll"; Publisher = "Microsoft" },

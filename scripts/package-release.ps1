@@ -133,6 +133,19 @@ if (-not (Test-Path -LiteralPath $qtD3dCompiler -PathType Leaf)) {
 Assert-ValidPublisherSignature -Path $qtD3dCompiler -PublisherPattern "Microsoft"
 Copy-Item -LiteralPath $qtD3dCompiler -Destination (Join-Path $resolvedPackage "d3dcompiler_47.dll") -Force
 
+# Qt 6.11.1's Windows 11 24H2 build links Qt6Core against the Windows ICU
+# compatibility DLL. Deploy the signed Microsoft ICU pair app-local so the
+# package does not depend on the target Windows image providing icuuc.dll.
+$windowsSystemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+foreach ($runtimeName in @("icu.dll", "icuuc.dll")) {
+    $runtimeSource = Join-Path $windowsSystemDirectory $runtimeName
+    if (-not (Test-Path -LiteralPath $runtimeSource -PathType Leaf)) {
+        throw "Microsoft ICU runtime was not found: $runtimeSource"
+    }
+    Assert-ValidPublisherSignature -Path $runtimeSource -PublisherPattern "Microsoft Windows"
+    Copy-Item -LiteralPath $runtimeSource -Destination (Join-Path $resolvedPackage $runtimeName) -Force
+}
+
 $projectFile = Join-Path $buildPath "granger_browser.vcxproj"
 if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
     throw "Generated Visual Studio project was not found: $projectFile"
@@ -175,6 +188,8 @@ $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "Qt6WebEngineCore.dll" -Source "Qt $qtVersion msvc2022_64"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "QtWebEngineProcess.exe" -Source "Qt $qtVersion msvc2022_64"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "d3dcompiler_47.dll" -Source "Qt $qtVersion support runtime"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "icu.dll" -Source "Microsoft Windows ICU runtime"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "icuuc.dll" -Source "Microsoft Windows ICU compatibility runtime"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "dxcompiler.dll" -Source "Windows SDK $windowsSdkVersion D3D redistributable"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "dxil.dll" -Source "Windows SDK $windowsSdkVersion D3D redistributable"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "MSVCP140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
