@@ -12,6 +12,39 @@ if ([string]::IsNullOrWhiteSpace($QtRoot)) { $QtRoot = $env:CMAKE_PREFIX_PATH }
 if ([string]::IsNullOrWhiteSpace($QtRoot) -or -not (Test-Path -LiteralPath $QtRoot)) {
     throw "QtRoot was not found. Pass -QtRoot or set QTDIR/CMAKE_PREFIX_PATH."
 }
+$QtRoot = [IO.Path]::GetFullPath($QtRoot).TrimEnd('\')
+
+function Assert-ValidPublisherSignature {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$PublisherPattern
+    )
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+        -not $signature.SignerCertificate -or
+        $signature.SignerCertificate.Subject -notmatch $PublisherPattern) {
+        throw "Unexpected Authenticode signature for $Path ($($signature.Status))."
+    }
+}
+
+function Get-DeploymentFileRecord {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$RelativePath,
+        [Parameter(Mandatory)][string]$Source
+    )
+
+    $path = Join-Path $Root $RelativePath
+    $item = Get-Item -LiteralPath $path
+    [pscustomobject]@{
+        Path = $RelativePath.Replace('\', '/')
+        Source = $Source
+        Version = [string]$item.VersionInfo.FileVersion
+        Size = $item.Length
+        SHA256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    }
+}
 
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "compile-release.ps1") -QtRoot $QtRoot -BuildDirectory $BuildDirectory
@@ -43,8 +76,10 @@ New-Item -ItemType Directory -Path $resolvedPackage | Out-Null
 Copy-Item -LiteralPath $sourceExecutable -Destination (Join-Path $resolvedPackage "GrangerBrowser.exe")
 
 $windeployqt = Join-Path $QtRoot "bin/windeployqt.exe"
+$qtpaths = Join-Path $QtRoot "bin/qtpaths.exe"
 if (-not (Test-Path -LiteralPath $windeployqt)) { throw "windeployqt.exe was not found under $QtRoot" }
-& $windeployqt --release --compiler-runtime --no-system-d3d-compiler `
+if (-not (Test-Path -LiteralPath $qtpaths)) { throw "qtpaths.exe was not found under $QtRoot" }
+& $windeployqt --release --compiler-runtime --qtpaths $qtpaths `
     --skip-plugin-types qmltooling --dir $resolvedPackage (Join-Path $resolvedPackage "GrangerBrowser.exe")
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed." }
 $nmeaPlugin = Join-Path $resolvedPackage "position/qtposition_nmea.dll"
@@ -56,6 +91,68 @@ if (Test-Path -LiteralPath $qmlDebuggerDirectory) {
     throw "windeployqt deployed QML debugger tooling into the production package."
 }
 
+@"
+[Paths]
+Prefix=.
+Binaries=.
+Libraries=.
+LibraryExecutables=.
+Plugins=.
+QmlImports=qml
+ArchData=.
+Data=.
+Translations=translations
+"@ | Set-Content -LiteralPath (Join-Path $resolvedPackage "qt.conf") -Encoding ASCII
+
+$qtRuntimeFiles = @(
+    "Qt6Core.dll",
+    "Qt6Gui.dll",
+    "Qt6Network.dll",
+    "Qt6Widgets.dll",
+    "Qt6WebEngineCore.dll",
+    "Qt6WebEngineWidgets.dll",
+    "QtWebEngineProcess.exe"
+)
+foreach ($relativePath in $qtRuntimeFiles) {
+    $deployedPath = Join-Path $resolvedPackage $relativePath
+    $qtSourceDirectory = Join-Path $QtRoot "bin"
+    $qtSourcePath = Join-Path $qtSourceDirectory $relativePath
+    if (-not (Test-Path -LiteralPath $qtSourcePath -PathType Leaf)) {
+        throw "Qt runtime source was not found in the selected distribution: $relativePath"
+    }
+    if ((Get-FileHash -LiteralPath $deployedPath -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $qtSourcePath -Algorithm SHA256).Hash) {
+        throw "windeployqt mixed Qt distributions for $relativePath"
+    }
+}
+
+$qtD3dCompiler = Join-Path $QtRoot "d3dcompiler_47.dll"
+if (-not (Test-Path -LiteralPath $qtD3dCompiler -PathType Leaf)) {
+    throw "The selected Qt distribution does not contain d3dcompiler_47.dll."
+}
+Assert-ValidPublisherSignature -Path $qtD3dCompiler -PublisherPattern "Microsoft"
+Copy-Item -LiteralPath $qtD3dCompiler -Destination (Join-Path $resolvedPackage "d3dcompiler_47.dll") -Force
+
+$projectFile = Join-Path $buildPath "granger_browser.vcxproj"
+if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
+    throw "Generated Visual Studio project was not found: $projectFile"
+}
+$projectXml = [xml](Get-Content -LiteralPath $projectFile -Raw -Encoding UTF8)
+$windowsSdkNode = $projectXml.SelectSingleNode("//*[local-name()='WindowsTargetPlatformVersion']")
+$windowsSdkVersion = if ($windowsSdkNode) { $windowsSdkNode.InnerText.Trim() } else { "" }
+if ([string]::IsNullOrWhiteSpace($windowsSdkVersion)) {
+    throw "WindowsTargetPlatformVersion was not recorded by CMake."
+}
+$windowsSdkD3d = Join-Path ${env:ProgramFiles(x86)} "Windows Kits/10/Redist/D3D/x64"
+foreach ($runtimeName in @("dxcompiler.dll", "dxil.dll")) {
+    $runtimeSource = Join-Path $windowsSdkD3d $runtimeName
+    if (-not (Test-Path -LiteralPath $runtimeSource -PathType Leaf)) {
+        throw "Windows SDK D3D redistributable was not found: $runtimeSource"
+    }
+    Assert-ValidPublisherSignature -Path $runtimeSource -PublisherPattern "Microsoft"
+    Copy-Item -LiteralPath $runtimeSource -Destination (Join-Path $resolvedPackage $runtimeName) -Force
+}
+
 $vcRoots = Get-ChildItem -Path (Join-Path $env:ProgramFiles "Microsoft Visual Studio/2022") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
     Get-ChildItem -Path (Join-Path $_.FullName "VC/Redist/MSVC") -Directory -ErrorAction SilentlyContinue
 } | Sort-Object Name -Descending
@@ -65,6 +162,36 @@ $vcCrt = $vcRoots | ForEach-Object {
 } | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($vcCrt)) { throw "Microsoft.VC143.CRT app-local runtime was not found." }
 Copy-Item -Path (Join-Path $vcCrt "*.dll") -Destination $resolvedPackage -Force
+$vcArchitectureRoot = Split-Path -Parent $vcCrt
+$vcVersionRoot = Split-Path -Parent $vcArchitectureRoot
+$vcRedistVersion = Split-Path -Leaf $vcVersionRoot
+foreach ($runtimeName in @("MSVCP140.dll", "MSVCP140_ATOMIC_WAIT.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")) {
+    Assert-ValidPublisherSignature -Path (Join-Path $resolvedPackage $runtimeName) -PublisherPattern "Microsoft"
+}
+
+$qtVersion = (Get-Item -LiteralPath (Join-Path $QtRoot "bin/Qt6Core.dll")).VersionInfo.FileVersion
+$deploymentRuntimeFiles = @(
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "Qt6Core.dll" -Source "Qt $qtVersion msvc2022_64"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "Qt6WebEngineCore.dll" -Source "Qt $qtVersion msvc2022_64"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "QtWebEngineProcess.exe" -Source "Qt $qtVersion msvc2022_64"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "d3dcompiler_47.dll" -Source "Qt $qtVersion support runtime"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "dxcompiler.dll" -Source "Windows SDK $windowsSdkVersion D3D redistributable"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "dxil.dll" -Source "Windows SDK $windowsSdkVersion D3D redistributable"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "MSVCP140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "VCRUNTIME140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "VCRUNTIME140_1.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
+)
+[pscustomobject]@{
+    SchemaVersion = 1
+    ProductVersion = (Get-Item -LiteralPath (Join-Path $resolvedPackage "GrangerBrowser.exe")).VersionInfo.ProductVersion
+    Architecture = "x64"
+    QtVersion = $qtVersion
+    QtToolchain = "msvc2022_64"
+    WinDeployQtVersion = (Get-Item -LiteralPath $windeployqt).VersionInfo.FileVersion
+    WindowsSdkVersion = $windowsSdkVersion
+    VcRuntimeVersion = $vcRedistVersion
+    RuntimeFiles = $deploymentRuntimeFiles
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $resolvedPackage "deployment-metadata.json") -Encoding UTF8
 
 $expertRoot = Join-Path $projectRoot "output/tor-expert"
 $runtimeTor = Join-Path $resolvedPackage "runtime/tor"
@@ -118,7 +245,8 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Create-Shortcuts.ps1") -Destina
 $required = @(
     "GrangerBrowser.exe", "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
-    "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
+    "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "qt.conf", "deployment-metadata.json",
+    "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll",
     "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md", "docs/WINDOWS_PORTABILITY.md",
     "docs/screenshots/sidebar-layout-stability/sidebar-hidden.png", "docs/screenshots/sidebar-layout-stability/sidebar-rail.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-tabs-expanded.png",

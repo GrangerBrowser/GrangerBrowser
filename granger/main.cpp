@@ -21,6 +21,7 @@
 #include <QPixmap>
 #include <QPainter>
 #include <QPointer>
+#include <QProcessEnvironment>
 #include <QQueue>
 #include <QSettings>
 #include <QSet>
@@ -58,6 +59,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <cstdlib>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -134,6 +136,34 @@ void startupMessageHandler(QtMsgType type, const QMessageLogContext &context, co
     stream << QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs) << ' ' << int(type) << ' ';
     if (context.file) stream << context.file << ':' << context.line << ' ';
     stream << message << '\n';
+}
+
+void configureBundledWebEngineRuntime()
+{
+    const QString root = QCoreApplication::applicationDirPath();
+    const QString helper = QDir(root).filePath(QStringLiteral("QtWebEngineProcess.exe"));
+    const QString resources = QDir(root).filePath(QStringLiteral("resources"));
+    const QString locales = QDir(root).filePath(QStringLiteral("translations/qtwebengine_locales"));
+    if (!QFileInfo::exists(helper)
+        || !QFileInfo::exists(QDir(resources).filePath(QStringLiteral("qtwebengine_resources.pak")))
+        || !QFileInfo::exists(QDir(locales).filePath(QStringLiteral("en-US.pak")))) {
+        return;
+    }
+
+#ifdef Q_OS_WIN
+    const auto setVariable = [](const wchar_t *name, const QString &value) {
+        if (_wputenv_s(name, reinterpret_cast<const wchar_t *>(value.utf16())) != 0) {
+            qWarning() << "Unable to configure bundled Qt WebEngine runtime path" << value;
+        }
+    };
+    setVariable(L"QTWEBENGINEPROCESS_PATH", QDir::toNativeSeparators(helper));
+    setVariable(L"QTWEBENGINE_RESOURCES_PATH", QDir::toNativeSeparators(resources));
+    setVariable(L"QTWEBENGINE_LOCALES_PATH", QDir::toNativeSeparators(locales));
+#else
+    qputenv("QTWEBENGINEPROCESS_PATH", QFile::encodeName(helper));
+    qputenv("QTWEBENGINE_RESOURCES_PATH", QFile::encodeName(resources));
+    qputenv("QTWEBENGINE_LOCALES_PATH", QFile::encodeName(locales));
+#endif
 }
 
 void configureWebEngineProfile(QApplication &app)
@@ -5458,6 +5488,15 @@ int runProfileStateSmoke(QApplication &app, const QString &outputPath)
                       QString::fromLatin1(qWebEngineVersion()));
         result.insert(QStringLiteral("chromiumVersion"),
                       QString::fromLatin1(qWebEngineChromiumVersion()));
+        result.insert(QStringLiteral("webEngineProcessPath"),
+                      QProcessEnvironment::systemEnvironment().value(
+                          QStringLiteral("QTWEBENGINEPROCESS_PATH")));
+        result.insert(QStringLiteral("webEngineResourcesPath"),
+                      QProcessEnvironment::systemEnvironment().value(
+                          QStringLiteral("QTWEBENGINE_RESOURCES_PATH")));
+        result.insert(QStringLiteral("webEngineLocalesPath"),
+                      QProcessEnvironment::systemEnvironment().value(
+                          QStringLiteral("QTWEBENGINE_LOCALES_PATH")));
         QFile file(outputPath);
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(QJsonDocument(result).toJson(QJsonDocument::Indented));
@@ -5505,7 +5544,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(granger::Brand::organizationName());
     QCoreApplication::setOrganizationDomain(granger::Brand::organizationDomain());
     QCoreApplication::setApplicationName(granger::Brand::applicationName());
-    QCoreApplication::setApplicationVersion("0.4.0");
+    QCoreApplication::setApplicationVersion("0.4.1");
     granger::Brand::promoteLegacyEnvironment();
     configureSettingsStorageOverride();
     const granger::BrandMigrationResult brandMigration =
@@ -5544,6 +5583,7 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+    configureBundledWebEngineRuntime();
     {
         granger::SettingsManager startupSettings;
         granger::Localization::setLanguage(startupSettings.language());

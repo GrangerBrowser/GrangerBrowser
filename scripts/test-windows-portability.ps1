@@ -202,6 +202,50 @@ function Test-LfsPointer {
     }
 }
 
+function Read-QtPathConfiguration {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $section = ""
+    $paths = @{}
+    foreach ($rawLine in Get-Content -LiteralPath $Path -Encoding ASCII) {
+        $line = $rawLine.Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith(';') -or $line.StartsWith('#')) {
+            continue
+        }
+        if ($line.StartsWith('[') -and $line.EndsWith(']')) {
+            $section = $line.Substring(1, $line.Length - 2).Trim()
+            continue
+        }
+        if (-not $section.Equals('Paths', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $separator = $line.IndexOf('=')
+        if ($separator -le 0) { throw "Invalid qt.conf path entry: $rawLine" }
+        $key = $line.Substring(0, $separator).Trim()
+        $value = $line.Substring($separator + 1).Trim()
+        if ([string]::IsNullOrWhiteSpace($key) -or [string]::IsNullOrWhiteSpace($value)) {
+            throw "Empty qt.conf path entry: $rawLine"
+        }
+        $paths[$key] = $value
+    }
+    return $paths
+}
+
+if (-not ('GrangerPortableNativeLoader' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class GrangerPortableNativeLoader
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr LoadLibraryEx(string fileName, IntPtr file, uint flags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FreeLibrary(IntPtr module);
+}
+'@
+}
+
 $requiredFiles = @(
     "GrangerBrowser.exe",
     "QtWebEngineProcess.exe",
@@ -211,6 +255,11 @@ $requiredFiles = @(
     "Qt6Widgets.dll",
     "Qt6WebEngineCore.dll",
     "Qt6WebEngineWidgets.dll",
+    "qt.conf",
+    "deployment-metadata.json",
+    "d3dcompiler_47.dll",
+    "dxcompiler.dll",
+    "dxil.dll",
     "platforms/qwindows.dll",
     "resources/icudtl.dat",
     "resources/qtwebengine_resources.pak",
@@ -231,6 +280,81 @@ $requiredFiles = @(
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relativePath) -PathType Leaf)) {
         throw "Portable package is missing $relativePath"
+    }
+}
+
+$qtPaths = Read-QtPathConfiguration -Path (Join-Path $packageRoot "qt.conf")
+$requiredQtPaths = @("Prefix", "Binaries", "Libraries", "LibraryExecutables", "Plugins", "Data", "Translations")
+foreach ($key in $requiredQtPaths) {
+    if (-not $qtPaths.ContainsKey($key)) { throw "qt.conf does not define $key" }
+}
+foreach ($key in $qtPaths.Keys) {
+    $value = [string]$qtPaths[$key]
+    $normalized = $value.Replace('/', '\')
+    if ([IO.Path]::IsPathRooted($normalized) -or
+        @($normalized.Split('\') | Where-Object { $_ -eq '..' }).Count -ne 0) {
+        throw "qt.conf contains a non-portable path for ${key}: $value"
+    }
+}
+if (-not ([string]$qtPaths.LibraryExecutables).Equals('.', [StringComparison]::Ordinal) -or
+    -not ([string]$qtPaths.Translations).Equals('translations', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "qt.conf does not pin WebEngine executables and locales to the package."
+}
+
+$deploymentMetadataPath = Join-Path $packageRoot "deployment-metadata.json"
+$deploymentMetadata = Get-Content -LiteralPath $deploymentMetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([int]$deploymentMetadata.SchemaVersion -ne 1 -or
+    [string]$deploymentMetadata.Architecture -ne "x64" -or
+    [string]$deploymentMetadata.QtVersion -notmatch '^6\.11\.1(?:\.0)?$' -or
+    [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.1(?:\.0)?$') {
+    throw "Deployment metadata does not describe the supported Qt 6.11.1 x64 runtime."
+}
+$metadataPaths = New-Object Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+foreach ($entry in $deploymentMetadata.RuntimeFiles) {
+    $relativePath = ([string]$entry.Path).Replace('/', '\')
+    if ([IO.Path]::IsPathRooted($relativePath) -or
+        @($relativePath.Split('\') | Where-Object { $_ -eq '..' }).Count -ne 0) {
+        throw "Deployment metadata escaped the package: $relativePath"
+    }
+    if (-not $metadataPaths.Add($relativePath)) { throw "Duplicate deployment metadata entry: $relativePath" }
+    $candidate = Join-Path $packageRoot $relativePath
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "Deployment metadata file is missing: $relativePath"
+    }
+    $item = Get-Item -LiteralPath $candidate
+    if ($item.Length -ne [long]$entry.Size -or
+        [string]$item.VersionInfo.FileVersion -ne [string]$entry.Version -or
+        -not (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.Equals(
+            [string]$entry.SHA256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Deployment metadata mismatch: $relativePath"
+    }
+}
+foreach ($relativePath in @("Qt6Core.dll", "Qt6WebEngineCore.dll", "QtWebEngineProcess.exe",
+                             "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll",
+                             "MSVCP140.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")) {
+    if (-not $metadataPaths.Contains($relativePath)) {
+        throw "Deployment metadata does not cover $relativePath"
+    }
+}
+
+$signedRuntimeFiles = @(
+    @{ Path = "Qt6Core.dll"; Publisher = "The Qt Company" },
+    @{ Path = "Qt6WebEngineCore.dll"; Publisher = "The Qt Company" },
+    @{ Path = "QtWebEngineProcess.exe"; Publisher = "The Qt Company" },
+    @{ Path = "d3dcompiler_47.dll"; Publisher = "Microsoft" },
+    @{ Path = "dxcompiler.dll"; Publisher = "Microsoft" },
+    @{ Path = "dxil.dll"; Publisher = "Microsoft" },
+    @{ Path = "MSVCP140.dll"; Publisher = "Microsoft" },
+    @{ Path = "VCRUNTIME140.dll"; Publisher = "Microsoft" },
+    @{ Path = "VCRUNTIME140_1.dll"; Publisher = "Microsoft" }
+)
+foreach ($record in $signedRuntimeFiles) {
+    $candidate = Join-Path $packageRoot $record.Path
+    $signature = Get-AuthenticodeSignature -LiteralPath $candidate
+    if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+        -not $signature.SignerCertificate -or
+        $signature.SignerCertificate.Subject -notmatch [regex]::Escape([string]$record.Publisher)) {
+        throw "Runtime signature validation failed for $($record.Path): $($signature.Status)"
     }
 }
 
@@ -346,8 +470,33 @@ if ($qmlDebugFiles.Count -ne 0 -or $qmlDebugDirectories.Count -ne 0) {
     throw "Production package contains QML debugger tooling."
 }
 
+$loadLibraryFlags = 0x00000100 -bor 0x00001000
+$loadLibraryResults = @()
+foreach ($relativePath in @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Network.dll", "Qt6Widgets.dll",
+                             "Qt6WebEngineCore.dll", "Qt6WebEngineWidgets.dll")) {
+    $candidate = Join-Path $packageRoot $relativePath
+    $handle = [GrangerPortableNativeLoader]::LoadLibraryEx($candidate, [IntPtr]::Zero, $loadLibraryFlags)
+    if ($handle -eq [IntPtr]::Zero) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $message = (New-Object ComponentModel.Win32Exception($errorCode)).Message
+        throw "Windows Loader rejected $relativePath (error $errorCode): $message"
+    }
+    try {
+        $loadLibraryResults += $relativePath
+    } finally {
+        if (-not [GrangerPortableNativeLoader]::FreeLibrary($handle)) {
+            throw "Windows Loader could not release $relativePath"
+        }
+    }
+}
+
 $mainExecutable = Join-Path $packageRoot "GrangerBrowser.exe"
 $mainPe = $peResults | Where-Object { $_.Path.Equals($mainExecutable, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+if (-not ([string]$deploymentMetadata.ProductVersion).Equals(
+        [string](Get-Item -LiteralPath $mainExecutable).VersionInfo.ProductVersion,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Deployment metadata product version does not match GrangerBrowser.exe."
+}
 [pscustomobject]@{
     OK = $true
     Package = $packageRoot
@@ -362,6 +511,10 @@ $mainPe = $peResults | Where-Object { $_.Path.Equals($mainExecutable, [StringCom
     UnresolvedImports = $unresolvedDependencies.Count
     LfsPointers = $lfsPointers.Count
     QmlDebugFiles = $qmlDebugFiles.Count
+    QtConfPaths = $qtPaths
+    DeploymentMetadata = $deploymentMetadataPath
+    SignedRuntimeFiles = $signedRuntimeFiles.Count
+    LoadLibraryChecks = $loadLibraryResults
     ManifestEntries = $manifest.Count
     ExecutableSize = (Get-Item -LiteralPath $mainExecutable).Length
     ExecutableSHA256 = (Get-FileHash -LiteralPath $mainExecutable -Algorithm SHA256).Hash

@@ -26,7 +26,11 @@ if (-not $portability.OK) { throw "Windows portability validation failed." }
 $version = (Get-Item -LiteralPath (Join-Path $packageRoot "GrangerBrowser.exe")).VersionInfo.ProductVersion
 if ([string]::IsNullOrWhiteSpace($version)) { throw "Packaged executable has no product version." }
 if ([string]::IsNullOrWhiteSpace($ArchiveName)) {
-    $ArchiveName = "Granger-Browser-$version-windows-x64.zip"
+    $normalizedVersion = $version.Trim()
+    if (-not $normalizedVersion.StartsWith("v", [StringComparison]::OrdinalIgnoreCase)) {
+        $normalizedVersion = "v$normalizedVersion"
+    }
+    $ArchiveName = "Granger-Browser-$normalizedVersion-windows-x64.zip"
 }
 if (-not $ArchiveName.EndsWith(".zip", [StringComparison]::OrdinalIgnoreCase) -or
     [IO.Path]::GetFileName($ArchiveName) -ne $ArchiveName) {

@@ -97,7 +97,7 @@ if ($forbiddenFullPampDirectories.Count -ne 0 -or $pythonRuntimeArtifacts.Count 
 }
 
 function Invoke-GrangerBrowser {
-    param([string[]]$Arguments, [switch]$AllowNonZero)
+    param([string[]]$Arguments, [switch]$AllowNonZero, [int]$TimeoutSeconds = 0)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $executable
     $psi.WorkingDirectory = $unrelatedCwd
@@ -106,7 +106,15 @@ function Invoke-GrangerBrowser {
     $quoted = foreach ($argument in $Arguments) { '"' + $argument.Replace('"', '\"') + '"' }
     $psi.Arguments = $quoted -join ' '
     $process = [Diagnostics.Process]::Start($psi)
-    $process.WaitForExit()
+    if ($TimeoutSeconds -gt 0) {
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            throw "Granger Browser timed out after $TimeoutSeconds seconds: $($Arguments -join ' ')"
+        }
+    } else {
+        $process.WaitForExit()
+    }
     if ($process.ExitCode -ne 0 -and -not $AllowNonZero) { throw "Granger Browser failed with exit code $($process.ExitCode): $($Arguments -join ' ')" }
     return $process.ExitCode
 }
@@ -176,6 +184,35 @@ userAgentProfile=default
         [string]::IsNullOrWhiteSpace($profile.cachePath)) {
         throw "Chromium-consistent User-Agent inspection failed."
     }
+
+    $poisonedRuntime = Join-Path $testRoot "poisoned WebEngine runtime"
+    $poisonedResources = Join-Path $poisonedRuntime "resources"
+    $poisonedLocales = Join-Path $poisonedRuntime "locales"
+    New-Item -ItemType Directory -Path $poisonedResources -Force | Out-Null
+    New-Item -ItemType Directory -Path $poisonedLocales -Force | Out-Null
+    $poisonedHelper = Join-Path $poisonedRuntime "QtWebEngineProcess.exe"
+    Copy-Item -LiteralPath (Join-Path $copiedPackage "QtWebEngineProcess.exe") -Destination $poisonedHelper
+    $env:QTWEBENGINEPROCESS_PATH = $poisonedHelper
+    $env:QTWEBENGINE_RESOURCES_PATH = $poisonedResources
+    $env:QTWEBENGINE_LOCALES_PATH = $poisonedLocales
+    $runtimeIsolationResult = Join-Path $testRoot "webengine-runtime-isolation.json"
+    Invoke-GrangerBrowser @("--smoke-profile-state", "--smoke-output=$runtimeIsolationResult") -TimeoutSeconds 90
+    $runtimeIsolation = Get-Content -Raw -Encoding UTF8 -LiteralPath $runtimeIsolationResult | ConvertFrom-Json
+    $expectedHelper = Join-Path $copiedPackage "QtWebEngineProcess.exe"
+    $expectedResources = Join-Path $copiedPackage "resources"
+    $expectedLocales = Join-Path $copiedPackage "translations/qtwebengine_locales"
+    if (-not $runtimeIsolation.ok -or
+        -not ([IO.Path]::GetFullPath([string]$runtimeIsolation.webEngineProcessPath)).Equals(
+            [IO.Path]::GetFullPath($expectedHelper), [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([IO.Path]::GetFullPath([string]$runtimeIsolation.webEngineResourcesPath)).Equals(
+            [IO.Path]::GetFullPath($expectedResources), [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([IO.Path]::GetFullPath([string]$runtimeIsolation.webEngineLocalesPath)).Equals(
+            [IO.Path]::GetFullPath($expectedLocales), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Packaged application did not override external Qt WebEngine runtime paths."
+    }
+    $env:QTWEBENGINEPROCESS_PATH = $null
+    $env:QTWEBENGINE_RESOURCES_PATH = $null
+    $env:QTWEBENGINE_LOCALES_PATH = $null
 
     $productResult = Join-Path $testRoot "product-tests.json"
     $newTabResult = Join-Path $testRoot "new-tab-tests.json"
@@ -773,6 +810,7 @@ userAgentProfile=default
         ProductTests = $productResult
         NewTabTests = $newTabResult
         ProfileState = $profileResult
+        WebEngineRuntimeIsolation = $runtimeIsolationResult
         WebEngineSmoke = $browserResult
         StrategyTests = $strategyResult
         NetworkEnvironmentSmoke = $networkEnvironmentResult
