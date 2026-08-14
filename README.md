@@ -97,8 +97,9 @@ their own licenses and attribution as documented in [NOTICE.txt](NOTICE.txt)
 and `third_party/`. Do not infer an MIT, GPL, MPL, or other grant for the
 Granger Browser source until the repository owner selects one explicitly.
 
-Public source or binary distribution is not approved by this repository state.
-The remaining ownership, asset-rights, and binary-distribution checks are listed
+The repository and packaged releases are publicly accessible, but public access
+does not create a license grant for project-authored source. Ownership,
+asset-rights, and third-party binary-distribution obligations remain documented
 in [DISTRIBUTION.md](DISTRIBUTION.md).
 
 ## Security Notes

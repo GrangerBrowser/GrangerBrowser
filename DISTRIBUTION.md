@@ -5,9 +5,11 @@ grant permission to copy, modify, or distribute Granger Browser.
 
 ## Current Status
 
-Public source and binary distribution are not approved by the current repository
-state. Complete the items below before changing repository visibility or
-publishing a release.
+The repository and its GitHub Release assets are public. No project-wide source
+license has been selected, so public access must not be interpreted as a grant
+to copy, modify, or redistribute project-authored code. The repository owner
+remains responsible for the source, asset, Qt, Tor, and other third-party
+distribution obligations listed below.
 
 ## Source Publication
 
