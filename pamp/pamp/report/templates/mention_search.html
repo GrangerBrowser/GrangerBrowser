@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="{{ language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ locale.get("Mention Search", "Mention Search") }}</title>
+  <link rel="icon" href="data:,">
+  <style>
+{{ report_css | safe }}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <strong id="reportTitle">{{ locale.get("Mention Search", "Mention Search") }}</strong>
+      <a id="targetLink" href="#"></a>
+    </div>
+    <div class="toolbar">
+      <input id="searchInput" type="search" placeholder="{{ locale.get('Search results', 'Search results') }}">
+      <button id="csvButton" type="button">CSV</button>
+    </div>
+  </header>
+  <main>
+    <section class="summary-band" aria-labelledby="summaryTitle">
+      <div class="summary-head">
+        <div>
+          <span class="eyebrow">Pamp</span>
+          <h1 id="summaryTitle">{{ locale.get("Mention Search", "Mention Search") }}</h1>
+          <p id="queryLine"></p>
+        </div>
+        <div class="timestamp" id="timestamp"></div>
+      </div>
+      <div class="metrics" id="metrics"></div>
+      <div class="scan-stats" id="scanStats"></div>
+    </section>
+
+    <section aria-labelledby="pagesTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="pagesTitle">{{ locale.get("Matches by page", "Matches by page") }}</h2>
+          <p>{{ locale.get("Pages are sorted by mention count.", "Pages are sorted by mention count.") }}</p>
+        </div>
+      </div>
+      <div class="page-list" id="pageList"></div>
+    </section>
+
+    <section aria-labelledby="matchesTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="matchesTitle">{{ locale.get("All matches", "All matches") }}</h2>
+          <p id="resultCounter"></p>
+        </div>
+      </div>
+      <div class="filters" id="filters" role="group" aria-label="{{ locale.get('Result filters', 'Result filters') }}"></div>
+      <div class="matches" id="matches"></div>
+      <div class="empty" id="emptyState" hidden>{{ locale.get("No matches for the selected filter.", "No matches for the selected filter.") }}</div>
+    </section>
+  </main>
+  <script>
+{{ report_js | safe }}
+  </script>
+</body>
+</html>

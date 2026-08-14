@@ -4,15 +4,16 @@ Audit date: 2026-08-13
 
 ## Scope
 
-The sibling `pamp` checkout is the full Python Pamp application. It is not
-Pamp Lite and is not part of the Granger Browser source tree or runtime.
+The `pamp/` source directory is the full Python Pamp application. It is not Pamp
+Lite and is not part of the Granger Browser build target or packaged runtime.
 
 Audited revision:
 
 `c544c38a48d4c186a02cc7f7d854f942bd8ce152`
 
-The checkout contained user/runtime changes before the audit. They were not
-reset, deleted, staged, or copied into the browser repository.
+The original checkout contained user/runtime changes before the audit. They were
+not reset or deleted. Generated reports, case data, and bytecode remain local and
+are excluded from the browser repository by `pamp/.gitignore`.
 
 ## Verification
 
@@ -31,12 +32,12 @@ the same revision and the pre-existing dirty checkout state. Python 3.14.5 ran
 all 50 tracked unit tests in 1.241 seconds: 50 passed and 0 failed. The test run
 did not add another checkout change. No active target scan was launched.
 
-The checkout directory was then renamed in place from `pentest` to `pamp`.
-Its Git revision, tracked modifications, runtime reports, and untracked case
-data were preserved. `scripts/test-pamp-runtime.ps1` verifies the current
-directory contract, imports the runtime, runs the tracked suite, and exercises
-a real CLI startup followed by the normal Exit command. The acceptance does not
-start a target scan or contact a network service.
+The checkout directory was then renamed in place from `pentest` to `pamp` and
+its source files were imported as ordinary repository files. Runtime reports and
+case data were preserved locally but are not tracked. `scripts/test-pamp-runtime.ps1`
+verifies the current directory contract, imports the runtime, runs the tracked
+suite, and exercises a real CLI startup followed by the normal Exit command. The
+acceptance does not start a target scan or contact a network service.
 
 ## Production decision
 
@@ -90,5 +91,5 @@ implemented and reviewed:
 - a dedicated, non-persistent identity boundary and explicit user authorization;
 - deterministic packaging plus detection, import, runtime, and packaged tests.
 
-Until then, keeping full Pamp separate is the privacy-preserving result, not a
-missing asset-protection step.
+Until then, keeping full Pamp outside the browser build and packaged runtime is
+the privacy-preserving result, not a missing asset-protection step.

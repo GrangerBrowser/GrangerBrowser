@@ -118,6 +118,5 @@ Desktop.ini
 *.user
 *.suo
 
-# Separate full Pamp runtime checkout. It has its own Git history and contains
-# runtime reports/case data; the packaged browser does not copy it.
-/pamp/
+# Pamp source is tracked. Its generated reports, cases, and caches are excluded
+# by pamp/.gitignore; the packaged browser still does not copy the full runtime.

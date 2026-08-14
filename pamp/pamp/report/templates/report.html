@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="{{ language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ locale.get("Pamp Report", "Pamp Report") }}</title>
+  <link rel="icon" href="data:,">
+  <style>
+{{ report_css | safe }}
+  </style>
+</head>
+<body{% if branding.logo %} class="has-brand-logo"{% endif %}{% if branding.background_css %} style="--bg-image: url('{{ branding.background_css }}');"{% endif %}>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block{% if branding.logo %} has-logo{% endif %}">
+        <div class="brand-mark" id="brandMark" aria-label="Pamp">
+          <span class="brand-fallback">P</span>
+          {% if branding.logo %}
+            {% if branding.logo.kind == "video" %}
+              <video class="brand-media" src="{{ branding.logo.src }}" autoplay muted loop playsinline preload="metadata"></video>
+            {% else %}
+              <img class="brand-media" src="{{ branding.logo.src }}" alt="Pamp logo" loading="eager">
+            {% endif %}
+          {% endif %}
+        </div>
+        {% if not branding.logo %}
+          <div class="brand-copy">
+            <strong>Pamp</strong>
+            <span id="brandSubtitle">{{ locale.get("Domain Intelligence Report", "Domain Intelligence Report") }}</span>
+            <small id="brandTarget">{{ locale.get("No target", "No target") }}</small>
+          </div>
+        {% endif %}
+      </div>
+      <div class="sidebar-head">
+        <span id="navigationLabel">{{ locale.get("Navigation", "Navigation") }}</span>
+      </div>
+      <div class="nav-scroll">
+        <nav class="side-nav" id="sideNav" aria-label="{{ locale.get('Report navigation', 'Report navigation') }}"></nav>
+      </div>
+    </aside>
+    <main class="workspace">
+      <header class="topbar">
+        <div class="report-id">
+          <strong id="reportTitle">{{ locale.get("Pamp Report", "Pamp Report") }}</strong>
+          <span id="reportTarget">{{ locale.get("No target", "No target") }}</span>
+        </div>
+        <div class="report-meta">
+          <span id="reportGenerated"></span>
+        </div>
+        <div class="global-search">
+          <input id="globalSearch" type="search" placeholder="{{ locale.get('Search report', 'Search report') }}" aria-label="{{ locale.get('Search report', 'Search report') }}">
+        </div>
+        <select id="sectionFilter" aria-label="{{ locale.get('Section filter', 'Section filter') }}">
+          <option value="all">{{ locale.get("All sections", "All sections") }}</option>
+        </select>
+        <div class="lang-switch" id="languageSwitch" role="group" aria-label="{{ locale.get('Report language', 'Report language') }}">
+          <button type="button" data-lang="en" aria-pressed="false">ENG</button>
+          <button type="button" data-lang="ru" aria-pressed="false">RU</button>
+        </div>
+        <div class="top-actions">
+          <button type="button" id="showEmptySections">{{ locale.get("Show empty", "Show empty") }}</button>
+          <button type="button" id="copyVisible">{{ locale.get("Copy visible", "Copy visible") }}</button>
+          <button type="button" id="exportSummary">{{ locale.get("Export summary", "Export summary") }}</button>
+        </div>
+      </header>
+      <div id="sections"></div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+{{ report_js | safe }}
+  </script>
+</body>
+</html>
