@@ -156,6 +156,33 @@ External search providers can return CAPTCHA, anti-abuse, or exit-specific
 responses. Such a response is recorded as external behavior and is not relabeled
 as a successful results page.
 
+## Windows portable 0.4.1
+
+The published release is [Granger Browser 0.4.1](https://github.com/zakhar-git/Granger-Browser/releases/tag/v0.4.1).
+
+| Artifact | Size | SHA-256 |
+| --- | ---: | --- |
+| `GrangerBrowser.exe` | 15,368,704 bytes | `9E7FAE520DE9185384F2A9C1B6AE0BB809BADFA78E36A4A078A0D4A27BEAC4CA` |
+| `Granger-Browser-v0.4.1-windows-x64.zip` | 189,721,477 bytes | `F0B7CAC54F68EAE4597AF3D0B3C06B0F0C32780AD70D32BDF996BFF4FF976008` |
+
+The package contains 191 files, including 48 x64 PE32+ executables and DLLs.
+The portability audit found zero unresolved imports, verified nine upstream
+runtime signatures, and loaded six critical Qt DLLs through the Windows Loader,
+including `Qt6WebEngineCore.dll` and `Qt6WebEngineWidgets.dll`.
+
+The complete local acceptance suite passed on Windows 11 development host
+build 26200 with the development `PATH` removed and isolated user-data roots.
+The ZIP downloaded back from GitHub passed the same helper/renderer portability
+smoke on fresh GitHub-hosted Windows Server 2022 (`10.0.20348`) and Windows
+Server 2025 (`10.0.26100`) x64 virtual machines. Both runners loaded
+`https://example.com` through Qt WebEngine after external `QTWEBENGINE_*` paths
+were deliberately pointed at an incomplete helper directory.
+
+These hosted results are not represented as physical Windows 10 or Windows 11
+tests. No physical Windows 10 machine was available during this release cycle,
+and the separately reported Windows 11 computer was not remotely accessible for
+a post-fix rerun.
+
 ## Known limitations
 
 - Qt WebEngine retains a process-wide proxy model.
