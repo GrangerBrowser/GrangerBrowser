@@ -8,14 +8,21 @@ Granger Browser does not promise anonymity. Tor status is reported separately fo
 > pre-release browser. Use a dedicated test profile when evaluating source
 > builds and review the security limitations before relying on it.
 
-## Build And Run
+## Portable Windows Download
 
-The source repository does not contain a prebuilt executable. Build and validate
-the package as described in [BUILDING.md](BUILDING.md), then launch:
+Download `Granger-Browser-<version>-windows-x64.zip` from the
+[GitHub Releases page](https://github.com/zakhar-git/Granger-Browser/releases),
+verify the accompanying `.sha256` file, extract the complete `Granger Browser`
+folder, and launch:
 
 ```text
-release\Granger Browser\GrangerBrowser.exe
+Granger Browser\GrangerBrowser.exe
 ```
+
+The release ZIP contains the `Granger Browser` folder at its root. Do not use GitHub's automatically generated
+`Source code (zip)` as the portable package. Git LFS binaries in a source archive
+can be pointer text rather than executable content. See
+[Windows portability](docs/WINDOWS_PORTABILITY.md) for verification details.
 
 The validated package does not require a terminal, Python installation, Qt SDK,
 or source checkout at runtime. To create Start menu and desktop shortcuts:
@@ -23,6 +30,14 @@ or source checkout at runtime. To create Start menu and desktop shortcuts:
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\release\Granger Browser\Create-Shortcuts.ps1"
 ```
+
+## Build And Run
+
+Build and validate the package from source as described in
+[BUILDING.md](BUILDING.md), then launch the canonical executable under
+`release\Granger Browser`. A Git clone requires Git LFS to materialize tracked
+release binaries; the dedicated release asset remains the supported end-user
+download.
 
 ## Desktop Features
 

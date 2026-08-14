@@ -28,7 +28,9 @@ publishing a release.
 3. Stage a verified official Tor Expert Bundle as described in `BUILDING.md` and
    retain its bundled license documents.
 4. Run `scripts/build-release.ps1` from a clean tree. Publish only the canonical
-   package accepted by that script, together with its SHA-256 checksum.
+   `Granger-Browser-<version>-windows-x64.zip` asset accepted by that script,
+   together with its `.sha256` checksum. GitHub-generated source archives are
+   not portable packages and may contain Git LFS pointer files.
 5. Review the generated package manifest and confirm that it contains no user
    profile, credentials, bridge data, logs, crash dumps, or machine-specific
    paths.

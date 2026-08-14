@@ -6,8 +6,8 @@
     },
     {
         "Path":  "BUILDING.md",
-        "Size":  5040,
-        "SHA256":  "2BBBB1BCF0C633C85428AFE0FEBF48D651A245C9B85988A35C0F816185E9E03F"
+        "Size":  5935,
+        "SHA256":  "F6E20AAEA8EFCEAB91DC497C8E0C38312677284B1B89E4F72828622AE39C12A4"
     },
     {
         "Path":  "concrt140.dll",
@@ -21,13 +21,13 @@
     },
     {
         "Path":  "DISTRIBUTION.md",
-        "Size":  1967,
-        "SHA256":  "0629E40A31CAE387D574E0D29B61E13A052A1BE0106ACD3C535E783C4DC58911"
+        "Size":  2115,
+        "SHA256":  "783D1C01DD3C8B9DD324E502AAAD8B23FCE21E49E96631FA9420EC59D6493190"
     },
     {
         "Path":  "GrangerBrowser.exe",
         "Size":  15362560,
-        "SHA256":  "C78AA9FD01B7E96270E692241900D9817D8CEBCA9EFA8DF696CAEA35D82688F3"
+        "SHA256":  "877F861EF5BB84415E0154C0FBAADBE9D34A3FF9AC002F2392FF205094C5ED67"
     },
     {
         "Path":  "msvcp140.dll",
@@ -56,8 +56,8 @@
     },
     {
         "Path":  "NOTICE.txt",
-        "Size":  2558,
-        "SHA256":  "E5FAC18EFB6B405A7D8DBF7BDEBBE58723C542907BAFB88CFD5979B1FAB3FC91"
+        "Size":  2629,
+        "SHA256":  "4675088D9C2D0834E8B695B0C971D28E2FD6474F33C38EC496E445D6C760AA06"
     },
     {
         "Path":  "Qt6Core.dll",
@@ -151,8 +151,8 @@
     },
     {
         "Path":  "README.md",
-        "Size":  5237,
-        "SHA256":  "322B9D6CE6D887666248C07B0F9125EFB77563960758DC8A3124F11958446A72"
+        "Size":  5974,
+        "SHA256":  "B19951C2A55B4495669380F3A5B9060329102994126F6475C2A29C68F4A425CE"
     },
     {
         "Path":  "SECURITY.md",
@@ -186,8 +186,8 @@
     },
     {
         "Path":  "docs\\FULL_PAMP_INTEGRATION_AUDIT.md",
-        "Size":  4399,
-        "SHA256":  "D1F58C1E72C42D77FFA699B501AAAAF4904DC9D0D66DB152609BF189BF6480DF"
+        "Size":  4575,
+        "SHA256":  "51C45C844217D394E381DFAFDE73332A8769466EE84DD1BBA7D0C3DD2D764E61"
     },
     {
         "Path":  "docs\\GIT_WORKFLOW.md",
@@ -198,6 +198,11 @@
         "Path":  "docs\\GRANGER_BROWSER_RELEASE_REPORT.md",
         "Size":  6844,
         "SHA256":  "6A713000CEB20ECC0D408B4F8D8BC5CCB537885327163B1B779C8F0D79FF1F1F"
+    },
+    {
+        "Path":  "docs\\WINDOWS_PORTABILITY.md",
+        "Size":  2452,
+        "SHA256":  "3EC6861A68DB1E2C01A030902BBFC493E13DFB0780A4B8B2152C2A491A413C08"
     },
     {
         "Path":  "docs\\screenshots\\sidebar-layout-stability\\duckduckgo-after-toggle-stress.png",
@@ -351,8 +356,8 @@
     },
     {
         "Path":  "licenses\\NOTICE.txt",
-        "Size":  2558,
-        "SHA256":  "E5FAC18EFB6B405A7D8DBF7BDEBBE58723C542907BAFB88CFD5979B1FAB3FC91"
+        "Size":  2629,
+        "SHA256":  "4675088D9C2D0834E8B695B0C971D28E2FD6474F33C38EC496E445D6C760AA06"
     },
     {
         "Path":  "licenses\\openssl.txt",
@@ -361,8 +366,8 @@
     },
     {
         "Path":  "licenses\\Pamp-Lite-ATTRIBUTION.md",
-        "Size":  1440,
-        "SHA256":  "A0B899407DDAEADE6D27530EC400E319D2DD3A73DFA222980175F089069E7FAB"
+        "Size":  1506,
+        "SHA256":  "6FDE382B5BBC0B0ED30AA53E1138FC0AF131714FE1E209D20F2D5B14BB1B36F7"
     },
     {
         "Path":  "licenses\\quirc-LICENSE.txt",
@@ -418,66 +423,6 @@
         "Path":  "position\\qtposition_winrt.dll",
         "Size":  67384,
         "SHA256":  "A66B595DE647ADEA7C8C0C9535F75AC2B28B98542F52A5AE2C7A42FA245622D1"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_debugger.dll",
-        "Size":  214840,
-        "SHA256":  "17313F0991073420753182A1085339F63B60869F0C365A1A5BCDFE9C8A54A56F"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_inspector.dll",
-        "Size":  101176,
-        "SHA256":  "70DCBBD7BBD64273F2DC3FA034908ACDBC9F1340D124CFF6E7D017977ED063CE"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_local.dll",
-        "Size":  39224,
-        "SHA256":  "F78D91BA50934CFF33BD47CC01D8984692A66FFDE90D2C5FC174F29F9A639C00"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_messages.dll",
-        "Size":  35640,
-        "SHA256":  "D07F60C8649A542320AEBE91C054D537DC5DCF27306F04C8A9485956DD4A6D3C"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_native.dll",
-        "Size":  49464,
-        "SHA256":  "C2CF2C007DCC4059362ED1D2C35EAACFD2BCE262D1A07FA7B1A80C972DB74C5E"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_nativedebugger.dll",
-        "Size":  73528,
-        "SHA256":  "3FF780A53A862FBE339567240A27F0A149522BAD55B15F2EF8297363337ACD13"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_preview.dll",
-        "Size":  204088,
-        "SHA256":  "160B0D1151F0E0CF172EEE5CD413BC9A607EB574380909A224412EBF31276277"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_profiler.dll",
-        "Size":  119096,
-        "SHA256":  "A50796E851F8E208D01F4A45ED92E03B70E5C9781D7B3AB7700525B5256ADD33"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_quickeventreplay.dll",
-        "Size":  44856,
-        "SHA256":  "22D76DBAEB61BB70088375FCB287DE04E5A3082308DDFF6B79740D4F6BE96B68"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_quickprofiler.dll",
-        "Size":  43832,
-        "SHA256":  "B877267F993A23108B576AE483637AF32812C805AF53C51AE617609D37BCD857"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_server.dll",
-        "Size":  101176,
-        "SHA256":  "17F606F09F3EA7CD9D85EC0821A6BA10BFC4FF61D2C786C738256253851893C7"
-    },
-    {
-        "Path":  "qmltooling\\qmldbg_tcp.dll",
-        "Size":  36152,
-        "SHA256":  "CCB5235B88B13328DD5047E46385046457B65ED00FB1F7F045585E047662E32E"
     },
     {
         "Path":  "resources\\icudtl.dat",
