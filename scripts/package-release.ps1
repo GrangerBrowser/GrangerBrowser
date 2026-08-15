@@ -240,6 +240,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "docs/FULL_PAMP_INTEGRATION_AUDIT
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/CROSS_DEVICE_PRIVACY_TESTING.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GIT_WORKFLOW.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/WINDOWS_PORTABILITY.md") -Destination $releaseDocs
+Copy-Item -LiteralPath (Join-Path $projectRoot "docs/INSTALLER.md") -Destination $releaseDocs
 Copy-Item -Path (Join-Path $projectRoot "docs/screenshots/sidebar-layout-stability/*.png") `
     -Destination $releaseSidebarScreenshots
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $licenses
@@ -262,7 +263,7 @@ $required = @(
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
     "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "qt.conf", "deployment-metadata.json",
     "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll",
-    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md", "docs/WINDOWS_PORTABILITY.md",
+    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md", "docs/WINDOWS_PORTABILITY.md", "docs/INSTALLER.md",
     "docs/screenshots/sidebar-layout-stability/sidebar-hidden.png", "docs/screenshots/sidebar-layout-stability/sidebar-rail.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-tabs-expanded.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-tabs-collapsed.png", "docs/screenshots/sidebar-layout-stability/sidebar-collapsed.png",

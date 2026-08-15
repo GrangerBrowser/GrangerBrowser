@@ -5544,7 +5544,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(granger::Brand::organizationName());
     QCoreApplication::setOrganizationDomain(granger::Brand::organizationDomain());
     QCoreApplication::setApplicationName(granger::Brand::applicationName());
-    QCoreApplication::setApplicationVersion("0.4.2");
+    QCoreApplication::setApplicationVersion("0.4.3");
     granger::Brand::promoteLegacyEnvironment();
     configureSettingsStorageOverride();
     const granger::BrandMigrationResult brandMigration =
