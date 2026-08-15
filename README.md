@@ -192,38 +192,28 @@ The interface includes:
 
 ---
 
-## Download
+## Download Granger Browser
 
-### Windows x64
+### Windows Installer — Recommended
 
-Download the current portable build from:
+### **[Download GrangerSetup.exe](https://github.com/zakhar-git/Granger-Browser/releases/latest/download/GrangerSetup.exe)**
 
-### **[GitHub Releases →](https://github.com/zakhar-git/Granger-Browser/releases/latest)**
+The easiest way to install Granger Browser:
 
-Use the asset named similar to:
+1. Download `GrangerSetup.exe`.
+2. Run it.
+3. The installer downloads and verifies the current Windows x64 runtime.
+4. Launch Granger Browser.
 
-```text
-Granger-Browser-vX.X.X-windows-x64.zip
-```
+GrangerSetup is a native per-user bootstrap installer. It downloads the complete browser runtime from the official Granger Browser GitHub Release, verifies its SHA-256 checksum, and installs it under `%LOCALAPPDATA%\Programs\Granger Browser`.
 
-Then:
+No manual Qt, Visual C++, Python, Tor, or additional DLL installation is required.
 
-1. Download the Windows x64 ZIP.
-2. Verify its published SHA-256 checksum.
-3. Extract the **entire archive**.
-4. Launch `GrangerBrowser.exe`.
+### Portable
 
-The portable package includes the Qt, WebEngine and Tor runtime components required by the browser.
+Download `Granger-Browser-vX.X.X-windows-x64.zip` from **[GitHub Releases](https://github.com/zakhar-git/Granger-Browser/releases/latest)**, verify `SHA256SUMS.txt`, extract the entire archive, and run `GrangerBrowser.exe`.
 
-You do **not** need:
-
-- Python
-- Qt SDK
-- Visual Studio
-- CMake
-- a source checkout
-
-to launch the packaged browser.
+The installer and portable download use the same complete Qt, WebEngine, ICU, Visual C++ and Tor runtime package. See [docs/INSTALLER.md](docs/INSTALLER.md) for installer architecture and rebuild details.
 
 > **Do not download GitHub's automatically generated `Source code (zip)` or `Source code (tar.gz)` if you only want to run Granger.**
 >
