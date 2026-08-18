@@ -8,6 +8,7 @@ Granger Browser 0.4.1 is a native C++20/Qt 6 application. The release target is 
 - Visual Studio 2022 with the MSVC x64 toolchain
 - Qt 6.11.1 with Widgets, Svg, Network, WebEngineWidgets, WebChannel, and Positioning
 - A downloaded Tor Expert Bundle staged under `output/tor-expert` for packaging
+- Network access to the pinned official PurpleI2P release asset when its verified archive is not already under `output/third-party`
 
 Install the pinned stable Qt toolchain from Qt's official repositories when it
 is not already present:
@@ -37,6 +38,16 @@ The current acceptance baseline was built from
 It contains Tor 0.4.9.11 and lyrebird 0.8.1. A future bundle update must record
 its source, checksum, and runtime versions before a public binary release.
 
+## I2P Packaging Input
+
+`scripts/fetch-i2p-runtime.ps1` stages the official PurpleI2P i2pd 2.61.0
+Windows x64 MinGW release under ignored `output/` storage. The script accepts
+only the pinned upstream asset and verifies SHA-256
+`A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F`
+before extracting `i2pd.exe` and its certificate bundle. End users do not need
+Java or a separate I2P installation. Source metadata and BSD-3-Clause terms are
+tracked under `third_party/i2pd/`.
+
 ## Canonical Release
 
 ```powershell
@@ -65,7 +76,8 @@ Internally, the release orchestrator calls `package-release.ps1`. It runs
 `windeployqt` for the Release target while excluding QML debugger plugins, adds
 the app-local VC143 runtime, pins Qt paths with package-local `qt.conf`, packages
 Qt WebEngine resources/locales and the redistributable D3D compiler/DXC runtime, bundles
-Tor, geoip data, `lyrebird`, `conjure-client`, `pt_config.json`, notices,
+Tor, geoip data, `lyrebird`, `conjure-client`, `pt_config.json`, i2pd and its
+certificate bundle, notices,
 assets, and shortcut creation, validates required files, and writes
 `deployment-metadata.json` plus `release-manifest.json` with SHA-256 hashes.
 
@@ -81,9 +93,10 @@ The optional NMEA positioning plugin is removed because it requires Qt SerialPor
 The orchestrator also runs `test-windows-portability.ps1`. This build-time gate
 parses every packaged EXE and DLL without relying on `dumpbin`, requires x64
 PE32+ files, resolves direct and delay-load imports, verifies the package
-manifest and Authenticode signatures of upstream runtime files, invokes the
-Windows Loader on critical Qt/WebEngine DLLs, rejects Git LFS pointers and
-machine-specific user paths, and confirms that QML debugger tooling is absent.
+manifest and Authenticode signatures of applicable upstream runtime files,
+invokes the Windows Loader on critical Qt/WebEngine DLLs, rejects Git LFS
+pointers and machine-specific user paths, validates the pinned i2pd metadata
+and certificate bundle, and confirms that QML debugger tooling is absent.
 
 ## Release Layout
 
@@ -105,6 +118,9 @@ release\Granger Browser\
   runtime\tor\pluggable_transports\lyrebird.exe
   runtime\tor\pluggable_transports\conjure-client.exe
   runtime\tor\pluggable_transports\pt_config.json
+  runtime\i2p\i2pd.exe
+  runtime\i2p\certificates\
+  runtime\i2p\LICENSE.txt
   licenses\
   Create-Shortcuts.ps1
   deployment-metadata.json
@@ -117,7 +133,7 @@ release\Granger Browser\
 .\scripts\test-release.ps1 -PackageDirectory "release\Granger Browser"
 ```
 
-The harness copies the release to a path containing spaces, launches it from an unrelated current directory, removes Python and the Qt SDK from `PATH`, poisons external `QTWEBENGINE_*` paths to prove that the package-local helper wins, checks the persistent WebEngine profile and User-Agent, runs new-tab/internal-route, product, navigation, bridge, QR, privacy, and persistence tests, loads a real HTTPS page, verifies all connection-strategy torrc files with bundled Tor, launches a real obfs4 pluggable transport to `conn_pt`, verifies real toolbar download progress while closing the source tab, checks all search-provider navigations, closes a normal browser window, and verifies no managed processes remain.
+The harness copies the release to a path containing spaces, launches it from an unrelated current directory, removes Python and the Qt SDK from `PATH`, poisons external `QTWEBENGINE_*` paths to prove that the package-local helper wins, checks the persistent WebEngine profile and User-Agent, runs new-tab/internal-route, product, navigation, bridge, QR, privacy, and persistence tests, loads a real HTTPS page, verifies all connection-strategy torrc files with bundled Tor, verifies the bundled I2P lifecycle and private-route policy, launches a real obfs4 pluggable transport to `conn_pt`, verifies real toolbar download progress while closing the source tab, checks all search-provider navigations, closes a normal browser window, and verifies no managed processes remain.
 
 External provider challenges are recorded honestly. A Google `sorry` page is not counted as a loaded search-results page.
 

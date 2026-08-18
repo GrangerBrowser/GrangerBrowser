@@ -6,7 +6,7 @@
 
 The installer downloads `granger-installer-manifest.json` from the latest stable GitHub Release. The manifest identifies one complete Windows x64 portable ZIP, including its exact byte size and SHA-256 digest.
 
-The installer never downloads individual Qt, ICU, Visual C++, Tor, or transport files. The portable ZIP and installed browser use the same canonical packaged runtime.
+The installer never downloads individual Qt, ICU, Visual C++, Tor, I2P, or transport files. The portable ZIP and installed browser use the same canonical packaged runtime. Bundled i2pd is validated as part of that one package and is never fetched separately by Setup.
 
 ## Installation flow
 
@@ -18,7 +18,7 @@ The installer never downloads individual Qt, ICU, Visual C++, Tor, or transport 
 6. Promote the staged runtime to `%LOCALAPPDATA%\Programs\Granger Browser` with rollback to the previous installation if promotion fails.
 7. Create shortcuts and register per-user uninstall metadata.
 
-The browser profile remains outside the installation directory under `%LOCALAPPDATA%\Granger\Granger Browser`. Repair, update, and normal uninstall operations preserve that profile.
+The browser profile and mutable Tor/I2P state remain outside the installation directory under `%LOCALAPPDATA%\Granger\Granger Browser`. Repair, update, and normal uninstall operations preserve that data.
 
 ## Updates and uninstall
 

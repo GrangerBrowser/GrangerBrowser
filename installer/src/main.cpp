@@ -757,7 +757,9 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         L"VCRUNTIME140.dll", L"VCRUNTIME140_1.dll", L"resources/icudtl.dat",
         L"resources/qtwebengine_resources.pak", L"translations/qtwebengine_locales/en-US.pak",
         L"runtime/tor/tor.exe", L"runtime/tor/pluggable_transports/lyrebird.exe",
-        L"runtime/tor/pluggable_transports/pt_config.json", L"deployment-metadata.json",
+        L"runtime/tor/pluggable_transports/pt_config.json", L"runtime/i2p/i2pd.exe",
+        L"runtime/i2p/LICENSE.txt", L"licenses/i2pd-LICENSE.txt", L"licenses/i2pd-SOURCE.md",
+        L"deployment-metadata.json",
         L"release-manifest.json"
     };
     for (const wchar_t *relative : required) {
@@ -770,8 +772,21 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         winrt::hstring(Utf8ToWide(ReadFileUtf8(runtimeRoot / L"deployment-metadata.json"))));
     const std::wstring packageVersion = deployment.GetNamedString(L"ProductVersion").c_str();
     if (CompareVersions(packageVersion, manifest.version) != 0
-        || Lower(deployment.GetNamedString(L"Architecture").c_str()) != L"x64") {
+        || Lower(deployment.GetNamedString(L"Architecture").c_str()) != L"x64"
+        || std::wstring(deployment.GetNamedString(L"I2pVersion").c_str()) != L"2.61.0"
+        || std::wstring(deployment.GetNamedString(L"I2pLicense").c_str()) != L"BSD-3-Clause"
+        || deployment.GetNamedNumber(L"I2pCertificateCount") < 1) {
         throw InstallerError("Package metadata does not match the release manifest");
+    }
+    const fs::path i2pCertificates = runtimeRoot / L"runtime/i2p/certificates";
+    size_t i2pCertificateCount = 0;
+    if (fs::is_directory(i2pCertificates)) {
+        for (const auto &entry : fs::recursive_directory_iterator(i2pCertificates)) {
+            if (entry.is_regular_file()) ++i2pCertificateCount;
+        }
+    }
+    if (i2pCertificateCount < 1) {
+        throw InstallerError("Package validation failed: bundled I2P certificates are missing");
     }
 
     const JsonArray files = JsonArray::Parse(
@@ -793,7 +808,8 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
     const std::array criticalHashes = {
         L"GrangerBrowser.exe", L"Qt6Core.dll", L"Qt6WebEngineCore.dll",
         L"QtWebEngineProcess.exe", L"icu.dll", L"icuuc.dll",
-        L"runtime/tor/tor.exe", L"runtime/tor/pluggable_transports/lyrebird.exe"
+        L"runtime/tor/tor.exe", L"runtime/tor/pluggable_transports/lyrebird.exe",
+        L"runtime/i2p/i2pd.exe"
     };
     for (const wchar_t *relative : criticalHashes) {
         const auto record = records.find(NormalizedArchivePath(relative));

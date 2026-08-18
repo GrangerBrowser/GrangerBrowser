@@ -277,6 +277,10 @@ $requiredFiles = @(
     "runtime/tor/pluggable_transports/lyrebird.exe",
     "runtime/tor/pluggable_transports/conjure-client.exe",
     "runtime/tor/pluggable_transports/pt_config.json",
+    "runtime/i2p/i2pd.exe",
+    "runtime/i2p/LICENSE.txt",
+    "licenses/i2pd-LICENSE.txt",
+    "licenses/i2pd-SOURCE.md",
     "release-manifest.json"
 )
 foreach ($relativePath in $requiredFiles) {
@@ -308,8 +312,18 @@ $deploymentMetadata = Get-Content -LiteralPath $deploymentMetadataPath -Raw -Enc
 if ([int]$deploymentMetadata.SchemaVersion -ne 1 -or
     [string]$deploymentMetadata.Architecture -ne "x64" -or
     [string]$deploymentMetadata.QtVersion -notmatch '^6\.11\.1(?:\.0)?$' -or
-    [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.1(?:\.0)?$') {
+    [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.1(?:\.0)?$' -or
+    [string]$deploymentMetadata.I2pVersion -ne "2.61.0" -or
+    [string]$deploymentMetadata.I2pArchiveSHA256 -ne "A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F" -or
+    [string]$deploymentMetadata.I2pLicense -ne "BSD-3-Clause" -or
+    [int]$deploymentMetadata.I2pCertificateCount -lt 1) {
     throw "Deployment metadata does not describe the supported Qt 6.11.1 x64 runtime."
+}
+$i2pCertificates = @(
+    Get-ChildItem -LiteralPath (Join-Path $packageRoot "runtime/i2p/certificates") -Recurse -File -ErrorAction Stop
+)
+if ($i2pCertificates.Count -ne [int]$deploymentMetadata.I2pCertificateCount) {
+    throw "Packaged i2pd certificate count does not match deployment metadata."
 }
 $metadataPaths = New-Object Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
 foreach ($entry in $deploymentMetadata.RuntimeFiles) {
@@ -333,7 +347,8 @@ foreach ($entry in $deploymentMetadata.RuntimeFiles) {
 }
 foreach ($relativePath in @("Qt6Core.dll", "Qt6WebEngineCore.dll", "QtWebEngineProcess.exe",
                              "d3dcompiler_47.dll", "icu.dll", "icuuc.dll", "dxcompiler.dll", "dxil.dll",
-                             "MSVCP140.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll")) {
+                             "MSVCP140.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
+                             "runtime\i2p\i2pd.exe")) {
     if (-not $metadataPaths.Contains($relativePath)) {
         throw "Deployment metadata does not cover $relativePath"
     }
@@ -427,6 +442,7 @@ $criticalSubsystems = @{
     "runtime\tor\tor.exe" = 3
     "runtime\tor\pluggable_transports\lyrebird.exe" = 3
     "runtime\tor\pluggable_transports\conjure-client.exe" = 3
+    "runtime\i2p\i2pd.exe" = 2
 }
 foreach ($relativePath in $criticalSubsystems.Keys) {
     $fullPath = Join-Path $packageRoot $relativePath

@@ -2,9 +2,9 @@
 
 # Granger Browser
 
-### Privacy-focused Windows browser with integrated Tor, isolated browsing environments and built-in privacy controls.
+### Privacy-focused Windows browser with integrated Tor and I2P, isolated browsing environments and built-in privacy controls.
 
-Native C++20 · Qt 6 · Chromium · Tor
+Native C++20 · Qt 6 · Chromium · Tor · I2P
 
 <br>
 
@@ -33,7 +33,7 @@ Native C++20 · Qt 6 · Chromium · Tor
 
 **Granger Browser** is a native privacy-oriented desktop browser for Windows.
 
-It is built with **C++20, Qt Widgets and Qt WebEngine**, using Chromium as the underlying web engine while adding its own privacy controls, Tor routing, isolated browsing environments, site permissions, content filtering and native desktop UI.
+It is built with **C++20, Qt Widgets and Qt WebEngine**, using Chromium as the underlying web engine while adding its own privacy controls, managed Tor and I2P routing, isolated browsing environments, site permissions, content filtering and native desktop UI.
 
 Granger is designed around a simple principle:
 
@@ -315,6 +315,26 @@ That condition is reported as an actual connection failure rather than silently 
 
 ---
 
+## Private network routing
+
+Tor is the default preferred privacy network. I2P is bundled as a managed
+secondary backend using official PurpleI2P i2pd 2.61.0. The preference is not a
+direct/network-off switch: Granger keeps a local fail-closed gateway in front of
+Qt WebEngine and only opens it for a verified private route.
+
+- `.onion` destinations require verified Tor.
+- `.i2p` destinations require verified I2P.
+- Clearnet uses verified Tor.
+- Clearnet is blocked on I2P because the bundled configuration has no verified outproxy.
+- If both backends are unavailable, browsing remains blocked.
+
+Tor and I2P have different threat models. Neither this routing policy nor the
+browser's fingerprinting defenses are a guarantee of anonymity. See
+[private network routing](docs/PRIVATE_NETWORK_ROUTING.md) for the state machine,
+runtime source, and fail-closed boundary.
+
+---
+
 ## Privacy Model
 
 Granger follows several broad principles:
@@ -445,6 +465,7 @@ This can include:
 - logs
 - Tor data
 - generated Tor configuration
+- I2P router state and generated I2P tunnel configuration
 
 Test infrastructure can use custom data roots through supported development environment variables.
 
@@ -460,7 +481,7 @@ Granger currently uses:
 | Desktop UI | Qt Widgets |
 | Browser engine | Qt WebEngine / Chromium |
 | Qt | 6.11.1 |
-| Networking privacy | Tor |
+| Networking privacy | Managed Tor and bundled I2P |
 | Build system | CMake |
 | Primary compiler | MSVC 2022 x64 |
 | Primary platform | Windows x64 |
@@ -534,6 +555,7 @@ Important limitations include:
 
 - No browser can eliminate all fingerprinting techniques.
 - Tor does not protect against every endpoint, account or behavioral correlation attack.
+- I2P and Tor provide different routing properties and are not interchangeable anonymity guarantees.
 - Logging into an identifying account can identify the user regardless of network routing.
 - Browser compatibility may require exposing some APIs.
 - User-Agent spoofing alone does not hide the underlying browser engine.

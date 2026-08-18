@@ -2,8 +2,8 @@
 
 The supported packaged target is 64-bit Windows 10 (1809 or newer) or Windows 11 on an x64
 processor. The portable folder is self-contained for the application, Qt 6,
-Qt WebEngine, the app-local VC143 runtime, Tor, and bundled pluggable
-transports. It does not require a Qt SDK, Visual Studio, CMake, Ninja, or a
+Qt WebEngine, the app-local VC143 runtime, Tor, bundled pluggable transports,
+and i2pd 2.61.0 with its certificate bundle. It does not require a Qt SDK, Visual Studio, CMake, Ninja, or a
 developer `PATH` on the destination computer.
 
 ## Download
@@ -24,7 +24,8 @@ size and SHA-256 of each packaged file.
 ## Packaging Gates
 
 `scripts/build-release.ps1` performs a clean x64 Release build, runs
-`windeployqt`, deploys the app-local VC143 runtime, adds the Tor runtime, and
+`windeployqt`, deploys the app-local VC143 runtime, adds the Tor and pinned
+official i2pd runtimes, and
 then runs the copied-package acceptance suite. Package-local `qt.conf` and
 `QTWEBENGINE_*` runtime selection keep the helper, resources, and locales next
 to the application. The D3D compiler from the selected Qt distribution and the
@@ -37,7 +38,8 @@ debugger plugins are not shipped.
 - x86 or ARM64 executables and DLLs;
 - unresolved imports on the build host;
 - Git LFS pointer files inside the package;
-- missing Qt WebEngine, platform, VC runtime, Tor, or transport files;
+- missing Qt WebEngine, platform, VC runtime, Tor, transport, or I2P files;
+- mismatched i2pd version/checksum metadata or an empty I2P certificate bundle;
 - non-local `qt.conf` paths or mismatched deployment metadata;
 - invalid upstream signatures for Qt, VC, or D3D runtime files;
 - a Windows Loader failure for critical Qt/WebEngine DLLs;

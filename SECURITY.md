@@ -23,12 +23,13 @@ sensitive origins. Use an isolated test profile and synthetic bridge data.
 
 ## Scope
 
-Useful reports include direct-network fallback, DNS or WebRTC leaks, profile or
-Space isolation failures, unsafe filesystem cleanup, certificate-validation
-bypass, internal-page privilege escalation, package tampering, and disclosure
-of user data. Tor exit behavior, global traffic correlation, compromised host
-systems, and third-party site vulnerabilities are outside the application's
-control unless Granger Browser introduces the exposure.
+Useful reports include direct-network fallback, cross-routing `.onion` through
+I2P or `.i2p` through Tor, DNS or WebRTC leaks, profile or Space isolation
+failures, unsafe filesystem cleanup, certificate-validation bypass,
+internal-page privilege escalation, package tampering, and disclosure of user
+data. Tor exit behavior, I2P peer behavior, global traffic correlation,
+compromised host systems, and third-party site vulnerabilities are outside the
+application's control unless Granger Browser introduces the exposure.
 
 Granger Browser does not promise anonymity. Connection, bootstrap, and browser
 route verification are separate states and should be reported separately.

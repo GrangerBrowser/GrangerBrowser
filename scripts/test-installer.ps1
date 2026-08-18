@@ -332,7 +332,8 @@ try {
     $results.WebPage = $true
 
     $torPassed = $false
-    for ($torAttempt = 1; $torAttempt -le 2; $torAttempt++) {
+    $maxTorAttempts = 3
+    for ($torAttempt = 1; $torAttempt -le $maxTorAttempts; $torAttempt++) {
         $torOutput = Join-Path $testPath $(if ($torAttempt -eq 1) { 'managed-tor.json' } else { 'managed-tor-retry.json' })
         $torProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
             -ArgumentList @('--smoke-managed-mode=direct', "--smoke-output=$torOutput") -Wait -PassThru
@@ -340,7 +341,7 @@ try {
         $torPassed = $torProcess.ExitCode -eq 0 -and $tor.ok -and $tor.routeVerified `
             -and $tor.bootstrapProgress -eq 100
         if ($torPassed) { break }
-        $retryableTimeout = $torAttempt -eq 1 -and $tor.bootstrapProgress -gt 0 `
+        $retryableTimeout = $torAttempt -lt $maxTorAttempts -and $tor.bootstrapProgress -gt 0 `
             -and $tor.configVerificationOutput -match 'Configuration was valid' `
             -and $tor.reason -match 'timed out'
         if (-not $retryableTimeout) { break }

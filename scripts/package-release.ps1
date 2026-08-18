@@ -182,6 +182,24 @@ foreach ($runtimeName in @("MSVCP140.dll", "MSVCP140_ATOMIC_WAIT.dll", "VCRUNTIM
     Assert-ValidPublisherSignature -Path (Join-Path $resolvedPackage $runtimeName) -PublisherPattern "Microsoft"
 }
 
+$i2pRuntimeInfo = & (Join-Path $PSScriptRoot "fetch-i2p-runtime.ps1")
+if (-not $i2pRuntimeInfo.OK) { throw "Pinned i2pd runtime staging failed." }
+$runtimeI2p = Join-Path $resolvedPackage "runtime/i2p"
+New-Item -ItemType Directory -Path $runtimeI2p -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $i2pRuntimeInfo.RuntimeRoot "i2pd.exe") -Destination $runtimeI2p
+Copy-Item -LiteralPath (Join-Path $i2pRuntimeInfo.RuntimeRoot "certificates") `
+    -Destination $runtimeI2p -Recurse
+Copy-Item -LiteralPath (Join-Path $i2pRuntimeInfo.RuntimeRoot "LICENSE.txt") -Destination $runtimeI2p
+if (Test-Path -LiteralPath (Join-Path $i2pRuntimeInfo.RuntimeRoot "README.txt")) {
+    Copy-Item -LiteralPath (Join-Path $i2pRuntimeInfo.RuntimeRoot "README.txt") -Destination $runtimeI2p
+}
+$packagedI2pCertificates = @(
+    Get-ChildItem -LiteralPath (Join-Path $runtimeI2p "certificates") -Recurse -File
+)
+if ($packagedI2pCertificates.Count -lt 1) {
+    throw "Packaged i2pd certificate bundle is empty."
+}
+
 $qtVersion = (Get-Item -LiteralPath (Join-Path $QtRoot "bin/Qt6Core.dll")).VersionInfo.FileVersion
 $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "Qt6Core.dll" -Source "Qt $qtVersion msvc2022_64"
@@ -195,6 +213,7 @@ $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "MSVCP140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "VCRUNTIME140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "VCRUNTIME140_1.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/i2p/i2pd.exe" -Source "PurpleI2P i2pd $($i2pRuntimeInfo.Version) official Windows x64 MinGW release"
 )
 [pscustomobject]@{
     SchemaVersion = 1
@@ -205,6 +224,11 @@ $deploymentRuntimeFiles = @(
     WinDeployQtVersion = (Get-Item -LiteralPath $windeployqt).VersionInfo.FileVersion
     WindowsSdkVersion = $windowsSdkVersion
     VcRuntimeVersion = $vcRedistVersion
+    I2pVersion = $i2pRuntimeInfo.Version
+    I2pSource = $i2pRuntimeInfo.Source
+    I2pArchiveSHA256 = $i2pRuntimeInfo.ArchiveSHA256
+    I2pLicense = $i2pRuntimeInfo.License
+    I2pCertificateCount = $packagedI2pCertificates.Count
     RuntimeFiles = $deploymentRuntimeFiles
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $resolvedPackage "deployment-metadata.json") -Encoding UTF8
 
@@ -241,6 +265,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "docs/CROSS_DEVICE_PRIVACY_TESTIN
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/GIT_WORKFLOW.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/WINDOWS_PORTABILITY.md") -Destination $releaseDocs
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/INSTALLER.md") -Destination $releaseDocs
+Copy-Item -LiteralPath (Join-Path $projectRoot "docs/PRIVATE_NETWORK_ROUTING.md") -Destination $releaseDocs
 Copy-Item -Path (Join-Path $projectRoot "docs/screenshots/sidebar-layout-stability/*.png") `
     -Destination $releaseSidebarScreenshots
 Copy-Item -LiteralPath (Join-Path $projectRoot "NOTICE.txt") -Destination $licenses
@@ -250,6 +275,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/simple-icons-LICENSE
 Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/easylist/CC-BY-SA-3.0.txt") -Destination (Join-Path $licenses "EasyList-CC-BY-SA-3.0.txt")
 Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/easylist/README.md") -Destination (Join-Path $licenses "EasyList-SOURCES.md")
 Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/adguard-filters/LICENSE") -Destination (Join-Path $licenses "AdGuard-Filters-GPL-3.0.txt")
+Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/i2pd/LICENSE") -Destination (Join-Path $licenses "i2pd-LICENSE.txt")
+Copy-Item -LiteralPath (Join-Path $projectRoot "third_party/i2pd/README.md") -Destination (Join-Path $licenses "i2pd-SOURCE.md")
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/CONTENT_FILTER_SOURCES.md") -Destination (Join-Path $licenses "CONTENT_FILTER_SOURCES.md")
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/UI_ASSET_SOURCES.md") -Destination (Join-Path $licenses "UI_ASSET_SOURCES.md")
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs/UI_DESIGN_REFERENCES.md") -Destination (Join-Path $licenses "UI_DESIGN_REFERENCES.md")
@@ -263,7 +290,7 @@ $required = @(
     "Qt6WebEngineWidgets.dll", "QtWebEngineProcess.exe", "platforms/qwindows.dll", "MSVCP140.dll",
     "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "qt.conf", "deployment-metadata.json",
     "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll",
-    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md", "docs/WINDOWS_PORTABILITY.md", "docs/INSTALLER.md",
+    "resources/icudtl.dat", "resources/qtwebengine_resources.pak", "SECURITY.md", "NOTICE.txt", "DISTRIBUTION.md", "docs/GRANGER_BROWSER_RELEASE_REPORT.md", "docs/FULL_PAMP_INTEGRATION_AUDIT.md", "docs/CROSS_DEVICE_PRIVACY_TESTING.md", "docs/GIT_WORKFLOW.md", "docs/WINDOWS_PORTABILITY.md", "docs/INSTALLER.md", "docs/PRIVATE_NETWORK_ROUTING.md",
     "docs/screenshots/sidebar-layout-stability/sidebar-hidden.png", "docs/screenshots/sidebar-layout-stability/sidebar-rail.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-expanded.png", "docs/screenshots/sidebar-layout-stability/sidebar-tabs-expanded.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-tabs-collapsed.png", "docs/screenshots/sidebar-layout-stability/sidebar-collapsed.png",
@@ -272,9 +299,10 @@ $required = @(
     "docs/screenshots/sidebar-layout-stability/duckduckgo-rail.png", "docs/screenshots/sidebar-layout-stability/duckduckgo-expanded.png",
     "docs/screenshots/sidebar-layout-stability/duckduckgo-after-toggle-stress.png", "docs/screenshots/sidebar-layout-stability/sidebar-100.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-150.png", "docs/screenshots/sidebar-layout-stability/sidebar-200.png",
-    "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "bridge.png", "runtime/tor/tor.exe",
+    "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "licenses/i2pd-LICENSE.txt", "licenses/i2pd-SOURCE.md", "bridge.png", "runtime/tor/tor.exe",
     "runtime/tor/data/geoip", "runtime/tor/data/geoip6", "runtime/tor/pluggable_transports/lyrebird.exe",
-    "runtime/tor/pluggable_transports/conjure-client.exe", "runtime/tor/pluggable_transports/pt_config.json"
+    "runtime/tor/pluggable_transports/conjure-client.exe", "runtime/tor/pluggable_transports/pt_config.json",
+    "runtime/i2p/i2pd.exe", "runtime/i2p/LICENSE.txt", "runtime/i2p/certificates"
 )
 foreach ($relative in $required) {
     $candidate = Join-Path $resolvedPackage $relative

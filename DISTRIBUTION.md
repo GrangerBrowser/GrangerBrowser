@@ -8,7 +8,7 @@ grant permission to copy, modify, or distribute Granger Browser.
 The repository and its GitHub Release assets are public. No project-wide source
 license has been selected, so public access must not be interpreted as a grant
 to copy, modify, or redistribute project-authored code. The repository owner
-remains responsible for the source, asset, Qt, Tor, and other third-party
+remains responsible for the source, asset, Qt, Tor, I2P, and other third-party
 distribution obligations listed below.
 
 ## Source Publication
@@ -29,18 +29,21 @@ distribution obligations listed below.
    relinking materials, and other obligations.
 3. Stage a verified official Tor Expert Bundle as described in `BUILDING.md` and
    retain its bundled license documents.
-4. Run `scripts/build-release.ps1` from a clean tree. Publish only the canonical
+4. Use the pinned official PurpleI2P i2pd archive described in `BUILDING.md`,
+   verify its checksum, and retain the BSD-3-Clause notice.
+5. Run `scripts/build-release.ps1` from a clean tree. Publish only the canonical
    `Granger-Browser-<version>-windows-x64.zip` asset accepted by that script,
    together with its `.sha256` checksum. GitHub-generated source archives are
    not portable packages and may contain Git LFS pointer files.
-5. Review the generated package manifest and confirm that it contains no user
+6. Review the generated package manifest and confirm that it contains no user
    profile, credentials, bridge data, logs, crash dumps, or machine-specific
    paths.
-6. Keep security claims bounded: Granger Browser provides privacy controls and
+7. Keep security claims bounded: Granger Browser provides privacy controls and
    fingerprinting resistance, but does not promise anonymity.
 
 ## Release Record
 
 For each public release, record the Git commit and tag, MSVC and Qt versions,
 Qt WebEngine and Chromium versions, Tor bundle filename and checksum, Tor and
-pluggable-transport versions, package checksum, and acceptance result.
+pluggable-transport versions, i2pd version and checksum, package checksum, and
+acceptance result.
