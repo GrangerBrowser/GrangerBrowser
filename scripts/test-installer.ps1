@@ -173,10 +173,13 @@ $testId = 'acceptance'
 $resultInstall = Join-Path $testPath 'install.json'
 $oldData = $env:GRANGER_DATA_ROOT
 $oldSettings = $env:GRANGER_SETTINGS_ROOT
+$oldCache = $env:GRANGER_CACHE_ROOT
 $oldDownloads = $env:GRANGER_DOWNLOAD_ROOT
 $env:GRANGER_DATA_ROOT = Join-Path $testPath 'launched-browser/data'
 $env:GRANGER_SETTINGS_ROOT = Join-Path $testPath 'launched-browser/settings'
+$env:GRANGER_CACHE_ROOT = Join-Path $testPath 'launched-browser/cache'
 $env:GRANGER_DOWNLOAD_ROOT = Join-Path $testPath 'launched-browser/downloads'
+$i2pOutput = Join-Path $testPath 'managed-i2p.json'
 
 $results = [ordered]@{}
 try {
@@ -353,6 +356,25 @@ try {
     $results.Tor = $true
     $results.TorAttempts = $torAttempt
 
+    $i2pProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
+        -ArgumentList @('--smoke-i2p-runtime', "--smoke-output=$i2pOutput", '--smoke-timeout-ms=240000') `
+        -Wait -PassThru
+    $i2p = Get-Content -LiteralPath $i2pOutput -Raw | ConvertFrom-Json
+    if ($i2pProcess.ExitCode -ne 0 -or -not $i2p.ok `
+        -or -not $i2p.firstRouteVerified -or -not $i2p.secondRouteVerified `
+        -or -not $i2p.firstAddressBookReady -or -not $i2p.bootstrapContainsExpectedNames `
+        -or -not $i2p.humanReadableConnected -or -not $i2p.humanReadableHttpResponse `
+        -or -not $i2p.externalB32Connected -or -not $i2p.externalB32HttpResponse `
+        -or -not $i2p.unknownNameBlocked -or -not $i2p.headlessConfigured) {
+        throw "Installed browser managed I2P smoke failed."
+    }
+    $results.I2P = $true
+    $results.I2PAddressBook = $true
+    $results.I2PExternalB32 = $true
+    $results.I2PHeadless = $true
+    $results.I2PHumanReadable = $true
+    $results.I2PRecovery = $true
+
     $wrongManifest = Join-Path $serverRoot 'wrong-sha.json'
     $wrongObject = Get-Content $manifestPath -Raw | ConvertFrom-Json
     $wrongObject.sha256 = ('0' * 64)
@@ -440,6 +462,7 @@ try {
     }
     $env:GRANGER_DATA_ROOT = $oldData
     $env:GRANGER_SETTINGS_ROOT = $oldSettings
+    $env:GRANGER_CACHE_ROOT = $oldCache
     $env:GRANGER_DOWNLOAD_ROOT = $oldDownloads
     Stop-Job $server -ErrorAction SilentlyContinue
     Remove-Job $server -Force -ErrorAction SilentlyContinue
@@ -456,6 +479,7 @@ $report = [ordered]@{
     Package = $packagePath
     PackageSize = $packageSize
     PackageSHA256 = $packageHash.ToUpperInvariant()
+    I2P = $i2pOutput
     Results = $results
 }
 $reportPath = Join-Path $testPath 'installer-acceptance.json'
