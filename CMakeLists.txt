@@ -61,8 +61,18 @@ qt_add_executable(granger_browser
     granger/containers/ContainerManager.h
     granger/i18n/Localization.cpp
     granger/i18n/Localization.h
+    granger/i2p/I2pManager.cpp
+    granger/i2p/I2pManager.h
     granger/network/NetworkManager.cpp
     granger/network/NetworkManager.h
+    granger/network/PrivacyNetworkTypes.cpp
+    granger/network/PrivacyNetworkTypes.h
+    granger/network/PrivateRouteGateway.cpp
+    granger/network/PrivateRouteGateway.h
+    granger/network/PrivateRouteSmokeTests.cpp
+    granger/network/PrivateRouteSmokeTests.h
+    granger/network/PrivacyNetworkManager.cpp
+    granger/network/PrivacyNetworkManager.h
     granger/privacy/PrivacyTypes.cpp
     granger/privacy/PrivacyTypes.h
     granger/privacy/PrivacyConfigSerializer.cpp

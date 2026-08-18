@@ -28,6 +28,9 @@ public:
     bool hasActiveProxy() const;
     void setProxy(const QString &url, bool enabled, const QString &owner = QString());
 
+    QString preferredPrivacyNetwork() const;
+    void setPreferredPrivacyNetwork(const QString &network);
+
     QString torConnectionMode() const;
     void setTorConnectionMode(const QString &mode);
 

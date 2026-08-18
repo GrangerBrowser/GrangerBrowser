@@ -69,6 +69,7 @@
 #include <QWebEngineDownloadRequest>
 #include <QWebEngineCookieStore>
 #include <QWebEngineCertificateError>
+#include <QWebEngineLoadingInfo>
 #include <QWebEnginePage>
 #include <QWebEngineProfile>
 #include <QWebEngineSettings>
@@ -89,6 +90,7 @@
 #include "granger/core/AppPaths.h"
 #include "granger/core/EmergencyWipeManager.h"
 #include "granger/i18n/Localization.h"
+#include "granger/network/PrivacyNetworkManager.h"
 #include "granger/privacy/PrivacyConfigSerializer.h"
 #include "granger/security/HttpsFirstPolicy.h"
 #include "granger/tabs/TabManager.h"
@@ -742,6 +744,13 @@ bool supportedProxyScheme(const QString &proxy)
 
 void applyApplicationProxy(const QString &proxyText)
 {
+    if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        routes && routes->gatewayListening()) {
+        const QUrl gateway(routes->gatewayProxyUrl());
+        QNetworkProxy::setApplicationProxy(QNetworkProxy(
+            QNetworkProxy::Socks5Proxy, gateway.host(), quint16(gateway.port())));
+        return;
+    }
     const QUrl proxy(proxyText.trimmed());
     if (!supportedProxyScheme(proxyText)) {
         return;
@@ -758,6 +767,11 @@ void applyApplicationProxy(const QString &proxyText)
 
 void clearApplicationProxy()
 {
+    if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        routes && routes->gatewayListening()) {
+        applyApplicationProxy(routes->gatewayProxyUrl());
+        return;
+    }
     QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
 }
 
@@ -1314,7 +1328,25 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
     m_privacy.setDefaultUserAgent(m_defaultUserAgent);
     applyUserAgentProfile();
     m_browser.setHomeUrl(m_settings.homeUrl());
-    if (m_settings.hasActiveProxy()
+    if (qApp->property("granger.usePrivacyGateway").toBool()
+        && !qApp->property("granger.smokeMode").toBool()
+        && m_settings.torConnectionMode() == QStringLiteral("disabled")) {
+        // Older profiles could disable Tor and browse directly. The private-route
+        // gateway migration keeps those profiles fail-closed and restores Tor as
+        // the default managed backend.
+        m_settings.setTorConnectionMode(QStringLiteral("automatic"));
+    }
+    const QString startupProcessProxy =
+        qApp->property("granger.startupProcessProxy").toString().trimmed();
+    if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        routes && routes->gatewayListening()) {
+        m_processProxyUrl = routes->gatewayProxyUrl();
+        m_processProxyActive = true;
+    } else if (supportedProxyScheme(startupProcessProxy)) {
+        m_processProxyUrl = startupProcessProxy;
+        m_processProxyActive = true;
+        m_tor.setProxy(m_processProxyUrl);
+    } else if (m_settings.hasActiveProxy()
         && m_settings.proxyOwner() != QStringLiteral("managed-tor")
         && supportedProxyScheme(m_settings.proxyUrl())) {
         m_processProxyUrl = m_settings.proxyUrl();
@@ -1371,6 +1403,10 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
     setupDownloads();
     setupCookies();
     applyRuntimePrivacySettings();
+    if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        routes && qApp->property("granger.usePrivacyGateway").toBool()) {
+        routes->start(m_settings.preferredPrivacyNetwork());
+    }
     startSavedTorConnection();
 
     const QByteArray geometry = m_settings.windowGeometry();
@@ -1457,6 +1493,11 @@ MainWindow::~MainWindow()
 TorStatus MainWindow::torStatus() const
 {
     return m_tor.status();
+}
+
+bool MainWindow::killManagedTorForDiagnostics()
+{
+    return m_tor.killManagedTorForDiagnostics();
 }
 
 QString MainWindow::activeConnectionStrategy() const
@@ -2639,7 +2680,22 @@ void MainWindow::wireSignals()
     connect(m_navigation, &NavigationBar::newTabRequested, this, [this] {
         openNewTab();
     });
+    if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance()) {
+        connect(routes, &PrivacyNetworkManager::statusChanged, this,
+                 [this](const PrivacyRouteStatus &status) {
+            handlePrivacyRouteStatus(status);
+        });
+        connect(routes, &PrivacyNetworkManager::torVerificationRequested,
+                this, &MainWindow::verifyBrowserRoute);
+        connect(routes, &PrivacyNetworkManager::torRouteFailureDetected,
+                this, [this](const QString &reason) {
+            m_tor.setBrowserRouteFailed(reason);
+        });
+    }
     connect(&m_tor, &TorManager::statusChanged, this, [this](const TorStatus &status) {
+        if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance()) {
+            routes->updateTorStatus(status);
+        }
         if (status.bridgeState == QStringLiteral("Applying")
             || status.bridgeState == QStringLiteral("Saved")
             || status.bridgeState == QStringLiteral("Connected")) {
@@ -2675,22 +2731,17 @@ void MainWindow::wireSignals()
             appendBrowserLog(QStringLiteral("Tor runtime failure diagnostic=%1").arg(path));
             m_lastTorFailureDiagnostic = status.bridgeError;
         }
-        const bool routeBecameVerified = !m_lastTorRouteVerified && status.routeVerified;
         const bool routeWasLost = m_lastTorRouteVerified && !status.routeVerified;
-        if (status.bootstrapProgress >= 100 && status.bridgeEnabled && !status.socksEndpoint.isEmpty()) {
+        if (status.bootstrapProgress >= 100 && status.bridgeEnabled
+            && status.socksVerified && !status.socksEndpoint.isEmpty()) {
             const QString proxy = QStringLiteral("socks5://%1").arg(status.socksEndpoint);
             if (m_settings.proxyUrl() != proxy || !m_settings.proxyEnabled()) {
                 m_settings.setProxy(proxy, true, QStringLiteral("managed-tor"));
             }
-            applyApplicationProxy(proxy);
-            m_processProxyUrl = proxy;
-            m_processProxyActive = true;
-            if (!status.routeVerified) {
+            const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+            if (!status.routeVerified && (!routes || !routes->gatewayListening())) {
                 verifyBrowserRoute(proxy);
             }
-        }
-        if (routeBecameVerified) {
-            reapplyRouteProfiles(true);
         }
         if (routeWasLost && m_privacy.settings().clearTorOnDisconnect) {
             clearTorSessionAfterDisconnect();
@@ -2934,7 +2985,7 @@ void MainWindow::trackDownload(QWebEngineDownloadRequest *download)
     item.state = downloadStateText(download->state(), download->isPaused());
     item.reason = download->interruptReasonString();
     item.interruptReason = int(download->interruptReason());
-    item.route = m_processProxyActive ? m_processProxyUrl : QStringLiteral("Direct");
+    item.route = currentRouteLabel();
     if (originTab && m_tabs) {
         item.spaceId = m_tabs->tabSpace(originTab);
         const SpaceDefinition space = m_containers.space(item.spaceId);
@@ -2995,7 +3046,7 @@ void MainWindow::addFailedDownload(const QString &url,
     item.liveRetryUrl = parsed.toString(QUrl::FullyEncoded);
     item.state = QStringLiteral("Failed");
     item.reason = reason.trimmed().isEmpty() ? QStringLiteral("download initialization failed") : reason.trimmed();
-    item.route = m_processProxyActive ? m_processProxyUrl : QStringLiteral("Direct");
+    item.route = currentRouteLabel();
     if (originTab && m_tabs) {
         item.spaceId = m_tabs->tabSpace(originTab);
         const SpaceDefinition space = m_containers.space(item.spaceId);
@@ -3729,8 +3780,7 @@ BrowserTab *MainWindow::openEmptyTab(const QString &title,
                                      bool startOnInternalProfile,
                                      const QString &containerId)
 {
-    const bool verifiedTorRoute = m_settings.torConnectionMode() != QStringLiteral("disabled")
-        && m_tor.status().routeVerified;
+    const bool verifiedTorRoute = privateRouteVerified();
     const PrivacyProfileKind initialProfile = startOnInternalProfile
         ? PrivacyProfileKind::Internal
         : (verifiedTorRoute ? PrivacyProfileKind::Tor
@@ -3813,8 +3863,7 @@ BrowserTab *MainWindow::createTab(bool privateTab,
         Q_UNUSED(type)
         PrivacyProfileKind popupProfile = tab->privacyProfileKind();
         if (popupProfile == PrivacyProfileKind::Internal) {
-            const bool verifiedTorRoute = m_settings.torConnectionMode() != QStringLiteral("disabled")
-                && m_tor.status().routeVerified;
+            const bool verifiedTorRoute = privateRouteVerified();
             popupProfile = verifiedTorRoute
                 ? PrivacyProfileKind::Tor
                 : (privateTab ? PrivacyProfileKind::Private : PrivacyProfileKind::Normal);
@@ -3878,19 +3927,29 @@ BrowserTab *MainWindow::createTab(bool privateTab,
             }
         }
 
-        const bool torModeSelected = m_settings.torConnectionMode() != QStringLiteral("disabled");
-        const bool verifiedTorRoute = torModeSelected && m_tor.status().routeVerified;
+        QString routeReason;
+        if (!destinationAllowedForNavigation(url, &routeReason)) {
+            const QPointer<BrowserTab> guardedTab(tab);
+            QMetaObject::invokeMethod(this, [this, guardedTab, url, routeReason] {
+                if (guardedTab) {
+                    showPrivateRouteBlockedPage(guardedTab, url.toString(QUrl::FullyEncoded),
+                                                routeReason, true);
+                }
+            }, Qt::QueuedConnection);
+            return false;
+        }
+        const bool verifiedTorRoute = privateRouteVerified();
         const PrivacyProfileKind targetProfile = m_privacy.profileForNavigation(
             url, verifiedTorRoute, tab->isPrivateTab());
         const bool profileTransition = targetProfile != tab->privacyProfileKind();
         bool policyTransition = false;
-        if (!profileTransition && (!torModeSelected || verifiedTorRoute)) {
+        if (!profileTransition) {
             const EffectivePrivacyPolicy currentPolicy = m_privacy.effectivePolicy(
                 tab->page()->url(), tab->privacyProfileKind());
             const EffectivePrivacyPolicy targetPolicy = m_privacy.effectivePolicy(url, targetProfile);
             policyTransition = pageSettingsDiffer(currentPolicy, targetPolicy);
         }
-        if ((torModeSelected && !verifiedTorRoute) || profileTransition || policyTransition) {
+        if (profileTransition || policyTransition) {
             const QPointer<BrowserTab> guardedTab(tab);
             QMetaObject::invokeMethod(this, [this, guardedTab, url] {
                 if (guardedTab) navigateTab(guardedTab, url.toString());
@@ -3940,8 +3999,7 @@ BrowserTab *MainWindow::createTab(bool privateTab,
             const QString securityStatus =
                 m_certificateErrors.contains(displayedUrl.host())
                 ? QStringLiteral("certificate-error")
-                : HttpsFirstPolicy::routeSecurityStatus(
-                      displayedUrl, m_tor.status().routeVerified);
+                : securityStatusForUrl(displayedUrl);
             m_navigation->setSecurityStatus(
                 securityStatus,
                 m_settings.showInsecureConnectionWarningEnabled());
@@ -4533,10 +4591,7 @@ void MainWindow::runPampAnalysis(BrowserTab *sourceTab)
     snapshot.privacyRestrictions = m_privacy.restrictions(target);
     snapshot.responseStatusCode = sourceTab->responseStatusCode();
     snapshot.torVerified = m_tor.status().routeVerified;
-    snapshot.route = snapshot.torVerified
-        ? QStringLiteral("Tor verified")
-        : (m_processProxyActive ? QStringLiteral("Configured browser proxy")
-                                : QStringLiteral("Direct"));
+    snapshot.route = currentRouteLabel();
     snapshot.isolated = sourceTab->isIsolatedTab();
     snapshot.container = sourceTab->containerName();
     const auto certificate = m_certificateErrors.constFind(target.host());
@@ -4702,10 +4757,17 @@ void MainWindow::finishPampAnalysis(const QString &jobId, const QJsonObject &pag
                          QStringLiteral("about:site-analysis?id=%1").arg(jobId));
     }
 
-    const bool torSelected = m_settings.torConnectionMode() != QStringLiteral("disabled");
-    if (torSelected && !job.snapshot.torVerified) {
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const bool usingPrivacyGateway = routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool();
+    const bool clearnetEnrichmentAllowed = usingPrivacyGateway
+        ? (routes->status().activeNetwork == PrivacyNetworkKind::Tor
+           && routes->status().torRouteVerified && routes->status().networkAllowed)
+        : (m_settings.torConnectionMode() == QStringLiteral("disabled")
+               || job.snapshot.torVerified || m_processProxyActive);
+    if (!clearnetEnrichmentAllowed) {
         job.snapshot.limitations.append(
-            QStringLiteral("DNS/RDAP enrichment was skipped because Tor mode was selected but the browser route was not verified; no direct fallback was attempted."));
+            QStringLiteral("DNS/RDAP enrichment was skipped because no verified private route with clearnet access was active; no direct fallback was attempted."));
         finalizePampAnalysis(jobId);
         return;
     }
@@ -4805,8 +4867,7 @@ QString MainWindow::savePampReport(const PampLiteReport &report, QString *error)
 void MainWindow::prepareTabPrivacyProfile(BrowserTab *tab, const QUrl &url)
 {
     if (!tab || !url.isValid()) return;
-    const bool verifiedTorRoute = m_settings.torConnectionMode() != QStringLiteral("disabled")
-        && m_tor.status().routeVerified;
+    const bool verifiedTorRoute = privateRouteVerified();
     const PrivacyProfileKind kind = m_privacy.profileForNavigation(url, verifiedTorRoute,
                                                                    tab->isPrivateTab());
     QWebEngineProfile *profile = nullptr;
@@ -4870,6 +4931,183 @@ void MainWindow::reapplyRouteProfiles(bool reloadExternalPages)
             tab->page()->prepareMainFrameNavigation(url);
             tab->loadUrl(url);
         }
+    }
+}
+
+bool MainWindow::privateRouteVerified() const
+{
+    if (const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool()) {
+        return routes->status().networkAllowed;
+    }
+    return m_tor.status().routeVerified;
+}
+
+bool MainWindow::privateRouteTransitioning() const
+{
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    if (!routes || !routes->gatewayListening()
+        || !qApp->property("granger.usePrivacyGateway").toBool()) {
+        return m_routeVerificationInProgress;
+    }
+    switch (routes->status().state) {
+    case PrivacyRouteState::StartingTor:
+    case PrivacyRouteState::VerifyingTor:
+    case PrivacyRouteState::StartingI2p:
+    case PrivacyRouteState::VerifyingI2p:
+    case PrivacyRouteState::SwitchingTorToI2p:
+    case PrivacyRouteState::SwitchingI2pToTor:
+        return true;
+    case PrivacyRouteState::Blocked:
+    case PrivacyRouteState::TorConnected:
+    case PrivacyRouteState::I2pConnected:
+    case PrivacyRouteState::NoPrivateRoute:
+    case PrivacyRouteState::Stopping:
+        return false;
+    }
+    return false;
+}
+
+bool MainWindow::destinationAllowedForNavigation(const QUrl &url, QString *reason) const
+{
+    if (const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool()) {
+        return routes->destinationAllowed(url, reason);
+    }
+    if (m_processProxyActive) return true;
+    if (qApp->property("granger.smokeMode").toBool()
+        && m_settings.torConnectionMode() == QStringLiteral("disabled")) {
+        return true;
+    }
+    if (reason) *reason = QStringLiteral("No verified private route");
+    return false;
+}
+
+QString MainWindow::currentRouteLabel() const
+{
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    if (routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool()) {
+        const PrivacyRouteStatus status = routes->status();
+        if (!status.networkAllowed) return QStringLiteral("Blocked");
+        return status.activeNetwork == PrivacyNetworkKind::I2p
+            ? QStringLiteral("I2P verified") : QStringLiteral("Tor verified");
+    }
+    return m_processProxyActive ? m_processProxyUrl : QStringLiteral("Direct");
+}
+
+QString MainWindow::securityStatusForUrl(const QUrl &url) const
+{
+    const QString scheme = url.scheme().toLower();
+    if (scheme != QStringLiteral("http") && scheme != QStringLiteral("https")) {
+        return QStringLiteral("not-applicable");
+    }
+
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    if (!routes || !routes->gatewayListening()
+        || !qApp->property("granger.usePrivacyGateway").toBool()) {
+        return HttpsFirstPolicy::routeSecurityStatus(url, m_tor.status().routeVerified);
+    }
+
+    const PrivacyRouteStatus status = routes->status();
+    QString reason;
+    if (!routes->destinationAllowed(url, &reason)) {
+        return QStringLiteral("route-blocked");
+    }
+    const QString host = url.host().toLower();
+    if (host.endsWith(QStringLiteral(".onion"))) {
+        return status.torRouteVerified
+            ? QStringLiteral("onion-over-tor") : QStringLiteral("onion-unverified");
+    }
+    if (host.endsWith(QStringLiteral(".i2p"))) {
+        return status.i2pRouteVerified
+            ? QStringLiteral("i2p-over-i2p") : QStringLiteral("i2p-unverified");
+    }
+    if (status.activeNetwork == PrivacyNetworkKind::Tor && status.torRouteVerified) {
+        return HttpsFirstPolicy::routeSecurityStatus(url, true);
+    }
+    if (status.activeNetwork == PrivacyNetworkKind::I2p
+        && status.i2pRouteVerified && status.i2pClearnetAvailable) {
+        return scheme == QStringLiteral("https")
+            ? QStringLiteral("https-over-i2p") : QStringLiteral("http-over-i2p");
+    }
+    return QStringLiteral("route-blocked");
+}
+
+void MainWindow::handlePrivacyRouteStatus(const PrivacyRouteStatus &status)
+{
+    const QString active = privacyNetworkId(status.activeNetwork);
+    updateRouteState(privacyRouteStateId(status.state),
+                     status.error.isEmpty() ? status.message : status.error);
+
+    if (!status.networkAllowed) {
+        m_lastActivePrivacyNetwork.clear();
+        if (m_tabs) {
+            const bool switching = privateRouteTransitioning();
+            for (QWidget *widget : m_tabs->pages()) {
+                auto *tab = qobject_cast<BrowserTab *>(widget);
+                if (!tab || isInternalAddress(tab->displayAddress())) continue;
+                const QUrl url(tab->displayAddress());
+                if (!url.isValid() || (url.scheme() != QStringLiteral("http")
+                    && url.scheme() != QStringLiteral("https"))) continue;
+                if (tab->property("granger.pendingPrivateRouteUrl").toString().isEmpty()) {
+                    tab->setProperty("granger.pendingPrivateRouteUrl",
+                                     url.toString(QUrl::FullyEncoded));
+                    tab->stop();
+                    showPrivateRouteBlockedPage(tab, url.toString(QUrl::FullyEncoded),
+                                                status.error.isEmpty() ? status.message : status.error,
+                                                switching);
+                }
+            }
+        }
+    } else {
+        const bool routeChanged = active != m_lastActivePrivacyNetwork;
+        m_lastActivePrivacyNetwork = active;
+        if (routeChanged) reapplyRouteProfiles(false);
+        resumePrivateRouteTabs();
+    }
+    refreshConnectionPageIfVisible();
+}
+
+void MainWindow::showPrivateRouteBlockedPage(BrowserTab *tab,
+                                             const QString &address,
+                                             const QString &reason,
+                                             bool switching)
+{
+    if (!tab) return;
+    tab->setProperty("granger.pendingPrivateRouteUrl", address);
+    tab->showErrorPageForAddress(
+        address,
+        Localization::text(switching
+            ? QStringLiteral("network.private_switching_title")
+            : QStringLiteral("network.private_blocked_title")),
+        Localization::text(switching
+            ? QStringLiteral("network.private_switching_summary")
+            : QStringLiteral("network.private_blocked_summary")),
+        reason.trimmed().isEmpty()
+            ? Localization::text(QStringLiteral("network.private_blocked_detail"))
+            : reason.trimmed(),
+        QStringLiteral("https://granger.local/__action/settings/category?id=connection"),
+        Localization::text(QStringLiteral("network.open_connection_settings")));
+}
+
+void MainWindow::resumePrivateRouteTabs()
+{
+    if (!m_tabs) return;
+    for (QWidget *widget : m_tabs->pages()) {
+        auto *tab = qobject_cast<BrowserTab *>(widget);
+        if (!tab) continue;
+        const QString pending = tab->property("granger.pendingPrivateRouteUrl").toString();
+        if (pending.isEmpty()) continue;
+        QString reason;
+        if (!destinationAllowedForNavigation(QUrl(pending), &reason)) {
+            showPrivateRouteBlockedPage(tab, pending, reason, false);
+            continue;
+        }
+        tab->setProperty("granger.pendingPrivateRouteUrl", QVariant());
+        navigateTab(tab, pending);
     }
 }
 
@@ -5062,10 +5300,24 @@ void MainWindow::showHttpsFirstWarning(BrowserTab *tab,
                             Localization::text(QStringLiteral("https_first.always_allow")).toHtmlEscaped());
     }
     actions += QStringLiteral("</div>");
-    const bool torRoute = m_tor.status().routeVerified;
-    const QString routeNote = torRoute
-        ? Localization::text(QStringLiteral("https_first.tor_http_note"))
-        : Localization::text(QStringLiteral("https_first.direct_http_note"));
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const bool usingPrivacyGateway = routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool();
+    QString routeNote;
+    if (usingPrivacyGateway) {
+        const PrivacyRouteStatus status = routes->status();
+        if (status.activeNetwork == PrivacyNetworkKind::Tor && status.torRouteVerified) {
+            routeNote = Localization::text(QStringLiteral("https_first.tor_http_note"));
+        } else if (status.activeNetwork == PrivacyNetworkKind::I2p && status.i2pRouteVerified) {
+            routeNote = Localization::text(QStringLiteral("https_first.i2p_http_note"));
+        } else {
+            routeNote = Localization::text(QStringLiteral("https_first.private_route_blocked_note"));
+        }
+    } else {
+        routeNote = m_tor.status().routeVerified
+            ? Localization::text(QStringLiteral("https_first.tor_http_note"))
+            : Localization::text(QStringLiteral("https_first.direct_http_note"));
+    }
     QString details;
     if (!category.trimmed().isEmpty()) details += category;
     if (!reason.trimmed().isEmpty()) {
@@ -5122,6 +5374,7 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
     }
     const AddressResolution resolution = m_search.resolveInput(clean, QString());
     if (resolution.kind == AddressInputKind::Internal) {
+        tab->setProperty("granger.pendingPrivateRouteUrl", QVariant());
         const QString internalAddress = resolution.url.toString(QUrl::FullyEncoded);
         const QString singletonKey = internalSingletonKey(internalAddress);
         if (!singletonKey.isEmpty()
@@ -5143,23 +5396,6 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
         return replacement != nullptr;
     };
 
-    const bool torModeSelected = m_settings.torConnectionMode() != QStringLiteral("disabled");
-    const TorStatus torStatus = m_tor.status();
-    if (torModeSelected && !torStatus.routeVerified) {
-        tab->showErrorPageForAddress(clean,
-                                     QStringLiteral("Tor route is not applied"),
-                                     QStringLiteral("Tor mode is selected, but Qt WebEngine has not verified a Tor browser route."),
-                                     QStringLiteral("Granger Browser blocked this request to avoid silent Direct fallback. Apply a Tor strategy and wait for browser route verification."),
-                                     QStringLiteral("https://granger.local/__action/open?page=about:bridges"),
-                                     QStringLiteral("Open Connection"));
-        return;
-    }
-
-    if (resolution.kind == AddressInputKind::Onion && !webEngineProxyActive()) {
-        loadOnionProxyError(tab, clean);
-        return;
-    }
-
     if (resolution.kind == AddressInputKind::Search) {
         const QString searchEngine = m_settings.defaultSearchEngine();
         QUrl url = m_search.buildSearchUrl(searchEngine, resolution.query);
@@ -5171,6 +5407,13 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
             return;
         }
         url = applyHttpsFirstPolicy(tab, url);
+        QString routeReason;
+        if (!destinationAllowedForNavigation(url, &routeReason)) {
+            showPrivateRouteBlockedPage(tab, url.toString(QUrl::FullyEncoded), routeReason,
+                                        privateRouteTransitioning());
+            return;
+        }
+        tab->setProperty("granger.pendingPrivateRouteUrl", QVariant());
         if (openAssignedContainer(url)) return;
         ++m_externalSearchNavigationCount;
         prepareTabPrivacyProfile(tab, url);
@@ -5188,6 +5431,14 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
     }
 
     url = applyHttpsFirstPolicy(tab, url);
+
+    QString routeReason;
+    if (!destinationAllowedForNavigation(url, &routeReason)) {
+        showPrivateRouteBlockedPage(tab, url.toString(QUrl::FullyEncoded), routeReason,
+                                    privateRouteTransitioning());
+        return;
+    }
+    tab->setProperty("granger.pendingPrivateRouteUrl", QVariant());
 
     if (openAssignedContainer(url)) return;
 
@@ -5213,7 +5464,7 @@ void MainWindow::loadInternalPage(BrowserTab *tab,
     if (page == QStringLiteral("about:privacy")) {
         internalKind = tab->privacyProfileKind();
         if (internalKind == PrivacyProfileKind::Internal) {
-            internalKind = m_tor.status().routeVerified
+            internalKind = privateRouteVerified()
                 ? PrivacyProfileKind::Tor
                 : (tab->isPrivateTab() ? PrivacyProfileKind::Private : PrivacyProfileKind::Normal);
         }
@@ -5821,6 +6072,24 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         return;
     }
 
+    if ((host == QStringLiteral("settings") && path == QStringLiteral("/privacy-network"))
+        || path == QStringLiteral("/settings/privacy-network")) {
+        const QString requested = query.queryItemValue(QStringLiteral("network")).trimmed().toLower();
+        if (requested != QStringLiteral("tor") && requested != QStringLiteral("i2p")) {
+            loadInternalPage(tab, QStringLiteral("about:settings?category=connection"), QString(),
+                             Localization::text(QStringLiteral("network.invalid_preference")));
+            return;
+        }
+        m_settings.setPreferredPrivacyNetwork(requested);
+        if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+            routes && routes->gatewayListening()) {
+            routes->setPreferredNetwork(requested);
+        }
+        loadInternalPage(tab, QStringLiteral("about:settings?category=connection"), QString(),
+                         Localization::text(QStringLiteral("network.preference_saved")));
+        return;
+    }
+
     if ((host == QStringLiteral("settings") && path == QStringLiteral("/logs"))
         || path == QStringLiteral("/settings/logs")) {
         m_settings.setLocalLogOptions(
@@ -6227,6 +6496,17 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
 
     if ((host == QStringLiteral("settings") && path == QStringLiteral("/proxy"))
         || path == QStringLiteral("/settings/proxy")) {
+        if (const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+            routes && routes->gatewayListening()
+            && qApp->property("granger.usePrivacyGateway").toBool()) {
+            updateRouteState(QStringLiteral("Blocked"),
+                             QStringLiteral("Only the managed Tor/I2P private-route gateway is available."));
+            loadInternalPage(tab,
+                             QStringLiteral("about:settings?category=connection"),
+                             QString(),
+                             QStringLiteral("Manual and Direct proxy modes are disabled by the fail-closed private-route policy."));
+            return;
+        }
         const QString proxy = decodedQueryItem(query, QStringLiteral("url")).trimmed();
         const bool enabled = query.hasQueryItem(QStringLiteral("enabled")) && !proxy.isEmpty();
         if (enabled && !supportedProxyScheme(proxy)) {
@@ -7309,20 +7589,12 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
 
     if ((host == QStringLiteral("route") && path == QStringLiteral("/direct"))
         || path == QStringLiteral("/route/direct")) {
-        m_settings.setProxy(QString(), false);
-        m_tor.setProxy(QString());
-        clearApplicationProxy();
-        m_processProxyUrl.clear();
-        m_processProxyActive = false;
-        m_settings.setTorConnectionMode(QStringLiteral("disabled"));
-        updateRouteState(m_processProxyActive ? QStringLiteral("Applying") : QStringLiteral("Active"),
-                         m_processProxyActive ? QStringLiteral("Direct mode will become active after restart.") : QString());
+        updateRouteState(QStringLiteral("Blocked"),
+                         QStringLiteral("Direct browsing is unavailable. Select Tor or I2P."));
         loadInternalPage(tab,
                          QStringLiteral("about:settings"),
                          QString(),
-                         m_processProxyActive
-                             ? QStringLiteral("Direct route saved. Restart Granger Browser to remove the current WebEngine proxy.")
-                             : QStringLiteral("Direct route is active."));
+                         QStringLiteral("Direct browsing is disabled by the private-route policy."));
         return;
     }
 
@@ -7341,10 +7613,11 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         }
         m_settings.setProxy(proxy, true, QStringLiteral("managed-tor"));
         m_tor.setProxy(proxy);
-        applyApplicationProxy(proxy);
-        m_processProxyUrl = proxy;
-        m_processProxyActive = true;
-        verifyBrowserRoute(proxy);
+        m_tor.setSocksRouteVerified(proxy);
+        const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        if (!routes || !routes->gatewayListening()) {
+            verifyBrowserRoute(proxy);
+        }
         updateRouteState(QStringLiteral("Verifying browser route"), QStringLiteral("Checking Tor route through Qt WebEngine."));
         loadInternalPage(tab,
                          QStringLiteral("about:settings"),
@@ -7454,8 +7727,7 @@ void MainWindow::syncAddressBar()
         const QString securityStatus =
             m_certificateErrors.contains(displayedUrl.host())
             ? QStringLiteral("certificate-error")
-            : HttpsFirstPolicy::routeSecurityStatus(
-                  displayedUrl, m_tor.status().routeVerified);
+            : securityStatusForUrl(displayedUrl);
         m_navigation->setSecurityStatus(
             securityStatus,
             m_settings.showInsecureConnectionWarningEnabled());
@@ -7749,6 +8021,23 @@ InternalPageContext MainWindow::pageContext(const QString &message,
 {
     const SearchModuleStatus search = m_search.status();
     const TorStatus tor = m_tor.status();
+    PrivacyRouteStatus privateRoute;
+    I2pStatus i2p;
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const bool usingPrivacyGateway = routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool();
+    if (usingPrivacyGateway) {
+        privateRoute = routes->status();
+        i2p = routes->i2pStatus();
+    } else {
+        privateRoute.preferredNetwork = PrivacyNetworkKind::Tor;
+        privateRoute.activeNetwork = tor.routeVerified
+            ? PrivacyNetworkKind::Tor : PrivacyNetworkKind::None;
+        privateRoute.state = tor.routeVerified
+            ? PrivacyRouteState::TorConnected : PrivacyRouteState::Blocked;
+        privateRoute.networkAllowed = tor.routeVerified;
+        privateRoute.torRouteVerified = tor.routeVerified;
+    }
     if (m_networkEnvironment.capturedAt.isEmpty()
         || page == QStringLiteral("about:network")
         || (page == QStringLiteral("about:settings")
@@ -7759,22 +8048,42 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     InternalPageContext context;
     context.homeUrl = m_settings.homeUrl();
     context.proxyUrl = m_settings.proxyUrl();
-    context.proxyEnabled = m_settings.hasActiveProxy();
-    if (m_processProxyActive) {
+    context.proxyEnabled = usingPrivacyGateway || m_settings.hasActiveProxy();
+    if (usingPrivacyGateway) {
+        context.proxyState = privateRoute.gatewayListening
+            ? QStringLiteral("fail-closed gateway: %1").arg(privateRoute.gatewayProxyUrl)
+            : QStringLiteral("private route gateway unavailable");
+    } else if (m_processProxyActive) {
         context.proxyState = QStringLiteral("active: %1").arg(m_processProxyUrl);
     } else if (context.proxyEnabled) {
         context.proxyState = QStringLiteral("saved, restart required: %1").arg(m_settings.proxyUrl());
     } else {
         context.proxyState = QStringLiteral("disabled");
     }
-    context.routeState = m_routeState.isEmpty()
-        ? (m_processProxyActive ? QStringLiteral("Active") : QStringLiteral("Disabled"))
-        : m_routeState;
-    context.routeError = m_routeError;
-    context.proxyRestartState = QStringLiteral("Qt WebEngine proxy is applied at application startup; runtime route changes are saved and become active after restart.");
-    context.networkMode = tor.routeVerified ? QStringLiteral("tor") : (m_processProxyActive ? QStringLiteral("proxy") : QStringLiteral("direct"));
-    context.currentRoute = tor.routeVerified ? QStringLiteral("Tor verified route") : (m_processProxyActive ? QStringLiteral("proxy route") : QStringLiteral("direct route"));
-    context.currentIp = tor.outboundIp;
+    context.routeState = usingPrivacyGateway
+        ? privacyRouteStateId(privateRoute.state)
+        : (m_routeState.isEmpty()
+               ? (m_processProxyActive ? QStringLiteral("Active") : QStringLiteral("Blocked"))
+               : m_routeState);
+    context.routeError = usingPrivacyGateway ? privateRoute.error : m_routeError;
+    context.proxyRestartState = usingPrivacyGateway
+        ? QStringLiteral("Qt WebEngine remains pinned to the local fail-closed gateway; backend switches close existing gateway sessions before traffic resumes.")
+        : QStringLiteral("Qt WebEngine proxy is applied at application startup.");
+    context.preferredPrivacyNetwork = privacyNetworkId(privateRoute.preferredNetwork);
+    context.activePrivacyNetwork = privacyNetworkId(privateRoute.activeNetwork);
+    context.privacyRouteStatus = privacyRouteStateId(privateRoute.state);
+    context.privacyNetworkAllowed = privateRoute.networkAllowed;
+    context.networkMode = privateRoute.networkAllowed
+        ? context.activePrivacyNetwork : QStringLiteral("blocked");
+    context.currentRoute = privateRoute.networkAllowed
+        ? QStringLiteral("%1 • CONNECTED").arg(context.activePrivacyNetwork.toUpper())
+        : (privateRoute.state == PrivacyRouteState::SwitchingTorToI2p
+               ? QStringLiteral("TOR • LOST — Switching to I2P")
+               : (privateRoute.state == PrivacyRouteState::SwitchingI2pToTor
+                      ? QStringLiteral("I2P • LOST — Switching to Tor")
+                      : QStringLiteral("NO PRIVATE ROUTE • NETWORK BLOCKED")));
+    context.currentIp = privateRoute.activeNetwork == PrivacyNetworkKind::Tor
+        ? tor.outboundIp : QString();
     context.torState = tor.routeVerified
         ? QStringLiteral("Connected")
         : ((tor.bridgeState == QStringLiteral("Applying")
@@ -7782,7 +8091,15 @@ InternalPageContext MainWindow::pageContext(const QString &message,
             || tor.bridgeState.startsWith(QStringLiteral("Bootstrapping"))
             || tor.bridgeState == QStringLiteral("Failed"))
                ? tor.bridgeState
-               : (m_processProxyActive ? QStringLiteral("configured by proxy") : QStringLiteral("not configured")));
+               : (!usingPrivacyGateway && m_processProxyActive
+                      ? QStringLiteral("configured by proxy") : QStringLiteral("not configured")));
+    context.i2pState = i2p.state.isEmpty() ? QStringLiteral("Stopped") : i2p.state;
+    context.i2pMessage = i2p.message;
+    context.i2pError = i2p.error;
+    context.i2pExecutable = i2p.executablePath;
+    context.i2pProxyEndpoint = i2p.socksEndpoint;
+    context.i2pProbeDestination = i2p.probeDestination;
+    context.i2pClearnetAvailable = privateRoute.i2pClearnetAvailable;
     const bool torModeConfigured = m_settings.torConnectionMode() != QStringLiteral("disabled");
     if (tor.routeVerified) {
         context.bridgeState = QStringLiteral("Connected");
@@ -7971,13 +8288,16 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     context.homeSearchEngineIconDataUrl = embeddedImageDataUrl(defaultSearchEngine.iconPath,
                                                                QByteArrayLiteral("image/png"));
     const RouteUiPresentation routeUi = ConnectionUiState::route({
+        context.activePrivacyNetwork,
+        context.preferredPrivacyNetwork,
+        privateRoute.networkAllowed,
         tor.routeVerified,
-        m_routeVerificationInProgress,
+        m_routeVerificationInProgress || privateRoute.state == PrivacyRouteState::VerifyingI2p,
         m_processProxyActive,
         torModeConfigured,
-        m_routeState,
+        usingPrivacyGateway ? context.privacyRouteStatus : m_routeState,
         context.bridgeState,
-        m_routeError
+        usingPrivacyGateway ? context.routeError : m_routeError
     });
     const QString routeMode = Localization::text(QStringLiteral("route.kind.%1").arg(routeUi.routeKind));
     const QString routeState = Localization::text(routeUi.statusKey);
@@ -7990,7 +8310,8 @@ InternalPageContext MainWindow::pageContext(const QString &message,
         QStringLiteral("%1: %2").arg(Localization::text(QStringLiteral("route.tooltip.route")), routeMode),
         QStringLiteral("%1: %2").arg(Localization::text(QStringLiteral("route.tooltip.status")), routeState)
     };
-    if (tor.routeVerified && !tor.outboundIp.trimmed().isEmpty()) {
+    if (privateRoute.activeNetwork == PrivacyNetworkKind::Tor
+        && tor.routeVerified && !tor.outboundIp.trimmed().isEmpty()) {
         routeTooltip.append(QStringLiteral("%1: %2")
                                 .arg(Localization::text(QStringLiteral("route.tooltip.exit_ip")),
                                      tor.outboundIp.trimmed()));
@@ -8020,7 +8341,7 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     context.timezoneMode = m_settings.timezoneMode();
     context.hardwareExposureMode = m_settings.hardwareExposureMode();
     const FingerprintPolicyMatrix settingsFingerprint = m_privacy.fingerprintPolicy(
-        tor.routeVerified ? PrivacyProfileKind::Tor : PrivacyProfileKind::Normal);
+        privateRoute.networkAllowed ? PrivacyProfileKind::Tor : PrivacyProfileKind::Normal);
     context.fingerprintEffectiveWebGlMode = settingsFingerprint.webGlMode;
     context.fingerprintEffectiveCanvasMode = settingsFingerprint.canvasMode;
     context.fingerprintEffectiveAudioMode = settingsFingerprint.audioMode;
@@ -9503,8 +9824,31 @@ void MainWindow::showSiteInfoPopup()
             ? QStringLiteral("%1 (%2)").arg(QString::fromLatin1(key)).arg(type)
             : QString::number(type);
     };
+    PrivacyRouteStatus routeStatus;
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const bool failClosedGateway = routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool();
+    if (failClosedGateway) {
+        routeStatus = routes->status();
+    } else if (m_tor.status().routeVerified) {
+        routeStatus.activeNetwork = PrivacyNetworkKind::Tor;
+        routeStatus.networkAllowed = true;
+        routeStatus.torRouteVerified = true;
+    }
+    const QString destinationNetwork = host.endsWith(QStringLiteral(".onion"), Qt::CaseInsensitive)
+        ? QStringLiteral("tor")
+        : (host.endsWith(QStringLiteral(".i2p"), Qt::CaseInsensitive)
+               ? QStringLiteral("i2p") : privacyNetworkId(routeStatus.activeNetwork));
+    const bool destinationVerified = destinationNetwork == QStringLiteral("tor")
+        ? routeStatus.torRouteVerified
+        : (destinationNetwork == QStringLiteral("i2p") && routeStatus.i2pRouteVerified);
+    QString destinationReason;
+    const bool destinationAllowed = internal
+        || destinationAllowedForNavigation(url, &destinationReason);
     const SiteUiPresentation siteUi = ConnectionUiState::site({
-        url, internal, m_tor.status().routeVerified, m_processProxyActive, certificateError
+        url, privacyNetworkId(routeStatus.activeNetwork), destinationNetwork,
+        internal, destinationVerified, m_processProxyActive, certificateError,
+        destinationAllowed, failClosedGateway
     });
     QPointer<BrowserTab> guardedTab(tab);
     QPointer<QWidget> previousFocus(QApplication::focusWidget());
@@ -9516,7 +9860,9 @@ void MainWindow::showSiteInfoPopup()
     menu->setFixedWidth(DesignTokens::siteInfoPopupWidth);
     menu->setProperty("sitePageKind", internal ? QStringLiteral("internal")
                                                 : (host.endsWith(QStringLiteral(".onion"), Qt::CaseInsensitive)
-                                                       ? QStringLiteral("onion") : QStringLiteral("website")));
+                                                       ? QStringLiteral("onion")
+                                                       : (host.endsWith(QStringLiteral(".i2p"), Qt::CaseInsensitive)
+                                                              ? QStringLiteral("i2p") : QStringLiteral("website"))));
     menu->setProperty("siteConnectionState", siteUi.visualState);
     menu->setProperty("siteRouteState", siteUi.routeKey);
     menu->setProperty("siteCertificateError", certificateError);
@@ -10698,18 +11044,24 @@ QString MainWindow::privacyDiagnosticsHtml() const
         keyMode.replace(QLatin1Char('-'), QLatin1Char('_'));
         return Localization::text(QStringLiteral("fingerprint.mode.%1").arg(keyMode));
     };
-    const bool torModeSelected = m_settings.torConnectionMode() != QStringLiteral("disabled");
-    const QString route = tor.routeVerified
-        ? (m_activeConnectionStrategy.isEmpty() ? QStringLiteral("Tor") : m_activeConnectionStrategy)
-        : (torModeSelected
-               ? Localization::text(QStringLiteral("privacy.diagnostics.no_verified_route"))
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const bool usingPrivacyGateway = routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool();
+    const PrivacyRouteStatus privateRoute = routes ? routes->status() : PrivacyRouteStatus{};
+    const QString route = usingPrivacyGateway
+        ? (privateRoute.networkAllowed
+               ? currentRouteLabel()
+               : Localization::text(QStringLiteral("privacy.diagnostics.no_verified_route")))
+        : (tor.routeVerified
+               ? (m_activeConnectionStrategy.isEmpty() ? QStringLiteral("Tor")
+                                                       : m_activeConnectionStrategy)
                : (m_processProxyActive ? QStringLiteral("Proxy")
                                        : Localization::text(QStringLiteral("status.direct"))));
-    const QString routeVerified = tor.routeVerified
+    const QString routeVerified = (usingPrivacyGateway
+                                   ? privateRoute.networkAllowed : tor.routeVerified)
         ? Localization::text(QStringLiteral("privacy.status.protected"))
-        : (m_processProxyActive ? Localization::text(QStringLiteral("privacy.status.not_verifiable"))
-                                : Localization::text(QStringLiteral("privacy.status.not_verifiable")));
-    const QString fallback = m_privacy.settings().blockDirectFallback
+        : Localization::text(QStringLiteral("privacy.status.not_verifiable"));
+    const QString fallback = (usingPrivacyGateway || m_privacy.settings().blockDirectFallback)
         ? Localization::text(QStringLiteral("privacy.status.protected"))
         : Localization::text(QStringLiteral("privacy.status.exposed"));
     const QString isolation = kind == PrivacyProfileKind::Normal
@@ -10726,8 +11078,11 @@ QString MainWindow::privacyDiagnosticsHtml() const
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.direct_fallback")), fallback);
     const QString outboundIp = tor.outboundIp.trimmed();
     html += row(Localization::text(QStringLiteral("privacy.diagnostics.public_ip")),
-                outboundIp.isEmpty() || outboundIp.compare(QStringLiteral("unknown"), Qt::CaseInsensitive) == 0
-                    ? Localization::text(QStringLiteral("privacy.status.not_verifiable")) : outboundIp);
+                usingPrivacyGateway && privateRoute.activeNetwork == PrivacyNetworkKind::I2p
+                    ? Localization::text(QStringLiteral("site.encryption.not_applicable"))
+                    : (outboundIp.isEmpty() || outboundIp.compare(QStringLiteral("unknown"), Qt::CaseInsensitive) == 0
+                           ? Localization::text(QStringLiteral("privacy.status.not_verifiable"))
+                           : outboundIp));
     const QString profileId = privacyProfileId(kind);
     const QString profileKey = QStringLiteral("privacy.profile.%1").arg(profileId);
     const QString profileLabel = Localization::text(profileKey);
@@ -11040,7 +11395,7 @@ QString MainWindow::siteInfoHtml() const
     html += row(QStringLiteral("Certificate"), cert);
     html += row(Localization::text(QStringLiteral("https_first.status_label")),
                 Localization::text(QStringLiteral("https_first.status.%1").arg(
-                    HttpsFirstPolicy::routeSecurityStatus(url, m_tor.status().routeVerified))));
+                    securityStatusForUrl(url))));
     html += row(QStringLiteral("Privacy profile"), privacyProfileId(kind));
     if (tab && tab->isIsolatedTab()) {
         html += row(Localization::text(QStringLiteral("site.storage")),
@@ -11056,8 +11411,14 @@ QString MainWindow::siteInfoHtml() const
                         containerDisplayName(container));
         }
     }
-    html += row(QStringLiteral("Current network route"), m_processProxyActive ? m_processProxyUrl : QStringLiteral("Direct"));
-    html += row(QStringLiteral("Route state"), m_routeState.isEmpty() ? QStringLiteral("Disabled") : m_routeState);
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const PrivacyRouteStatus routeStatus = routes ? routes->status() : PrivacyRouteStatus{};
+    const bool usingPrivacyGateway = routes && routes->gatewayListening()
+        && qApp->property("granger.usePrivacyGateway").toBool();
+    html += row(QStringLiteral("Current network route"), currentRouteLabel());
+    html += row(QStringLiteral("Route state"), usingPrivacyGateway
+                    ? privacyRouteStateId(routeStatus.state)
+                    : (m_routeState.isEmpty() ? QStringLiteral("Disabled") : m_routeState));
     html += row(Localization::text(QStringLiteral("privacy.restricted_apis")),
                 restrictions.isEmpty() ? Localization::text(QStringLiteral("common.none"))
                                        : restrictions.join(QStringLiteral(", ")));
@@ -11405,6 +11766,7 @@ bool MainWindow::proxyEndpointReachable(const QString &proxy, QString *error) co
         return false;
     }
     QTcpSocket socket;
+    socket.setProxy(QNetworkProxy::NoProxy);
     socket.connectToHost(url.host(), url.port(url.scheme().startsWith(QStringLiteral("http")) ? 8080 : 9050));
     if (!socket.waitForConnected(1800)) {
         if (error) {
@@ -11516,12 +11878,13 @@ bool MainWindow::startPreparedConnection(const PreparedConnection &prepared, QSt
         m_tor.stopManagedTor();
         m_tor.setBridgeSaved(prepared.displayName);
         m_settings.setProxy(prepared.socksProxyUrl, true, QStringLiteral("managed-tor"));
-        applyApplicationProxy(prepared.socksProxyUrl);
-        m_processProxyUrl = prepared.socksProxyUrl;
-        m_processProxyActive = true;
+        m_tor.setSocksRouteVerified(prepared.socksProxyUrl);
         updateRouteState(QStringLiteral("Verifying browser route"),
                          QStringLiteral("External Tor SOCKS is reachable; verifying Qt WebEngine traffic."));
-        verifyBrowserRoute(prepared.socksProxyUrl);
+        const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+        if (!routes || !routes->gatewayListening()) {
+            verifyBrowserRoute(prepared.socksProxyUrl);
+        }
         return true;
     }
 
@@ -11530,9 +11893,6 @@ bool MainWindow::startPreparedConnection(const PreparedConnection &prepared, QSt
         return false;
     }
     m_settings.setProxy(prepared.socksProxyUrl, true, QStringLiteral("managed-tor"));
-    applyApplicationProxy(prepared.socksProxyUrl);
-    m_processProxyUrl = prepared.socksProxyUrl;
-    m_processProxyActive = true;
 
     const QString torrcPath = QDir(AppPaths::torDataRoot()).filePath(QStringLiteral("torrc"));
     const QUrl proxyUrl(prepared.socksProxyUrl);
@@ -11691,9 +12051,12 @@ void MainWindow::verifyBrowserRoute(const QString &proxy)
     if (proxy.trimmed().isEmpty()) {
         return;
     }
-    if (!m_processProxyActive || m_processProxyUrl != proxy) {
+    const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
+    const bool gatewayReady = routes && routes->gatewayListening();
+    if ((!gatewayReady && (!m_processProxyActive || m_processProxyUrl != proxy))
+        || (gatewayReady && !m_processProxyActive)) {
         updateRouteState(QStringLiteral("Applying"),
-                         QStringLiteral("Tor SOCKS is ready, but Qt WebEngine was not started with %1. Restart Granger Browser to verify the browser route.").arg(proxy));
+                         QStringLiteral("The private-route gateway is unavailable. Browser traffic remains blocked."));
         return;
     }
     if (m_routeVerificationInProgress && m_routeVerifierProxy == proxy) {
@@ -11708,6 +12071,17 @@ void MainWindow::verifyBrowserRoute(const QString &proxy)
     auto *timeout = new QTimer(page);
     timeout->setSingleShot(true);
     m_routeVerifierPage = page;
+    auto routeLoadError = std::make_shared<QString>();
+
+    connect(page, &QWebEnginePage::loadingChanged, page,
+            [routeLoadError](const QWebEngineLoadingInfo &info) {
+        if (info.status() != QWebEngineLoadingInfo::LoadFailedStatus) return;
+        *routeLoadError = QStringLiteral("%1 (domain %2, code %3, url %4)")
+                              .arg(info.errorString())
+                              .arg(int(info.errorDomain()))
+                              .arg(info.errorCode())
+                              .arg(info.url().toString(QUrl::FullyEncoded));
+    });
 
     auto finish = [this, page, timeout](bool ok, const QString &message, const QString &exitIp = QString()) {
         timeout->stop();
@@ -11730,9 +12104,12 @@ void MainWindow::verifyBrowserRoute(const QString &proxy)
         finish(false, QStringLiteral("Browser route verification timed out"));
     });
 
-    connect(page, &QWebEnginePage::loadFinished, page, [page, finish](bool ok) {
+    connect(page, &QWebEnginePage::loadFinished, page, [page, finish, routeLoadError](bool ok) {
         if (!ok) {
-            finish(false, QStringLiteral("Browser route verification failed: Qt WebEngine could not load the Tor check endpoint"));
+            finish(false,
+                   routeLoadError->isEmpty()
+                       ? QStringLiteral("Browser route verification failed: Qt WebEngine could not load the Tor check endpoint")
+                       : QStringLiteral("Browser route verification failed: %1").arg(*routeLoadError));
             return;
         }
         page->toPlainText([finish](const QString &text) {
@@ -11831,10 +12208,14 @@ void MainWindow::updateSettingsConnectionDomIfVisible()
             'settings-route': %1,
             'settings-tor-state': %2,
             'settings-bootstrap': %3,
-            'settings-tor-strategy': %4,
-            'settings-system-proxy': %5,
-            'settings-tunnel': %6,
-            'settings-local-proxy': %7
+             'settings-tor-strategy': %4,
+             'settings-system-proxy': %5,
+             'settings-tunnel': %6,
+             'settings-local-proxy': %7,
+             'settings-preferred-network': %8,
+             'settings-private-route-state': %9,
+             'settings-i2p-state': %10,
+             'settings-i2p-detail-state': %10
         };
         for (const [id, value] of Object.entries(values)) {
             const node = document.getElementById(id);
@@ -11845,10 +12226,13 @@ void MainWindow::updateSettingsConnectionDomIfVisible()
                                .arg(javascriptString(Localization::statusText(context.currentRoute)),
                                     javascriptString(Localization::statusText(context.torState)),
                                     javascriptString(Localization::statusText(context.bridgeBootstrap)),
-                                    javascriptString(context.torCurrentStrategy),
-                                    javascriptString(context.torSystemProxyStatus),
-                                    javascriptString(context.torTunnelStatus),
-                                    javascriptString(context.torLocalProxyStatus));
+                                     javascriptString(context.torCurrentStrategy),
+                                     javascriptString(context.torSystemProxyStatus),
+                                     javascriptString(context.torTunnelStatus),
+                                     javascriptString(context.torLocalProxyStatus),
+                                     javascriptString(context.preferredPrivacyNetwork.toUpper()),
+                                     javascriptString(Localization::statusText(context.privacyRouteStatus)),
+                                     javascriptString(Localization::statusText(context.i2pState)));
     tab->page()->runJavaScript(script);
 }
 

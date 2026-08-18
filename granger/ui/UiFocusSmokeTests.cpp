@@ -796,8 +796,8 @@ int runUiFocusSmoke(QApplication &app,
                            == QStringLiteral("https://granger.local/__action/search")
                        && homeLayout.value(QStringLiteral("inputName")).toString() == QStringLiteral("value")
                        && homeLayout.value(QStringLiteral("buttonMode")).toString() == QStringLiteral("web"));
-    results.record(QStringLiteral("direct start-page route is static and does not claim Tor connectivity"),
-                   homeLayout.value(QStringLiteral("routeState")).toString() == QStringLiteral("direct")
+    results.record(QStringLiteral("blocked start-page route is static and does not claim connectivity"),
+                   homeLayout.value(QStringLiteral("routeState")).toString() == QStringLiteral("blocked")
                        && homeLayout.value(QStringLiteral("dotAnimation")).toString() == QStringLiteral("none")
                        && homeLayout.value(QStringLiteral("ringAnimation")).toString() == QStringLiteral("none")
                        && !homeLayout.value(QStringLiteral("routeCopy")).toString()
@@ -2885,7 +2885,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 const controlColumns=[...panel.querySelectorAll('.setting-row .control')]
                     .filter(visible).map(element=>element.getBoundingClientRect().left);
                 const controls=[...panel.querySelectorAll(
-                    'input:not([type="checkbox"]):not(.ds-native-select),textarea,.ds-select-trigger')]
+                    'input:not([type="checkbox"]):not([type="radio"]):not(.ds-native-select),textarea,.ds-select-trigger')]
                     .filter(visible).map(element=>element.getBoundingClientRect());
                 const surfaceStyles=surfaces.map(element=>getComputedStyle(element));
                 const spread=values=>values.length<2?0:Math.max(...values)-Math.min(...values);

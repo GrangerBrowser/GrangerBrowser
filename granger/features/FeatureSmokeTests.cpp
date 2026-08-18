@@ -3648,7 +3648,7 @@ int runEmergencyWipeVerifySmoke(const QString &outputPath,
         SettingsManager settings;
         results.record(QStringLiteral("settings return to clean safe defaults"),
                        settings.language() == QStringLiteral("en")
-                           && settings.torConnectionMode() == QStringLiteral("disabled"),
+                           && settings.torConnectionMode() == QStringLiteral("automatic"),
                        QStringLiteral("language=%1; torMode=%2")
                            .arg(settings.language(), settings.torConnectionMode()));
     }

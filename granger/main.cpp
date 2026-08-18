@@ -88,6 +88,8 @@
 #include "granger/features/FeatureSmokeTests.h"
 #include "granger/containers/ContainerManager.h"
 #include "granger/i18n/Localization.h"
+#include "granger/network/PrivacyNetworkManager.h"
+#include "granger/network/PrivateRouteSmokeTests.h"
 #include "granger/privacy/PrivacyPolicyManager.h"
 #include "granger/privacy/PrivacySmokeTests.h"
 #include "granger/search/SearchManager.h"
@@ -429,9 +431,9 @@ void applyWebEngineProxyFromSettings()
     if (!enabled) {
         return;
     }
-    // Managed Tor is started and validated by MainWindow before its proxy is applied.
-    // Reusing the previous session's local SOCKS endpoint here breaks Direct browsing
-    // whenever Tor is not already listening.
+    // Managed Tor is started and validated by MainWindow. Reusing a previous
+    // session's stopped SOCKS endpoint here would bypass the private-route
+    // gateway's fail-closed startup sequence.
     if (owner == QStringLiteral("managed-tor")) {
         return;
     }
@@ -1782,6 +1784,7 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
     QElapsedTimer totalTimer;
     totalTimer.start();
     auto *settings = new granger::SettingsManager(&app);
+    settings->setTorConnectionMode(QStringLiteral("disabled"));
     const QString baselineConnectionMode = settings->torConnectionMode();
     auto *theme = new granger::ThemeManager(&app);
     theme->apply(app);
@@ -3370,6 +3373,384 @@ int runAutomaticConnectionSmoke(QApplication &app, const QString &outputPath, co
     return app.exec();
 }
 
+QJsonObject privateRouteStatusJson(const granger::PrivacyRouteStatus &status)
+{
+    return {
+        {QStringLiteral("preferredNetwork"), granger::privacyNetworkId(status.preferredNetwork)},
+        {QStringLiteral("activeNetwork"), granger::privacyNetworkId(status.activeNetwork)},
+        {QStringLiteral("state"), granger::privacyRouteStateId(status.state)},
+        {QStringLiteral("message"), status.message},
+        {QStringLiteral("error"), status.error},
+        {QStringLiteral("gatewayProxyUrl"), status.gatewayProxyUrl},
+        {QStringLiteral("gatewayListening"), status.gatewayListening},
+        {QStringLiteral("networkAllowed"), status.networkAllowed},
+        {QStringLiteral("torTransportReady"), status.torTransportReady},
+        {QStringLiteral("torRouteVerified"), status.torRouteVerified},
+        {QStringLiteral("i2pRouteVerified"), status.i2pRouteVerified},
+        {QStringLiteral("i2pClearnetAvailable"), status.i2pClearnetAvailable}
+    };
+}
+
+int runPrivateRouteLiveAcceptance(QApplication &app,
+                                  const QString &scenario,
+                                  const QString &outputPath,
+                                  int timeoutMs)
+{
+    const bool torLoss = scenario == QStringLiteral("tor-loss");
+    const bool i2pLoss = scenario == QStringLiteral("i2p-loss");
+    const bool bothLoss = scenario == QStringLiteral("both-loss");
+    if ((!torLoss && !i2pLoss && !bothLoss) || outputPath.trimmed().isEmpty()) return 2;
+
+    auto *routes = granger::PrivacyNetworkManager::instance();
+    if (!routes || !routes->gatewayListening()
+        || !app.property("granger.usePrivacyGateway").toBool()) {
+        QSaveFile file(outputPath);
+        QDir().mkpath(QFileInfo(outputPath).absolutePath());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            file.write(QJsonDocument(QJsonObject{
+                {QStringLiteral("ok"), false},
+                {QStringLiteral("reason"), QStringLiteral("Fail-closed privacy gateway is not active")},
+                {QStringLiteral("scenario"), scenario}
+            }).toJson(QJsonDocument::Indented));
+            file.commit();
+        }
+        return 2;
+    }
+
+    auto *settings = new granger::SettingsManager(&app);
+    const QString previousMode = settings->torConnectionMode();
+    const QString previousPreference = settings->preferredPrivacyNetwork();
+    settings->setTorConnectionMode(QStringLiteral("direct"));
+    settings->setPreferredPrivacyNetwork(i2pLoss ? QStringLiteral("i2p")
+                                                  : QStringLiteral("tor"));
+
+    auto *theme = new granger::ThemeManager();
+    theme->apply(app);
+    auto *window = new granger::MainWindow(*settings, *theme);
+    window->show();
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QJsonArray transitions;
+    QString phase = QStringLiteral("waiting-for-primary-and-secondary-runtime");
+    QString expectedLoadHost;
+    QString lastNavigationError;
+    qint64 killIssuedMs = -1;
+    qint64 blockedObservedMs = -1;
+    qint64 secondaryObservedMs = -1;
+    int gatewayConnectionsAtBlock = -1;
+    bool primaryLoadPassed = false;
+    bool killIssued = false;
+    bool killAccepted = false;
+    bool blockedAfterLoss = false;
+    bool secondaryVerifiedAfterBlock = false;
+    bool secondaryLoadPassed = false;
+    bool noPrivateRouteObserved = false;
+    bool blockedNavigationPassed = false;
+    bool contentCheckInProgress = false;
+    bool finished = false;
+
+    auto appendTransition = [&](const granger::PrivacyRouteStatus &status) {
+        QJsonObject transition = privateRouteStatusJson(status);
+        transition.insert(QStringLiteral("elapsedMs"), double(elapsed.elapsed()));
+        transition.insert(QStringLiteral("gatewayConnections"), routes->activeGatewayConnections());
+        transitions.append(transition);
+    };
+    appendTransition(routes->status());
+
+    auto writeReport = [&](bool final, bool ok, const QString &reason) {
+        const granger::PrivacyRouteStatus route = routes->status();
+        const granger::I2pStatus i2p = routes->i2pStatus();
+        const granger::TorStatus tor = window->torStatus();
+        QJsonObject report{
+            {QStringLiteral("ok"), ok},
+            {QStringLiteral("final"), final},
+            {QStringLiteral("scenario"), scenario},
+            {QStringLiteral("phase"), phase},
+            {QStringLiteral("reason"), reason},
+            {QStringLiteral("lastNavigationError"), lastNavigationError},
+            {QStringLiteral("processId"), double(QCoreApplication::applicationPid())},
+            {QStringLiteral("elapsedMs"), double(elapsed.elapsed())},
+            {QStringLiteral("route"), privateRouteStatusJson(route)},
+            {QStringLiteral("transitions"), transitions},
+            {QStringLiteral("primaryLoadPassed"), primaryLoadPassed},
+            {QStringLiteral("killIssued"), killIssued},
+            {QStringLiteral("killAccepted"), killAccepted},
+            {QStringLiteral("blockedAfterLoss"), blockedAfterLoss},
+            {QStringLiteral("secondaryVerifiedAfterBlock"), secondaryVerifiedAfterBlock},
+            {QStringLiteral("secondaryLoadPassed"), secondaryLoadPassed},
+            {QStringLiteral("noPrivateRouteObserved"), noPrivateRouteObserved},
+            {QStringLiteral("blockedNavigationPassed"), blockedNavigationPassed},
+            {QStringLiteral("killIssuedMs"), double(killIssuedMs)},
+            {QStringLiteral("blockedObservedMs"), double(blockedObservedMs)},
+            {QStringLiteral("secondaryObservedMs"), double(secondaryObservedMs)},
+            {QStringLiteral("gatewayConnectionsAtBlock"), gatewayConnectionsAtBlock},
+            {QStringLiteral("gatewayConnectionsFinal"), routes->activeGatewayConnections()},
+            {QStringLiteral("tor"), QJsonObject{
+                {QStringLiteral("processRunning"), tor.torProcessRunning},
+                {QStringLiteral("transportReady"), tor.socksVerified},
+                {QStringLiteral("routeVerified"), tor.routeVerified},
+                {QStringLiteral("state"), tor.bridgeState},
+                {QStringLiteral("bootstrapProgress"), tor.bootstrapProgress},
+                {QStringLiteral("routeState"), tor.routeState},
+                {QStringLiteral("error"), tor.bridgeError}
+            }},
+            {QStringLiteral("i2p"), QJsonObject{
+                {QStringLiteral("processRunning"), i2p.processRunning},
+                {QStringLiteral("proxyListening"), i2p.proxyListening},
+                {QStringLiteral("routeVerified"), i2p.routeVerified},
+                {QStringLiteral("state"), i2p.state},
+                {QStringLiteral("bootstrapProgress"), i2p.bootstrapProgress},
+                {QStringLiteral("probeDestination"), i2p.probeDestination},
+                {QStringLiteral("message"), i2p.message},
+                {QStringLiteral("error"), i2p.error}
+            }}
+        };
+        QDir().mkpath(QFileInfo(outputPath).absolutePath());
+        QSaveFile file(outputPath);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            file.write(QJsonDocument(report).toJson(QJsonDocument::Indented));
+            file.commit();
+        }
+    };
+
+    QTimer poll;
+    poll.setInterval(250);
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QTimer navigationTimeout;
+    navigationTimeout.setSingleShot(true);
+    QMetaObject::Connection routeConnection;
+    QMetaObject::Connection loadConnection;
+    QMetaObject::Connection externalFailureConnection;
+
+    std::function<void(bool, const QString &)> finish;
+    std::function<void(bool)> startNavigation;
+    std::function<void()> issueKill;
+
+    finish = [&](bool ok, const QString &reason) {
+        if (finished) return;
+        finished = true;
+        phase = ok ? QStringLiteral("complete") : QStringLiteral("failed");
+        poll.stop();
+        timeout.stop();
+        navigationTimeout.stop();
+        writeReport(true, ok, reason);
+        QObject::disconnect(routeConnection);
+        QObject::disconnect(loadConnection);
+        QObject::disconnect(externalFailureConnection);
+        delete window;
+        delete theme;
+        settings->setTorConnectionMode(previousMode);
+        settings->setPreferredPrivacyNetwork(previousPreference);
+        app.exit(ok ? 0 : 1);
+    };
+
+    issueKill = [&] {
+        if (finished || killIssued) return;
+        phase = QStringLiteral("killing-active-private-runtime");
+        killIssued = true;
+        killIssuedMs = elapsed.elapsed();
+        if (torLoss) {
+            killAccepted = window->killManagedTorForDiagnostics();
+        } else if (i2pLoss) {
+            killAccepted = routes->killI2pForDiagnostics();
+        } else {
+            const bool i2pKilled = routes->killI2pForDiagnostics();
+            const bool torKilled = window->killManagedTorForDiagnostics();
+            killAccepted = i2pKilled && torKilled;
+        }
+        phase = QStringLiteral("waiting-for-fail-closed-transition");
+        writeReport(false, false, killAccepted
+            ? QStringLiteral("Runtime termination issued")
+            : QStringLiteral("Runtime termination was not accepted"));
+        if (!killAccepted) finish(false, QStringLiteral("Target privacy runtime was not running"));
+    };
+
+    startNavigation = [&](bool primary) {
+        if (finished) return;
+        QString target;
+        if ((primary && i2pLoss) || (!primary && torLoss)) {
+            const QString destination = routes->i2pStatus().probeDestination;
+            if (destination.isEmpty()) {
+                finish(false, QStringLiteral("Verified I2P route has no probe destination"));
+                return;
+            }
+            target = QStringLiteral("http://%1/").arg(destination);
+        } else {
+            target = QStringLiteral("https://check.torproject.org/api/ip");
+        }
+        expectedLoadHost = QUrl(target).host();
+        lastNavigationError.clear();
+        contentCheckInProgress = false;
+        phase = primary ? QStringLiteral("loading-primary-route")
+                        : QStringLiteral("loading-secondary-route");
+        writeReport(false, false, QStringLiteral("Navigation dispatched through verified route"));
+        window->openAddressForDiagnostics(target);
+        navigationTimeout.start(90000);
+    };
+
+    granger::BrowserTab *tab = window->currentTabForDiagnostics();
+    if (!tab) {
+        finish(false, QStringLiteral("No browser tab is available for live route acceptance"));
+        return app.exec();
+    }
+    loadConnection = QObject::connect(tab, &granger::BrowserTab::loadFinished,
+                                      &app, [&](bool ok) {
+        if (finished || (phase != QStringLiteral("loading-primary-route")
+                         && phase != QStringLiteral("loading-secondary-route"))) return;
+        const QString loadedHost = tab->lastRequestedUrl().host();
+        if (loadedHost.compare(expectedLoadHost, Qt::CaseInsensitive) != 0) return;
+        if (!ok) {
+            lastNavigationError = QStringLiteral("loadFinished=%1, HTTP %2")
+                                      .arg(ok ? QStringLiteral("true") : QStringLiteral("false"))
+                                      .arg(tab->responseStatusCode());
+            writeReport(false, false, QStringLiteral("Waiting for a completed route navigation"));
+            return;
+        }
+        if (contentCheckInProgress) return;
+        contentCheckInProgress = true;
+        const QString checkedPhase = phase;
+        const QString checkedHost = expectedLoadHost;
+        const bool expectI2pProbe = checkedHost.endsWith(QStringLiteral(".i2p"),
+                                                         Qt::CaseInsensitive);
+        tab->page()->toPlainText(
+            [&, checkedPhase, checkedHost, expectI2pProbe](const QString &text) {
+            contentCheckInProgress = false;
+            if (finished || phase != checkedPhase || expectedLoadHost != checkedHost) return;
+            bool contentVerified = false;
+            if (expectI2pProbe) {
+                contentVerified = text.contains(QStringLiteral("granger-i2p-route-probe:"));
+            } else {
+                const QJsonObject torCheck = QJsonDocument::fromJson(text.trimmed().toUtf8()).object();
+                contentVerified = torCheck.value(QStringLiteral("IsTor")).toBool(false);
+            }
+            if (!contentVerified) {
+                lastNavigationError = expectI2pProbe
+                    ? QStringLiteral("I2P probe marker was not present in the loaded page")
+                    : QStringLiteral("Tor check page did not report IsTor=true");
+                writeReport(false, false,
+                            QStringLiteral("Loaded page did not verify the expected private route"));
+                return;
+            }
+            navigationTimeout.stop();
+            if (phase == QStringLiteral("loading-primary-route")) {
+                primaryLoadPassed = true;
+                phase = QStringLiteral("primary-route-loaded");
+                writeReport(false, false, QStringLiteral("Primary route loaded successfully"));
+                QTimer::singleShot(250, &app, issueKill);
+            } else {
+                secondaryLoadPassed = true;
+                phase = QStringLiteral("observing-secondary-route");
+                writeReport(false, false,
+                            QStringLiteral("Secondary route loaded; observing browser sockets"));
+                QTimer::singleShot(1200, &app, [&] {
+                    finish(blockedAfterLoss && secondaryVerifiedAfterBlock,
+                           QStringLiteral("Secondary route loaded only after a blocked transition"));
+                });
+            }
+        });
+    });
+    externalFailureConnection = QObject::connect(
+        tab, &granger::BrowserTab::externalLoadFailed, &app,
+        [&](const QUrl &url, const QString &category, const QString &reason) {
+            if (url.host().compare(expectedLoadHost, Qt::CaseInsensitive) != 0) return;
+            lastNavigationError = QStringLiteral("%1: %2").arg(category, reason);
+            writeReport(false, false, QStringLiteral("Route navigation reported a recoverable failure"));
+        });
+
+    routeConnection = QObject::connect(routes, &granger::PrivacyNetworkManager::statusChanged,
+                                       &app, [&](const granger::PrivacyRouteStatus &status) {
+        appendTransition(status);
+        if (!killIssued || finished) {
+            writeReport(false, false, QStringLiteral("Waiting for private routes"));
+            return;
+        }
+        if (!status.networkAllowed && !blockedAfterLoss) {
+            blockedAfterLoss = true;
+            blockedObservedMs = elapsed.elapsed();
+            gatewayConnectionsAtBlock = routes->activeGatewayConnections();
+        }
+        if (bothLoss && blockedAfterLoss
+            && status.state == granger::PrivacyRouteState::NoPrivateRoute
+            && !status.networkAllowed && !noPrivateRouteObserved) {
+            noPrivateRouteObserved = true;
+            phase = QStringLiteral("validating-blocked-navigation");
+            window->openAddressForDiagnostics(QStringLiteral("https://example.com/"));
+            writeReport(false, false,
+                        QStringLiteral("Both runtimes lost; validating blocked clearnet navigation"));
+            QTimer::singleShot(2000, &app, [&] {
+                granger::BrowserTab *current = window->currentTabForDiagnostics();
+                const granger::PrivacyRouteStatus finalStatus = routes->status();
+                blockedNavigationPassed = current && current->hasInternalContent()
+                    && !finalStatus.networkAllowed
+                    && routes->activeGatewayConnections() == 0;
+                finish(blockedNavigationPassed, blockedNavigationPassed
+                    ? QStringLiteral("Both runtimes lost; clearnet remained blocked with no active tunnels")
+                    : QStringLiteral("Blocked navigation invariant failed after both runtimes were lost"));
+            });
+            return;
+        }
+        const bool expectedSecondary = torLoss
+            ? status.networkAllowed
+                && status.activeNetwork == granger::PrivacyNetworkKind::I2p
+                && status.i2pRouteVerified
+            : i2pLoss
+                && status.networkAllowed
+                && status.activeNetwork == granger::PrivacyNetworkKind::Tor
+                && status.torRouteVerified;
+        if (!bothLoss && blockedAfterLoss && expectedSecondary
+            && !secondaryVerifiedAfterBlock) {
+            secondaryVerifiedAfterBlock = true;
+            secondaryObservedMs = elapsed.elapsed();
+            phase = QStringLiteral("secondary-route-verified");
+            writeReport(false, false, QStringLiteral("Secondary route verified after network gate closed"));
+            QTimer::singleShot(300, &app, [&, primary = false] { startNavigation(primary); });
+            return;
+        }
+        writeReport(false, false, QStringLiteral("Waiting for failover result"));
+    });
+
+    QObject::connect(&poll, &QTimer::timeout, &app, [&] {
+        if (finished || phase != QStringLiteral("waiting-for-primary-and-secondary-runtime")) return;
+        const granger::PrivacyRouteStatus status = routes->status();
+        const granger::TorStatus tor = window->torStatus();
+        if (!killIssued && status.activeNetwork == granger::PrivacyNetworkKind::I2p
+            && tor.bridgeState == QStringLiteral("Failed")
+            && !tor.torProcessRunning
+            && !window->automaticConnectionActive()) {
+            finish(false, tor.bridgeError.isEmpty()
+                ? QStringLiteral("Tor was unavailable before the loss scenario could start")
+                : QStringLiteral("Tor was unavailable before the loss scenario could start: %1")
+                      .arg(tor.bridgeError));
+            return;
+        }
+        const bool ready = (torLoss || bothLoss)
+            ? status.networkAllowed
+                && status.activeNetwork == granger::PrivacyNetworkKind::Tor
+                && status.torRouteVerified
+                && status.i2pRouteVerified
+            : status.networkAllowed
+                && status.activeNetwork == granger::PrivacyNetworkKind::I2p
+                && status.i2pRouteVerified
+                && status.torTransportReady;
+        if (ready) startNavigation(true);
+    });
+    QObject::connect(&timeout, &QTimer::timeout, &app, [&] {
+        finish(false, QStringLiteral("Live private-route acceptance timed out in phase %1").arg(phase));
+    });
+    QObject::connect(&navigationTimeout, &QTimer::timeout, &app, [&] {
+        finish(false, lastNavigationError.isEmpty()
+            ? QStringLiteral("Route navigation timed out for %1").arg(expectedLoadHost)
+            : QStringLiteral("Route navigation timed out for %1: %2")
+                  .arg(expectedLoadHost, lastNavigationError));
+    });
+    poll.start();
+    timeout.start(qMax(60000, timeoutMs));
+    writeReport(false, false, QStringLiteral("Live acceptance started"));
+    return app.exec();
+}
+
 struct ExternalPrivacyAuditStage {
     QString id;
     QUrl url;
@@ -4238,7 +4619,13 @@ int runManagedModeSmoke(QApplication &app,
     settings->setExternalTorSocksUrl(QString());
     settings->setUpstreamProxy(upstreamProxyUrl, QString(), QString());
     settings->setTorConnectionMode(QStringLiteral("disabled"));
-    QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
+    const QString startupProcessProxy =
+        qApp->property("granger.startupProcessProxy").toString().trimmed();
+    if (startupProcessProxy.isEmpty()) {
+        QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
+    } else {
+        applyWebEngineProxy(startupProcessProxy);
+    }
 
     auto *theme = new granger::ThemeManager();
     theme->apply(app);
@@ -4712,9 +5099,9 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
         input = {};
         input.proxyActive = true;
         const granger::RouteUiPresentation proxy = granger::ConnectionUiState::route(input);
-        record(QStringLiteral("unverified proxy does not claim Tor connectivity"),
-               proxy.visualState == QStringLiteral("proxy")
-                   && proxy.routeKind == QStringLiteral("proxy") && !proxy.connectedPulse);
+        record(QStringLiteral("unverified proxy remains visibly blocked"),
+               proxy.visualState == QStringLiteral("blocked")
+                   && proxy.routeKind == QStringLiteral("private") && !proxy.connectedPulse);
 
         input = {};
         input.torConfigured = true;
@@ -4730,9 +5117,9 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
                    && !failed.connectedPulse && !failed.connectingMotion);
 
         input = {};
-        const granger::RouteUiPresentation direct = granger::ConnectionUiState::route(input);
-        record(QStringLiteral("default route state is direct and never connected"),
-               direct.visualState == QStringLiteral("direct") && !direct.connectedPulse);
+        const granger::RouteUiPresentation blocked = granger::ConnectionUiState::route(input);
+        record(QStringLiteral("missing private route defaults to blocked"),
+               blocked.visualState == QStringLiteral("blocked") && !blocked.connectedPulse);
     }
 
     {
@@ -4747,6 +5134,7 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
 
         input = {};
         input.url = QUrl(QStringLiteral("https://example.com/"));
+        input.activeNetwork = QStringLiteral("tor");
         input.routeVerified = true;
         const granger::SiteUiPresentation httpsTor = granger::ConnectionUiState::site(input);
         record(QStringLiteral("verified HTTPS site info distinguishes encryption from Tor routing"),
@@ -5573,16 +5961,31 @@ int main(int argc, char *argv[])
     const bool externalPrivacyAudit =
         hasStartupArgument(argc, argv, QStringLiteral("--smoke-external-privacy-audit"));
     const QString managedModeSmoke = startupArgumentValue(argc, argv, QStringLiteral("--smoke-managed-mode="));
-    if (smokeProxy.isEmpty()
-        && !automaticRouteSmoke
-        && !externalPrivacyAudit
-        && managedModeSmoke.isEmpty()) {
-        applyWebEngineProxyFromSettings();
-    } else {
-        applyWebEngineProxy(smokeProxy);
+    const QString privateRouteLiveAcceptance = startupArgumentValue(
+        argc, argv, QStringLiteral("--private-route-live-acceptance="));
+    const QString startupProcessProxy = !smokeProxy.isEmpty()
+        ? smokeProxy
+        : (!managedModeSmoke.isEmpty()
+               ? QStringLiteral("socks5://127.0.0.1:19050") : QString());
+    bool smokeMode = false;
+    for (int i = 1; i < argc; ++i) {
+        const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (argument.startsWith(QStringLiteral("--smoke-"))
+            || argument.startsWith(QStringLiteral("--ui-screenshot="))) {
+            smokeMode = true;
+            break;
+        }
+    }
+    const bool usePrivacyGateway = smokeProxy.isEmpty() && !smokeMode;
+    if (!startupProcessProxy.isEmpty()) {
+        applyWebEngineProxy(startupProcessProxy);
     }
 
     QApplication app(argc, argv);
+    if (!startupProcessProxy.isEmpty()) {
+        applyWebEngineProxy(startupProcessProxy);
+    }
+    app.setProperty("granger.startupProcessProxy", startupProcessProxy);
     configureBundledWebEngineRuntime();
     {
         granger::SettingsManager startupSettings;
@@ -5595,6 +5998,26 @@ int main(int argc, char *argv[])
                               layoutError + QStringLiteral("\n\n")
                                   + granger::Localization::text(QStringLiteral("app.start_permissions")));
         return 2;
+    }
+    granger::PrivacyNetworkManager privacyNetwork(&app);
+    granger::PrivacyNetworkManager::installInstance(&privacyNetwork);
+    app.setProperty("granger.usePrivacyGateway", usePrivacyGateway);
+    app.setProperty("granger.smokeMode", smokeMode);
+    if (usePrivacyGateway) {
+        QString gatewayError;
+        if (!privacyNetwork.initializeGateway(&gatewayError)) {
+            QMessageBox::critical(nullptr,
+                                  granger::Localization::text(QStringLiteral("app.start_error_title")),
+                                  QStringLiteral("Unable to start the fail-closed private route gateway: %1")
+                                      .arg(gatewayError));
+            return 6;
+        }
+        applyWebEngineProxy(privacyNetwork.gatewayProxyUrl());
+        appendChromiumFlag(QByteArrayLiteral("--proxy-bypass-list=<-loopback>"));
+        appendChromiumFlag(QByteArrayLiteral("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1"));
+        app.setProperty("granger.privacyGatewayProxy", privacyNetwork.gatewayProxyUrl());
+        QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                         &privacyNetwork, &granger::PrivacyNetworkManager::stop);
     }
     qInstallMessageHandler(startupMessageHandler);
     QStringList cleanupErrors;
@@ -5625,6 +6048,21 @@ int main(int argc, char *argv[])
         return granger::runBrandSmokeTests(
             app, smokeOutput.isEmpty()
                 ? QStringLiteral("output/branding-tests.json") : smokeOutput);
+    }
+    if (arguments.contains(QStringLiteral("--smoke-private-routes"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runPrivateRouteSmokeTests(
+            smokeOutput.isEmpty()
+                ? QStringLiteral("output/private-route-smoke.json") : smokeOutput);
+    }
+    if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        const int requestedTimeout = argumentValue(
+            arguments, QStringLiteral("--smoke-timeout-ms=")).toInt();
+        return granger::runI2pRuntimeSmokeTests(
+            smokeOutput.isEmpty()
+                ? QStringLiteral("output/i2p-runtime-smoke.json") : smokeOutput,
+            requestedTimeout > 0 ? requestedTimeout : 300000);
     }
     const QString uiScreenshot = argumentValue(arguments, QStringLiteral("--ui-screenshot="));
     if (!uiScreenshot.isEmpty()) {
@@ -5928,6 +6366,17 @@ int main(int argc, char *argv[])
         return granger::runEmergencyWipeVerifySmoke(
             smokeOutput.isEmpty() ? QStringLiteral("output/feature-wipe-verify.json") : smokeOutput,
             arguments.contains(QStringLiteral("--smoke-wipe-expect-download-deleted")));
+    }
+    if (!privateRouteLiveAcceptance.isEmpty()) {
+        const QString output = argumentValue(arguments, QStringLiteral("--acceptance-output="));
+        const int requestedTimeout = argumentValue(
+            arguments, QStringLiteral("--acceptance-timeout-ms=")).toInt();
+        return runPrivateRouteLiveAcceptance(
+            app,
+            privateRouteLiveAcceptance,
+            output.isEmpty()
+                ? QStringLiteral("output/private-route-live-acceptance.json") : output,
+            requestedTimeout > 0 ? requestedTimeout : 720000);
     }
 
     try {

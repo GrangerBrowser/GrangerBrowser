@@ -13,7 +13,16 @@ struct InternalPageContext {
     QString networkMode;
     QString currentRoute;
     QString currentIp;
+    QString preferredPrivacyNetwork;
+    QString activePrivacyNetwork;
+    QString privacyRouteStatus;
     QString torState;
+    QString i2pState;
+    QString i2pMessage;
+    QString i2pError;
+    QString i2pExecutable;
+    QString i2pProxyEndpoint;
+    QString i2pProbeDestination;
     QString bridgeState;
     QString bridgeBootstrap;
     QString bridgeError;
@@ -119,6 +128,8 @@ struct InternalPageContext {
     bool cookieDeleteConfirmation = false;
     bool reducedMotion = false;
     bool proxyEnabled = false;
+    bool privacyNetworkAllowed = false;
+    bool i2pClearnetAvailable = false;
     bool antiTelemetryEnabled = true;
     bool blockPopupsEnabled = true;
     bool blockThirdPartyCookiesEnabled = false;

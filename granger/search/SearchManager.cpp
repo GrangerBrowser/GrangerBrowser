@@ -132,9 +132,13 @@ AddressResolution SearchManager::resolveInput(const QString &input, const QStrin
     const QString scheme = explicitUrl.scheme().toLower();
     if (scheme == QStringLiteral("http") || scheme == QStringLiteral("https")) {
         if (explicitUrl.isValid() && !explicitUrl.host().isEmpty()) {
-            result.kind = explicitUrl.host().endsWith(QStringLiteral(".onion"), Qt::CaseInsensitive)
-                ? AddressInputKind::Onion
-                : AddressInputKind::DirectUrl;
+            if (explicitUrl.host().endsWith(QStringLiteral(".onion"), Qt::CaseInsensitive)) {
+                result.kind = AddressInputKind::Onion;
+            } else if (explicitUrl.host().endsWith(QStringLiteral(".i2p"), Qt::CaseInsensitive)) {
+                result.kind = AddressInputKind::I2p;
+            } else {
+                result.kind = AddressInputKind::DirectUrl;
+            }
             result.url = explicitUrl;
             return result;
         }
@@ -162,6 +166,15 @@ AddressResolution SearchManager::resolveInput(const QString &input, const QStrin
     const bool onion = firstLine.contains(onionAddress);
     if (onion) {
         result.kind = AddressInputKind::Onion;
+        result.url = QUrl(QStringLiteral("http://") + firstLine, QUrl::StrictMode);
+        return result;
+    }
+
+    static const QRegularExpression i2pAddress(
+        QStringLiteral(R"((^|\.)[a-z0-9-]{1,63}\.i2p(?=[:/]|$))"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (firstLine.contains(i2pAddress)) {
+        result.kind = AddressInputKind::I2p;
         result.url = QUrl(QStringLiteral("http://") + firstLine, QUrl::StrictMode);
         return result;
     }
@@ -202,6 +215,7 @@ QString SearchManager::inputKindName(AddressInputKind kind)
     case AddressInputKind::DirectUrl: return QStringLiteral("direct-url");
     case AddressInputKind::Host: return QStringLiteral("host");
     case AddressInputKind::Onion: return QStringLiteral("onion");
+    case AddressInputKind::I2p: return QStringLiteral("i2p");
     case AddressInputKind::Internal: return QStringLiteral("internal");
     case AddressInputKind::Search: return QStringLiteral("search");
     }

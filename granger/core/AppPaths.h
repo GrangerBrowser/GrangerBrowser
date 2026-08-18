@@ -12,6 +12,7 @@ public:
     static QString stateRoot();
     static QString logsRoot();
     static QString torDataRoot();
+    static QString i2pDataRoot();
     static QString containersRoot();
     static QString containerRoot(const QString &safeId);
     static QString containerStorageRoot();

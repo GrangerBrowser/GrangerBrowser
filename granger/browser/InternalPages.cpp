@@ -417,6 +417,15 @@ background:rgba(255,255,255,.012)
 .settings-page .settings-surface-footer .button,.settings-page .settings-surface-footer button{flex:0 1 auto}
 .settings-page .settings-strategy-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .settings-page .settings-strategy-grid .button{width:100%;min-width:0;text-align:center}
+.settings-page .privacy-network-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.settings-page .privacy-network-option{display:grid;grid-template-columns:18px minmax(0,1fr);gap:11px;align-items:start;min-height:76px;padding:14px;border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);background:var(--ds-bg-control);cursor:pointer;transition:background-color var(--ds-fast) ease,border-color var(--ds-fast) ease}
+.settings-page .privacy-network-option:hover{border-color:var(--ds-border);background:var(--ds-bg-hover)}
+.settings-page .privacy-network-option:has(input:checked){border-color:var(--ds-accent);background:var(--ds-accent-soft)}
+.settings-page .privacy-network-option input{width:17px;height:17px;margin:2px 0 0;accent-color:var(--ds-accent)}
+.settings-page .privacy-network-option span{display:grid;gap:4px;min-width:0}
+.settings-page .privacy-network-option strong{color:var(--ds-text);font-size:14px}
+.settings-page .privacy-network-option small{color:var(--ds-text-muted);font-size:12px;line-height:1.45}
+.settings-page .settings-i2p-status .warning{margin:16px 0 0}
 .settings-page .settings-upstream-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .settings-page .settings-upstream-grid .upstream-url{grid-column:1/-1}
 .settings-page .settings-surface-field{display:grid;gap:var(--settings-label-gap);min-width:0}
@@ -602,6 +611,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .settings-upstream-grid{grid-template-columns:1fr}
 .settings-page .settings-upstream-grid .upstream-url{grid-column:1}
 }
+@media(max-width:600px){.settings-page .privacy-network-options{grid-template-columns:1fr}}
 @media(max-width:760px){
 .settings-page{--settings-page-padding-x:18px;--settings-shell-gap:18px}
 .settings-page main{padding:24px 18px 58px}
@@ -1041,8 +1051,8 @@ input{flex:1;min-width:68px;height:42px;background:transparent;border:0;outline:
 button{height:__BUTTON_HEIGHT__;flex:0 0 auto;border:1px solid #a43c45;border-radius:6px;background:#8d323a;color:white;padding:0 18px;font:600 14px "Segoe UI",sans-serif;cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease,transform 80ms ease}button:hover{background:#c84650;border-color:#d4535d}button:active{transform:translateY(1px);background:#733039;border-color:#8b3740}button:focus-visible{outline:2px solid #fff;outline-offset:2px}
     .status{display:flex;align-items:center;justify-content:center;gap:9px;min-height:20px;margin-top:17px;color:#e0e2e7;font-size:12px;text-shadow:0 1px 10px rgba(0,0,0,.6)}
     .route-dot{position:relative;width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:#7d8491}.route-dot::after{content:"";position:absolute;inset:-5px;border:1px solid transparent;border-radius:50%;pointer-events:none}
-    .status[data-state="tor-verified"] .route-dot{background:#4fb78f}.status[data-state="tor-verified"] .route-dot::after{border-color:rgba(79,183,143,.72);animation:route-pulse 2200ms cubic-bezier(.22,.61,.36,1) infinite}
-    .status[data-state="connecting"] .route-dot{background:#d4a64f;animation:route-breathe 2400ms ease-in-out infinite}.status[data-state="error"] .route-dot{background:#d98360}.status[data-state="proxy"] .route-dot{background:#9b9395}.status[data-state="direct"] .route-dot{background:#8f898b}.status[data-state="disconnected"] .route-dot{background:#777173}
+    .status[data-state="tor-verified"] .route-dot,.status[data-state="i2p-verified"] .route-dot{background:#4fb78f}.status[data-state="tor-verified"] .route-dot::after,.status[data-state="i2p-verified"] .route-dot::after{border-color:rgba(79,183,143,.72);animation:route-pulse 2200ms cubic-bezier(.22,.61,.36,1) infinite}
+    .status[data-state="connecting"] .route-dot{background:#d4a64f;animation:route-breathe 2400ms ease-in-out infinite}.status[data-state="error"] .route-dot,.status[data-state="blocked"] .route-dot{background:#d98360}.status[data-state="proxy"] .route-dot{background:#9b9395}.status[data-state="direct"] .route-dot{background:#8f898b}.status[data-state="disconnected"] .route-dot{background:#777173}
 .msg{text-align:left;border-left:3px solid var(--accent);padding:10px 12px;background:rgba(25,27,33,.88);margin-bottom:16px;border-radius:0 6px 6px 0}
     @keyframes home-ready{from{opacity:.72}to{opacity:1}}@keyframes granger-title-flow{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}@keyframes route-pulse{0%{opacity:.72;transform:scale(.68)}65%,100%{opacity:0;transform:scale(1.5)}}@keyframes route-breathe{0%,100%{opacity:.62;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
 @media(max-width:620px){.panel-tools{margin-bottom:8px}.ai-chat{min-width:42px;width:42px;padding:0}.ai-chat-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
@@ -1464,6 +1474,25 @@ QString InternalPages::settings(const InternalPageContext &context)
                          e(t("pamp.passive_only.description")), e(t("pamp.analyze_current")));
     } else if (category == QStringLiteral("connection")) {
         panel = QStringLiteral("<h2>%1</h2>").arg(e(t("settings.category.connection")));
+        const bool preferI2p = context.preferredPrivacyNetwork == QStringLiteral("i2p");
+        panel += QStringLiteral(
+            "<section class=\"settings-surface settings-private-network\">"
+            "<div class=\"settings-surface-header\"><div><h3>%1</h3><p>%2</p></div></div>"
+            "<form action=\"https://granger.local/__action/settings/privacy-network\" method=\"get\">"
+            "<div class=\"settings-surface-body\"><div class=\"privacy-network-options\">"
+            "<label class=\"privacy-network-option\"><input type=\"radio\" name=\"network\" value=\"tor\"%3>"
+            "<span><strong>Tor</strong><small>%4</small></span></label>"
+            "<label class=\"privacy-network-option\"><input type=\"radio\" name=\"network\" value=\"i2p\"%5>"
+            "<span><strong>I2P</strong><small>%6</small></span></label></div></div>"
+            "<div class=\"settings-surface-footer\"><button class=\"primary\" type=\"submit\">%7</button></div>"
+            "</form></section>")
+                     .arg(e(t("network.preferred_title")),
+                          e(t("network.preferred_description")),
+                          preferI2p ? QString() : QStringLiteral(" checked"),
+                          e(t("network.tor_description")),
+                          preferI2p ? QStringLiteral(" checked") : QString(),
+                          e(t("network.i2p_description")),
+                          e(t("common.save")));
         if (context.torConflictWarning) {
             panel += QStringLiteral(
                 "<section class=\"tor-conflict-alert\" role=\"alert\" data-conflict-code=\"%1\">"
@@ -1480,11 +1509,31 @@ QString InternalPages::settings(const InternalPageContext &context)
         panel += QStringLiteral(
             "<section class=\"settings-surface settings-connection-status\">"
             "<div class=\"settings-surface-header\"><h3>%1</h3></div>"
-            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%2%3%4</div></div></section>")
+            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%2%3%4%5%6</div></div></section>")
                      .arg(e(t("label.status")),
-                          infoRow(t("label.route"), s(context.currentRoute), QStringLiteral("settings-route")),
-                          infoRow(t("label.tor"), s(context.torState), QStringLiteral("settings-tor-state")),
-                          infoRow(t("label.bootstrap"), s(context.bridgeBootstrap), QStringLiteral("settings-bootstrap")));
+                           infoRow(t("label.route"), s(context.currentRoute), QStringLiteral("settings-route")),
+                           infoRow(t("network.preferred_label"), s(context.preferredPrivacyNetwork), QStringLiteral("settings-preferred-network")),
+                           infoRow(t("network.state_label"), s(context.privacyRouteStatus), QStringLiteral("settings-private-route-state")),
+                           infoRow(t("label.tor"), s(context.torState), QStringLiteral("settings-tor-state")),
+                           infoRow(QStringLiteral("I2P"), s(context.i2pState), QStringLiteral("settings-i2p-state")));
+        panel += QStringLiteral(
+            "<section class=\"settings-surface settings-i2p-status\">"
+            "<div class=\"settings-surface-header\"><div><h3>I2P</h3><p>%1</p></div></div>"
+            "<div class=\"settings-surface-body flush\"><div class=\"info-list\">%2%3%4%5%6</div>"
+            "<div class=\"warning%7\"><strong>%8</strong><p>%9</p></div></div></section>")
+                     .arg(e(t("network.i2p_bundled_description")),
+                          infoRow(t("label.status"), s(context.i2pState), QStringLiteral("settings-i2p-detail-state")),
+                          infoRow(t("network.i2p_proxy"), s(context.i2pProxyEndpoint)),
+                          infoRow(t("network.i2p_probe"), s(context.i2pProbeDestination)),
+                          infoRow(t("network.i2p_runtime"), s(context.i2pExecutable)),
+                          infoRow(t("network.i2p_clearnet"),
+                                  context.i2pClearnetAvailable
+                                      ? t("network.available") : t("network.unavailable")),
+                          context.i2pError.isEmpty() ? QString() : QStringLiteral(" error"),
+                          e(context.i2pError.isEmpty() ? t("network.i2p_outproxy_title")
+                                                       : t("network.i2p_error_title")),
+                          e(context.i2pError.isEmpty() ? t("network.i2p_outproxy_unavailable")
+                                                       : context.i2pError));
         panel += QStringLiteral(
             "<section class=\"settings-surface settings-connection-strategy\">"
             "<div class=\"settings-surface-header\"><h3>%1</h3></div>"

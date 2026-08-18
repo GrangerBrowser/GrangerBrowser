@@ -210,14 +210,32 @@ void SettingsManager::setProxy(const QString &url, bool enabled, const QString &
     emit settingsChanged();
 }
 
+QString SettingsManager::preferredPrivacyNetwork() const
+{
+    const QString value = m_settings->value(
+        QStringLiteral("network/preferredPrivacyNetwork"), QStringLiteral("tor"))
+                              .toString().trimmed().toLower();
+    return value == QStringLiteral("i2p") ? QStringLiteral("i2p") : QStringLiteral("tor");
+}
+
+void SettingsManager::setPreferredPrivacyNetwork(const QString &network)
+{
+    const QString clean = network.trimmed().toLower() == QStringLiteral("i2p")
+        ? QStringLiteral("i2p") : QStringLiteral("tor");
+    if (clean == preferredPrivacyNetwork()) return;
+    m_settings->setValue(QStringLiteral("network/preferredPrivacyNetwork"), clean);
+    m_settings->sync();
+    emit settingsChanged();
+}
+
 QString SettingsManager::torConnectionMode() const
 {
     static const QStringList valid{QStringLiteral("disabled"), QStringLiteral("automatic"), QStringLiteral("direct"),
                                    QStringLiteral("obfs4"), QStringLiteral("webtunnel"), QStringLiteral("snowflake"),
                                    QStringLiteral("meek"), QStringLiteral("external"), QStringLiteral("upstream-socks"),
                                    QStringLiteral("upstream-http")};
-    const QString value = m_settings->value(QStringLiteral("tor/connectionMode"), QStringLiteral("disabled")).toString().trimmed().toLower();
-    return valid.contains(value) ? value : QStringLiteral("disabled");
+    const QString value = m_settings->value(QStringLiteral("tor/connectionMode"), QStringLiteral("automatic")).toString().trimmed().toLower();
+    return valid.contains(value) ? value : QStringLiteral("automatic");
 }
 
 void SettingsManager::setTorConnectionMode(const QString &mode)
@@ -227,16 +245,11 @@ void SettingsManager::setTorConnectionMode(const QString &mode)
                                    QStringLiteral("meek"), QStringLiteral("external"), QStringLiteral("upstream-socks"),
                                    QStringLiteral("upstream-http")};
     const QString requested = mode.trimmed().toLower();
-    const QString clean = valid.contains(requested) ? requested : QStringLiteral("disabled");
+    const QString clean = valid.contains(requested) ? requested : QStringLiteral("automatic");
     if (clean == torConnectionMode()) {
         return;
     }
     m_settings->setValue(QStringLiteral("tor/connectionMode"), clean);
-    if (clean == QStringLiteral("disabled") && proxyOwner() == QStringLiteral("managed-tor")) {
-        m_settings->setValue(QStringLiteral("network/proxyUrl"), QString());
-        m_settings->setValue(QStringLiteral("network/proxyEnabled"), false);
-        m_settings->remove(QStringLiteral("network/proxyOwner"));
-    }
     m_settings->sync();
     emit settingsChanged();
 }

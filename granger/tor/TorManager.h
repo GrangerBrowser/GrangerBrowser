@@ -29,6 +29,7 @@ struct TorStatus {
     bool bridgeEnabled = false;
     bool torProcessRunning = false;
     bool torrcVerified = false;
+    bool socksVerified = false;
     bool routeVerified = false;
 };
 
@@ -46,6 +47,7 @@ public:
     void setBridgeFailed(const QString &reason);
     void setBrowserRouteVerified(const QString &exitIp);
     void setBrowserRouteFailed(const QString &reason);
+    void setSocksRouteVerified(const QString &socksProxyUrl);
     bool applyBridgeConfig(const QString &torrcPath,
                            const QString &torrcText,
                            const QString &bridgeTransport,
@@ -53,6 +55,7 @@ public:
                            const QString &torExecutable,
                            QString *error = nullptr);
     void stopManagedTor();
+    bool killManagedTorForDiagnostics();
     QString torExecutablePath() const;
     static QString bridgeFailureDetail(const QString &line);
 
@@ -68,6 +71,7 @@ private:
     void startTorProcess(const QString &torPath, const QString &torrcPath);
     void pollBootstrapStatus();
     void updateBootstrapStatus(int progress, const QString &message);
+    void verifySocksAfterBootstrap();
     void handleTorOutput(const QByteArray &data);
     void handleTorFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void rememberTorLine(const QString &line);
@@ -77,6 +81,7 @@ private:
     QProcess *m_process = nullptr;
     QTimer *m_bootstrapTimer = nullptr;
     QTimer *m_controlPollTimer = nullptr;
+    QTimer *m_socksProbeRetryTimer = nullptr;
     QByteArray m_torOutputBuffer;
     QString m_controlEndpoint;
     QString m_controlCookiePath;

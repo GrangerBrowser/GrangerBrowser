@@ -83,7 +83,9 @@ bool HttpsFirstPolicy::isUpgradeEligible(const QUrl &url)
     if (!url.isValid() || url.scheme().toLower() != QStringLiteral("http")) return false;
     const QString host = url.host(QUrl::FullyDecoded).trimmed().toLower();
     if (host.isEmpty() || host == QStringLiteral("granger.local")) return false;
-    if (host.endsWith(QStringLiteral(".onion")) || developmentHost(host)) return false;
+    if (host.endsWith(QStringLiteral(".onion"))
+        || host.endsWith(QStringLiteral(".i2p"))
+        || developmentHost(host)) return false;
     return !isPrivateOrLocalAddress(host);
 }
 

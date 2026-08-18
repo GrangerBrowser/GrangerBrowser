@@ -2346,6 +2346,7 @@ int runPrivacyDiagnosticsSmoke(QApplication &app, const QString &outputPath)
 {
     Results results;
     SettingsManager settings;
+    settings.setTorConnectionMode(QStringLiteral("disabled"));
     ThemeManager theme;
     theme.apply(app);
     auto *window = new MainWindow(settings, theme);

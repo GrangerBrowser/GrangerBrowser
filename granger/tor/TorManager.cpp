@@ -7,10 +7,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QNetworkProxy>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -115,6 +117,11 @@ TorManager::TorManager(QObject *parent)
     m_controlPollTimer = new QTimer(this);
     m_controlPollTimer->setInterval(750);
     connect(m_controlPollTimer, &QTimer::timeout, this, &TorManager::pollBootstrapStatus);
+    m_socksProbeRetryTimer = new QTimer(this);
+    m_socksProbeRetryTimer->setSingleShot(true);
+    m_socksProbeRetryTimer->setInterval(5000);
+    connect(m_socksProbeRetryTimer, &QTimer::timeout,
+            this, &TorManager::verifySocksAfterBootstrap);
 }
 
 TorManager::~TorManager()
@@ -173,9 +180,13 @@ void TorManager::setBridgeFailed(const QString &reason)
     if (m_controlPollTimer) {
         m_controlPollTimer->stop();
     }
+    if (m_socksProbeRetryTimer) {
+        m_socksProbeRetryTimer->stop();
+    }
     m_status.bridgeState = QStringLiteral("Failed");
     m_status.bridgeEnabled = false;
     m_status.routeVerified = false;
+    m_status.socksVerified = false;
     m_status.bridgeError = reason.trimmed();
     m_status.bootstrapMessage = m_status.bridgeError;
     m_status.routeState = m_status.bridgeError;
@@ -190,9 +201,13 @@ void TorManager::setBrowserRouteVerified(const QString &exitIp)
     if (m_controlPollTimer) {
         m_controlPollTimer->stop();
     }
+    if (m_socksProbeRetryTimer) {
+        m_socksProbeRetryTimer->stop();
+    }
     m_status.bridgeState = QStringLiteral("Connected");
     m_status.bridgeEnabled = true;
     m_status.torDetected = true;
+    m_status.socksVerified = true;
     m_status.routeVerified = true;
     m_status.outboundIp = exitIp.trimmed().isEmpty() ? QStringLiteral("Tor exit verified") : exitIp.trimmed();
     m_status.routeState = m_status.outboundIp == QStringLiteral("Tor exit verified")
@@ -205,11 +220,30 @@ void TorManager::setBrowserRouteVerified(const QString &exitIp)
 void TorManager::setBrowserRouteFailed(const QString &reason)
 {
     m_status.routeVerified = false;
+    m_status.socksVerified = false;
     m_status.routeState = reason.trimmed();
     m_status.bridgeError = reason.trimmed();
     if (m_status.bridgeState != QStringLiteral("Failed")) {
         m_status.bridgeState = QStringLiteral("Failed");
         m_status.bridgeEnabled = false;
+    }
+    emitStatus();
+    if (m_socksProbeRetryTimer && m_status.torProcessRunning
+        && m_status.bootstrapProgress >= 100) {
+        m_socksProbeRetryTimer->start();
+    }
+}
+
+void TorManager::setSocksRouteVerified(const QString &socksProxyUrl)
+{
+    const QUrl url(socksProxyUrl.trimmed());
+    if (!url.isValid() || url.host().isEmpty() || url.port(-1) < 1) return;
+    m_status.socksEndpoint = QStringLiteral("%1:%2").arg(url.host()).arg(url.port());
+    m_status.socksVerified = true;
+    m_status.torDetected = true;
+    m_status.routeState = QStringLiteral("Tor SOCKS transport verified; browser route pending");
+    if (m_socksProbeRetryTimer) {
+        m_socksProbeRetryTimer->stop();
     }
     emitStatus();
 }
@@ -225,6 +259,7 @@ bool TorManager::applyBridgeConfig(const QString &torrcPath,
     m_status.bridgeState = QStringLiteral("Applying");
     m_status.bridgeEnabled = false;
     m_status.routeVerified = false;
+    m_status.socksVerified = false;
     m_status.torrcVerified = false;
     m_status.bootstrapProgress = 0;
     m_status.bootstrapMessage = QStringLiteral("Writing torrc");
@@ -339,6 +374,9 @@ void TorManager::stopManagedTor()
     if (m_controlPollTimer) {
         m_controlPollTimer->stop();
     }
+    if (m_socksProbeRetryTimer) {
+        m_socksProbeRetryTimer->stop();
+    }
     const bool statusChanged = m_process || m_status.torProcessRunning
         || m_status.routeVerified || m_status.bridgeEnabled;
     if (m_process) {
@@ -356,6 +394,7 @@ void TorManager::stopManagedTor()
     }
     m_status.torProcessRunning = false;
     m_status.routeVerified = false;
+    m_status.socksVerified = false;
     m_status.bridgeEnabled = false;
     m_status.torDetected = false;
     m_status.outboundIp = QStringLiteral("unknown");
@@ -367,6 +406,13 @@ void TorManager::stopManagedTor()
     }
     m_torOutputBuffer.clear();
     if (statusChanged) emitStatus();
+}
+
+bool TorManager::killManagedTorForDiagnostics()
+{
+    if (!m_process || m_process->state() == QProcess::NotRunning) return false;
+    m_process->kill();
+    return true;
 }
 
 QString TorManager::torExecutablePath() const
@@ -456,6 +502,7 @@ bool TorManager::socksEndpointListening(QString *error) const
         return false;
     }
     QTcpSocket socket;
+    socket.setProxy(QNetworkProxy::NoProxy);
     socket.connectToHost(host, quint16(port));
     if (!socket.waitForConnected(2500)) {
         if (error) {
@@ -487,6 +534,7 @@ bool TorManager::socksHttpProbe(QString *body, QString *error) const
     }
 
     QTcpSocket socket;
+    socket.setProxy(QNetworkProxy::NoProxy);
     socket.connectToHost(endpoint.left(colon), quint16(port));
     if (!socket.waitForConnected(4000)) {
         if (error) {
@@ -613,6 +661,7 @@ void TorManager::pollBootstrapStatus()
     }
 
     QTcpSocket socket;
+    socket.setProxy(QNetworkProxy::NoProxy);
     socket.connectToHost(host, quint16(port));
     if (!socket.waitForConnected(200)) {
         return;
@@ -670,24 +719,46 @@ void TorManager::updateBootstrapStatus(int progress, const QString &message)
         m_status.bridgeState = QStringLiteral("Bootstrap 100%");
         m_status.bridgeEnabled = true;
         m_status.torDetected = true;
-        QString socksError;
-        if (socksEndpointListening(&socksError)) {
-            QString probeBody;
-            if (socksHttpProbe(&probeBody, &socksError)) {
-                m_status.routeState = QStringLiteral("Tor SOCKS verified; Tor-routed probe response: %1; browser route not verified").arg(probeBody);
-            } else {
-                m_status.routeState = QStringLiteral("Tor SOCKS listening, but probe failed: %1").arg(socksError);
-                m_status.bridgeError = m_status.routeState;
-            }
-        } else {
-            m_status.routeState = QStringLiteral("Tor ready, SOCKS check failed: %1").arg(socksError);
-            m_status.bridgeError = m_status.routeState;
-        }
+        verifySocksAfterBootstrap();
+        return;
     } else {
         m_status.bridgeState = QStringLiteral("Bootstrapping %1%").arg(progress);
         m_status.bridgeEnabled = false;
     }
     emitStatus();
+}
+
+void TorManager::verifySocksAfterBootstrap()
+{
+    if (!m_process || m_process->state() == QProcess::NotRunning
+        || !m_status.torProcessRunning || m_status.bootstrapProgress < 100
+        || m_status.routeVerified) {
+        return;
+    }
+
+    m_status.bridgeState = QStringLiteral("Bootstrap 100%");
+    m_status.bridgeEnabled = true;
+    m_status.torDetected = true;
+    QString socksError;
+    if (socksEndpointListening(&socksError)) {
+        QString probeBody;
+        if (socksHttpProbe(&probeBody, &socksError)) {
+            m_status.socksVerified = true;
+            m_status.routeState = QStringLiteral("Tor SOCKS verified; Tor-routed probe response: %1; browser route not verified").arg(probeBody);
+            m_status.bridgeError.clear();
+            emitStatus();
+            return;
+        }
+        m_status.routeState = QStringLiteral("Tor SOCKS listening, but probe failed: %1").arg(socksError);
+    } else {
+        m_status.routeState = QStringLiteral("Tor ready, SOCKS check failed: %1").arg(socksError);
+    }
+    m_status.socksVerified = false;
+    m_status.bridgeError = m_status.routeState;
+    emitStatus();
+    if (m_socksProbeRetryTimer && m_status.torProcessRunning) {
+        m_socksProbeRetryTimer->start();
+    }
 }
 
 void TorManager::handleTorOutput(const QByteArray &data)
@@ -765,6 +836,9 @@ void TorManager::handleTorFinished(int exitCode, QProcess::ExitStatus exitStatus
     if (m_controlPollTimer) {
         m_controlPollTimer->stop();
     }
+    if (m_socksProbeRetryTimer) {
+        m_socksProbeRetryTimer->stop();
+    }
     if (m_process) {
         m_process->deleteLater();
         m_process = nullptr;
@@ -777,6 +851,7 @@ void TorManager::handleTorFinished(int exitCode, QProcess::ExitStatus exitStatus
         m_status.bridgeState = QStringLiteral("Saved");
         m_status.bridgeEnabled = false;
         m_status.routeVerified = false;
+        m_status.socksVerified = false;
         m_status.bootstrapMessage = QStringLiteral("Tor exited");
         emitStatus();
         return;

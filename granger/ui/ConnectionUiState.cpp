@@ -36,28 +36,41 @@ bool failedState(const RouteUiInput &input)
 
 RouteUiPresentation ConnectionUiState::route(const RouteUiInput &input)
 {
+    if (input.networkAllowed && input.activeNetwork == QStringLiteral("i2p")) {
+        return {QStringLiteral("i2p-verified"), QStringLiteral("i2p"),
+                QStringLiteral("route.status.verified"), true, false};
+    }
+    if (input.networkAllowed && input.activeNetwork == QStringLiteral("tor")) {
+        return {QStringLiteral("tor-verified"), QStringLiteral("tor"),
+                QStringLiteral("route.status.verified"), true, false};
+    }
     if (input.routeVerified) {
         return {QStringLiteral("tor-verified"), QStringLiteral("tor"),
                 QStringLiteral("route.status.verified"), true, false};
     }
     if (failedState(input)) {
-        return {QStringLiteral("error"), input.torConfigured ? QStringLiteral("tor") : QStringLiteral("direct"),
+        return {QStringLiteral("error"), input.preferredNetwork.isEmpty()
+                    ? (input.torConfigured ? QStringLiteral("tor") : QStringLiteral("private"))
+                    : input.preferredNetwork,
                 QStringLiteral("route.status.failed"), false, false};
     }
     if (connectingState(input)) {
-        return {QStringLiteral("connecting"), QStringLiteral("tor"),
+        const QString routeKind = input.preferredNetwork == QStringLiteral("i2p")
+            ? QStringLiteral("i2p") : QStringLiteral("tor");
+        return {QStringLiteral("connecting"), routeKind,
                 QStringLiteral("route.status.connecting"), false, true};
     }
     if (input.proxyActive) {
-        return {QStringLiteral("proxy"), QStringLiteral("proxy"),
-                QStringLiteral("route.status.proxy_unverified"), false, false};
+        return {QStringLiteral("blocked"), input.preferredNetwork.isEmpty()
+                    ? QStringLiteral("private") : input.preferredNetwork,
+                QStringLiteral("route.status.blocked"), false, false};
     }
     if (input.torConfigured) {
         return {QStringLiteral("disconnected"), QStringLiteral("tor"),
                 QStringLiteral("route.status.disconnected"), false, false};
     }
-    return {QStringLiteral("direct"), QStringLiteral("direct"),
-            QStringLiteral("route.status.direct"), false, false};
+    return {QStringLiteral("blocked"), QStringLiteral("private"),
+            QStringLiteral("route.status.blocked"), false, false};
 }
 
 SiteUiPresentation ConnectionUiState::site(const SiteUiInput &input)
@@ -70,6 +83,7 @@ SiteUiPresentation ConnectionUiState::site(const SiteUiInput &input)
 
     const QString scheme = input.url.scheme().toLower();
     const bool onion = input.url.host().endsWith(QStringLiteral(".onion"), Qt::CaseInsensitive);
+    const bool i2p = input.url.host().endsWith(QStringLiteral(".i2p"), Qt::CaseInsensitive);
     if (onion) {
         const QString icon = QStringLiteral(":/icons/site-onion.svg");
         if (input.certificateError) {
@@ -93,37 +107,73 @@ SiteUiPresentation ConnectionUiState::site(const SiteUiInput &input)
                 QStringLiteral("site.warning.onion_unverified")};
     }
 
+    if (i2p) {
+        if (input.routeVerified) {
+            return {QStringLiteral("i2p-verified"), QStringLiteral(":/icons/site-controls.svg"),
+                    QStringLiteral("site.page_type.i2p"), QStringLiteral("site.summary.i2p"),
+                    scheme == QStringLiteral("https") ? QStringLiteral("site.encryption.https")
+                                                        : QStringLiteral("site.encryption.http"),
+                    QStringLiteral("site.route.i2p_verified"), QString()};
+        }
+        return {QStringLiteral("i2p-unverified"), QStringLiteral(":/icons/site-controls.svg"),
+                QStringLiteral("site.page_type.i2p"), QStringLiteral("site.summary.i2p_unverified"),
+                QStringLiteral("site.encryption.http"), QStringLiteral("site.route.i2p_unverified"),
+                QStringLiteral("site.warning.i2p_unverified")};
+    }
+
+    if (input.failClosedGateway && !input.destinationAllowed) {
+        return {QStringLiteral("route-blocked"), QStringLiteral(":/icons/site-controls.svg"),
+                QStringLiteral("site.page_type.website"),
+                QStringLiteral("site.summary.private_blocked"),
+                scheme == QStringLiteral("https") ? QStringLiteral("site.encryption.https")
+                                                    : QStringLiteral("site.encryption.http"),
+                QStringLiteral("site.route.blocked"),
+                QStringLiteral("site.warning.private_blocked")};
+    }
+
+    const bool torRoute = input.routeVerified && input.activeNetwork == QStringLiteral("tor");
+    const bool i2pRoute = input.routeVerified && input.activeNetwork == QStringLiteral("i2p");
+
     if (scheme == QStringLiteral("https")) {
-        const QString state = input.routeVerified ? QStringLiteral("https-tor")
-            : (input.proxyActive ? QStringLiteral("https-proxy") : QStringLiteral("https-direct"));
+        const QString state = torRoute ? QStringLiteral("https-tor")
+            : (i2pRoute ? QStringLiteral("https-i2p")
+                        : (input.proxyActive ? QStringLiteral("https-proxy")
+                                             : QStringLiteral("https-direct")));
         const QString summary = input.certificateError ? QStringLiteral("site.summary.certificate_error")
-            : (input.routeVerified ? QStringLiteral("site.summary.https_tor")
+            : (torRoute ? QStringLiteral("site.summary.https_tor")
+               : (i2pRoute ? QStringLiteral("site.summary.https_i2p")
                                    : (input.proxyActive ? QStringLiteral("site.summary.https_proxy")
-                                                        : QStringLiteral("site.summary.https_direct")));
+                                                        : QStringLiteral("site.summary.https_direct"))));
         return {state, input.certificateError ? QStringLiteral(":/icons/site-controls.svg")
                                               : QStringLiteral(":/icons/lock.svg"),
                 QStringLiteral("site.page_type.website"), summary,
                 input.certificateError ? QStringLiteral("site.encryption.certificate_error")
                                        : QStringLiteral("site.encryption.https"),
-                input.routeVerified ? QStringLiteral("site.route.tor_verified")
+                torRoute ? QStringLiteral("site.route.tor_verified")
+                    : (i2pRoute ? QStringLiteral("site.route.i2p_verified")
                                     : (input.proxyActive ? QStringLiteral("site.route.external_proxy")
-                                                         : QStringLiteral("site.route.direct")),
+                                                         : QStringLiteral("site.route.direct"))),
                 input.certificateError ? QStringLiteral("site.warning.certificate_error") : QString()};
     }
 
     if (scheme == QStringLiteral("http")) {
-        const QString state = input.routeVerified ? QStringLiteral("http-tor")
-            : (input.proxyActive ? QStringLiteral("http-proxy") : QStringLiteral("http-direct"));
+        const QString state = torRoute ? QStringLiteral("http-tor")
+            : (i2pRoute ? QStringLiteral("http-i2p")
+                        : (input.proxyActive ? QStringLiteral("http-proxy")
+                                             : QStringLiteral("http-direct")));
         return {state, QStringLiteral(":/icons/site-controls.svg"), QStringLiteral("site.page_type.website"),
-                input.routeVerified ? QStringLiteral("site.summary.http_tor")
+                torRoute ? QStringLiteral("site.summary.http_tor")
+                    : (i2pRoute ? QStringLiteral("site.summary.http_i2p")
                                     : (input.proxyActive ? QStringLiteral("site.summary.http_proxy")
-                                                         : QStringLiteral("site.summary.http_direct")),
+                                                         : QStringLiteral("site.summary.http_direct"))),
                 QStringLiteral("site.encryption.http"),
-                input.routeVerified ? QStringLiteral("site.route.tor_verified")
+                torRoute ? QStringLiteral("site.route.tor_verified")
+                    : (i2pRoute ? QStringLiteral("site.route.i2p_verified")
                                     : (input.proxyActive ? QStringLiteral("site.route.external_proxy")
-                                                         : QStringLiteral("site.route.direct")),
-                input.routeVerified ? QStringLiteral("site.warning.http_after_exit")
-                                    : QStringLiteral("site.warning.http")};
+                                                         : QStringLiteral("site.route.direct"))),
+                torRoute ? QStringLiteral("site.warning.http_after_exit")
+                    : (i2pRoute ? QStringLiteral("site.warning.http_after_i2p")
+                                : QStringLiteral("site.warning.http"))};
     }
 
     return {QStringLiteral("unavailable"), QStringLiteral(":/icons/site-controls.svg"),

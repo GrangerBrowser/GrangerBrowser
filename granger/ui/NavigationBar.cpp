@@ -615,13 +615,20 @@ void NavigationBar::updateSecurityIndicator()
     if (!m_security) return;
     const bool insecure = m_securityStatusId == QStringLiteral("http-direct")
         || m_securityStatusId == QStringLiteral("http-over-tor")
+        || m_securityStatusId == QStringLiteral("http-over-i2p")
         || m_securityStatusId == QStringLiteral("onion-unverified")
+        || m_securityStatusId == QStringLiteral("i2p-unverified")
+        || m_securityStatusId == QStringLiteral("route-blocked")
         || m_securityStatusId == QStringLiteral("certificate-error");
     QString iconPath;
     if (insecure || m_securityStatusId == QStringLiteral("not-applicable")) {
         iconPath = QStringLiteral(":/icons/site-controls.svg");
     } else if (m_securityStatusId == QStringLiteral("onion-over-tor")) {
         iconPath = QStringLiteral(":/icons/tor.svg");
+    } else if (m_securityStatusId == QStringLiteral("i2p-over-i2p")
+               || m_securityStatusId == QStringLiteral("https-over-i2p")
+               || m_securityStatusId == QStringLiteral("http-over-i2p")) {
+        iconPath = QStringLiteral(":/icons/network.svg");
     } else if (m_privacyRestrictionCount > 0) {
         iconPath = QStringLiteral(":/browser-icons/privacy-security.png");
     } else {
@@ -642,6 +649,10 @@ void NavigationBar::updateSecurityIndicator()
                || m_securityStatusId == QStringLiteral("https-over-tor")
                || m_securityStatusId == QStringLiteral("http-over-tor")) {
         securityTone = QStringLiteral("tor");
+    } else if (m_securityStatusId == QStringLiteral("i2p-over-i2p")
+               || m_securityStatusId == QStringLiteral("https-over-i2p")
+               || m_securityStatusId == QStringLiteral("http-over-i2p")) {
+        securityTone = QStringLiteral("protected");
     } else if (m_privacyRestrictionCount > 0) {
         securityTone = QStringLiteral("protected");
     } else if (m_securityStatusId == QStringLiteral("https-direct")) {

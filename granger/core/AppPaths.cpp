@@ -59,6 +59,11 @@ QString AppPaths::torDataRoot()
     return QDir(dataRoot()).filePath(QStringLiteral("tor"));
 }
 
+QString AppPaths::i2pDataRoot()
+{
+    return QDir(dataRoot()).filePath(QStringLiteral("i2p"));
+}
+
 QString AppPaths::containersRoot()
 {
     return QDir(dataRoot()).filePath(QStringLiteral("containers"));
@@ -191,7 +196,7 @@ bool AppPaths::isSafeIdentifier(const QString &value)
 bool AppPaths::ensureWritableLayout(QString *error)
 {
     const QStringList paths{
-        dataRoot(), stateRoot(), logsRoot(), torDataRoot(), containersRoot(),
+        dataRoot(), stateRoot(), logsRoot(), torDataRoot(), i2pDataRoot(), containersRoot(),
         containerStorageRoot(), reportsRoot(),
         webEngineProfileRoot(), webEngineCacheRoot()
     };

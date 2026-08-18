@@ -22,6 +22,7 @@
 #include "granger/browser/InternalPages.h"
 #include "granger/containers/ContainerManager.h"
 #include "granger/network/NetworkManager.h"
+#include "granger/network/PrivacyNetworkTypes.h"
 #include "granger/pamp_lite/network/PampRoutedEnricher.h"
 #include "granger/privacy/PermissionManager.h"
 #include "granger/privacy/PrivacyPolicyManager.h"
@@ -66,6 +67,7 @@ public:
     MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *parent = nullptr);
     ~MainWindow() override;
     TorStatus torStatus() const;
+    bool killManagedTorForDiagnostics();
     QString activeConnectionStrategy() const;
     QStringList automaticFailures() const;
     QStringList savedBridgeLines() const;
@@ -281,6 +283,17 @@ private:
     QString internalSingletonKey(const QString &address) const;
     void prepareTabPrivacyProfile(BrowserTab *tab, const QUrl &url);
     void reapplyRouteProfiles(bool reloadExternalPages);
+    bool privateRouteVerified() const;
+    bool privateRouteTransitioning() const;
+    bool destinationAllowedForNavigation(const QUrl &url, QString *reason = nullptr) const;
+    QString currentRouteLabel() const;
+    QString securityStatusForUrl(const QUrl &url) const;
+    void handlePrivacyRouteStatus(const PrivacyRouteStatus &status);
+    void showPrivateRouteBlockedPage(BrowserTab *tab,
+                                     const QString &address,
+                                     const QString &reason,
+                                     bool switching);
+    void resumePrivateRouteTabs();
     void clearTorSessionAfterDisconnect();
     void configureProfileDownloads(QWebEngineProfile *profile);
 
@@ -458,6 +471,7 @@ private:
     QString m_defaultUserAgent;
     QString m_routeState;
     QString m_routeError;
+    QString m_lastActivePrivacyNetwork;
     QString m_lastLoggedTorBridgeError;
     QString m_lastTorFailureDiagnostic;
     NetworkEnvironmentSnapshot m_networkEnvironment;

@@ -6,6 +6,9 @@
 namespace granger {
 
 struct RouteUiInput {
+    QString activeNetwork;
+    QString preferredNetwork;
+    bool networkAllowed = false;
     bool routeVerified = false;
     bool verificationInProgress = false;
     bool proxyActive = false;
@@ -25,10 +28,14 @@ struct RouteUiPresentation {
 
 struct SiteUiInput {
     QUrl url;
+    QString activeNetwork;
+    QString destinationNetwork;
     bool internalPage = false;
     bool routeVerified = false;
     bool proxyActive = false;
     bool certificateError = false;
+    bool destinationAllowed = true;
+    bool failClosedGateway = false;
 };
 
 struct SiteUiPresentation {

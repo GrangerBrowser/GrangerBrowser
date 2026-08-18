@@ -20,6 +20,7 @@ enum class AddressInputKind {
     DirectUrl,
     Host,
     Onion,
+    I2p,
     Internal,
     Search
 };
