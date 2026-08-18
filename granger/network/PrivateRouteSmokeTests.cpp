@@ -52,6 +52,97 @@ struct GatewayAttempt {
     QString error;
 };
 
+qsizetype socksReplySize(const QByteArray &reply)
+{
+    if (reply.size() < 4) return -1;
+    const quint8 addressType = quint8(reply.at(3));
+    if (addressType == 0x01) return 10;
+    if (addressType == 0x04) return 22;
+    if (addressType == 0x03) return reply.size() < 5 ? -1 : 7 + quint8(reply.at(4));
+    return 0;
+}
+
+GatewayAttempt connectThroughSocks(const QString &endpoint,
+                                   const QString &host,
+                                   int timeoutMs,
+                                   bool requestHttp = false)
+{
+    GatewayAttempt result;
+    const QUrl proxyUrl(QStringLiteral("socks5://") + endpoint);
+    if (!proxyUrl.isValid() || proxyUrl.host().isEmpty() || proxyUrl.port() < 1) {
+        result.error = QStringLiteral("invalid SOCKS endpoint");
+        return result;
+    }
+
+    QTcpSocket socket;
+    socket.setProxy(QNetworkProxy::NoProxy);
+    socket.connectToHost(proxyUrl.host(), quint16(proxyUrl.port()));
+    if (!socket.waitForConnected(2000)) {
+        result.error = socket.errorString();
+        return result;
+    }
+    socket.write(QByteArray::fromHex("050100"));
+    if (!socket.waitForBytesWritten(1000)) {
+        result.error = QStringLiteral("SOCKS greeting write failed");
+        return result;
+    }
+    QByteArray reply;
+    if (!readAtLeast(&socket, &reply, 2, 2000)
+        || quint8(reply.at(0)) != 0x05 || quint8(reply.at(1)) != 0x00) {
+        result.error = QStringLiteral("SOCKS greeting rejected");
+        return result;
+    }
+
+    const QByteArray encodedHost = host.toLatin1();
+    if (encodedHost.isEmpty() || encodedHost.size() > 255) {
+        result.error = QStringLiteral("invalid destination hostname");
+        return result;
+    }
+    QByteArray request;
+    request.append(char(0x05));
+    request.append(char(0x01));
+    request.append(char(0x00));
+    request.append(char(0x03));
+    request.append(char(encodedHost.size()));
+    request.append(encodedHost);
+    request.append(char(0x00));
+    request.append(char(0x50));
+    socket.write(request);
+    if (!socket.waitForBytesWritten(1000)) {
+        result.error = QStringLiteral("SOCKS CONNECT write failed");
+        return result;
+    }
+    reply.clear();
+    if (!readAtLeast(&socket, &reply, 4, timeoutMs)) {
+        result.error = QStringLiteral("SOCKS CONNECT reply timed out");
+        return result;
+    }
+    const qsizetype replySize = socksReplySize(reply);
+    if (replySize <= 0 || !readAtLeast(&socket, &reply, replySize, 3000)) {
+        result.error = QStringLiteral("SOCKS CONNECT reply was malformed");
+        return result;
+    }
+    result.replyCode = int(quint8(reply.at(1)));
+    result.connected = result.replyCode == 0;
+    if (!result.connected || !requestHttp) return result;
+
+    const QByteArray httpRequest = QByteArrayLiteral("GET / HTTP/1.0\r\nHost: ")
+        + encodedHost + QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
+    socket.write(httpRequest);
+    if (socket.waitForBytesWritten(1000)) {
+        QElapsedTimer responseTimer;
+        responseTimer.start();
+        while (result.echo.size() < 4096 && responseTimer.elapsed() < timeoutMs) {
+            if (socket.bytesAvailable() > 0) result.echo += socket.readAll();
+            if (result.echo.contains(QByteArrayLiteral("\r\n\r\n"))) break;
+            if (socket.state() == QAbstractSocket::UnconnectedState) break;
+            socket.waitForReadyRead(250);
+        }
+        result.echo += socket.readAll();
+    }
+    return result;
+}
+
 GatewayAttempt requestThroughGateway(quint16 gatewayPort,
                                      const QString &host,
                                      const std::shared_ptr<std::atomic_bool> &holdEstablished = {},
@@ -680,12 +771,14 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
     I2pManager manager;
     QString lastSnapshot;
     const auto capture = [&timeline, &lastSnapshot](const I2pStatus &status) {
-        const QString snapshot = QStringLiteral("%1|%2|%3|%4|%5")
+        const QString snapshot = QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
                                      .arg(status.state)
                                      .arg(status.bootstrapProgress)
                                      .arg(status.processRunning)
                                      .arg(status.proxyListening)
-                                     .arg(status.routeVerified);
+                                     .arg(status.routeVerified)
+                                     .arg(status.addressBookReady)
+                                     .arg(status.reasonCode);
         if (snapshot == lastSnapshot) return;
         lastSnapshot = snapshot;
         timeline.append(QJsonObject{
@@ -694,9 +787,13 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
             {QStringLiteral("processRunning"), status.processRunning},
             {QStringLiteral("proxyListening"), status.proxyListening},
             {QStringLiteral("routeVerified"), status.routeVerified},
+            {QStringLiteral("addressBookReady"), status.addressBookReady},
+            {QStringLiteral("addressBookEntries"), status.addressBookEntries},
+            {QStringLiteral("headless"), status.headless},
             {QStringLiteral("probeDestination"), status.probeDestination},
             {QStringLiteral("message"), status.message},
-            {QStringLiteral("error"), status.error}
+            {QStringLiteral("error"), status.error},
+            {QStringLiteral("reasonCode"), status.reasonCode}
         });
     };
     QObject::connect(&manager, &I2pManager::statusChanged, &manager, capture);
@@ -717,12 +814,47 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
     const bool firstVerified = started && waitForVerified(qMax(1000, timeoutMs));
     const I2pStatus firstStatus = manager.status();
 
-    bool restarted = false;
+    const QString bootstrapPath = QDir(firstStatus.dataDirectory).filePath(QStringLiteral("hosts.txt"));
+    QFile bootstrapFile(bootstrapPath);
+    QByteArray bootstrapContents;
+    if (bootstrapFile.open(QIODevice::ReadOnly)) bootstrapContents = bootstrapFile.readAll();
+    const bool bootstrapContainsExpectedNames =
+        bootstrapContents.contains(QByteArrayLiteral("i2p-projekt.i2p="))
+        && bootstrapContents.contains(QByteArrayLiteral("i2pforum.i2p="))
+        && bootstrapContents.contains(QByteArrayLiteral("notbob.i2p="));
+
+    GatewayAttempt externalB32;
+    GatewayAttempt humanName;
+    GatewayAttempt unknownName;
+    if (firstVerified) {
+        externalB32 = connectThroughSocks(
+            firstStatus.socksEndpoint,
+            QStringLiteral("tmipbl5d7ctnz3cib4yd2yivlrssrtpmuuzyqdpqkelzmnqllhda.b32.i2p"),
+            30000, true);
+        humanName = connectThroughSocks(firstStatus.socksEndpoint,
+                                        QStringLiteral("i2pforum.i2p"),
+                                        30000, true);
+        unknownName = connectThroughSocks(firstStatus.socksEndpoint,
+                                          QStringLiteral("granger-addressbook-negative-test.invalid.i2p"),
+                                          15000);
+    }
+
+    bool restartTriggered = false;
+    bool failureObserved = false;
     bool secondVerified = false;
     I2pStatus secondStatus;
     if (firstVerified) {
-        manager.restart();
-        restarted = true;
+        restartTriggered = manager.killForDiagnostics();
+        QElapsedTimer failureTimer;
+        failureTimer.start();
+        while (failureTimer.elapsed() < 10000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            if (!manager.status().routeVerified) {
+                failureObserved = true;
+                break;
+            }
+            QThread::msleep(10);
+        }
         secondVerified = waitForVerified(qMax(1000, timeoutMs));
         secondStatus = manager.status();
     }
@@ -747,17 +879,42 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
 
     const bool destinationVerified = firstStatus.probeDestination.endsWith(
         QStringLiteral(".b32.i2p"), Qt::CaseInsensitive);
-    const bool ok = started && firstVerified && restarted && secondVerified
-                    && destinationVerified && !fakeCompleteState && stopped;
+    const bool unknownNameBlocked = firstVerified && !unknownName.connected;
+#ifdef Q_OS_WIN
+    const bool headlessConfigured = firstStatus.headless && secondStatus.headless;
+#else
+    const bool headlessConfigured = true;
+#endif
+    const bool ok = started && firstVerified && restartTriggered && failureObserved
+                    && secondVerified && destinationVerified
+                    && firstStatus.addressBookReady && firstStatus.addressBookEntries >= 10
+                    && secondStatus.addressBookReady && bootstrapContainsExpectedNames
+                    && headlessConfigured && unknownNameBlocked
+                    && !fakeCompleteState && stopped;
     QJsonObject report{
         {QStringLiteral("ok"), ok},
         {QStringLiteral("started"), started},
         {QStringLiteral("startError"), startError},
         {QStringLiteral("firstRouteVerified"), firstVerified},
         {QStringLiteral("firstProbeDestination"), firstStatus.probeDestination},
-        {QStringLiteral("restartRequested"), restarted},
+        {QStringLiteral("firstAddressBookReady"), firstStatus.addressBookReady},
+        {QStringLiteral("firstAddressBookEntries"), firstStatus.addressBookEntries},
+        {QStringLiteral("bootstrapContainsExpectedNames"), bootstrapContainsExpectedNames},
+        {QStringLiteral("headlessConfigured"), headlessConfigured},
+        {QStringLiteral("processKillRequested"), restartTriggered},
+        {QStringLiteral("restartRequested"), restartTriggered},
+        {QStringLiteral("routeLossObserved"), failureObserved},
         {QStringLiteral("secondRouteVerified"), secondVerified},
         {QStringLiteral("secondProbeDestination"), secondStatus.probeDestination},
+        {QStringLiteral("secondAddressBookReady"), secondStatus.addressBookReady},
+        {QStringLiteral("externalB32Connected"), externalB32.connected},
+        {QStringLiteral("externalB32HttpResponse"), externalB32.echo.startsWith(QByteArrayLiteral("HTTP/"))},
+        {QStringLiteral("externalB32Error"), externalB32.error},
+        {QStringLiteral("humanReadableConnected"), humanName.connected},
+        {QStringLiteral("humanReadableHttpResponse"), humanName.echo.startsWith(QByteArrayLiteral("HTTP/"))},
+        {QStringLiteral("humanReadableError"), humanName.error},
+        {QStringLiteral("unknownNameBlocked"), unknownNameBlocked},
+        {QStringLiteral("unknownNameReplyCode"), unknownName.replyCode},
         {QStringLiteral("reportedCompleteBeforeVerification"), fakeCompleteState},
         {QStringLiteral("stopped"), stopped},
         {QStringLiteral("outproxyConfigured"), false},

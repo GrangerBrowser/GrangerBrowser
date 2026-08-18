@@ -21,11 +21,15 @@ struct I2pStatus {
     QString state;
     QString message;
     QString error;
+    QString reasonCode;
     QStringList outputTail;
     int bootstrapProgress = -1;
+    int addressBookEntries = 0;
     bool processRunning = false;
     bool proxyListening = false;
     bool routeVerified = false;
+    bool addressBookReady = false;
+    bool headless = false;
 };
 
 class I2pManager final : public QObject {
@@ -51,10 +55,16 @@ private:
         bool proxyListening = false;
         QString destination;
         QString error;
+        QString reasonCode;
     };
 
     QString findExecutable() const;
     QString certificatesDirectory() const;
+    bool ensureAddressBookBootstrap(QString *error);
+    void refreshAddressBookStatus();
+    bool ensureBackgroundDesktop(QString *error);
+    void closeBackgroundDesktop();
+    void requestProcessStop();
     bool writeConfiguration(QString *error);
     void startProcess();
     void handleOutput(const QByteArray &data);
@@ -62,8 +72,9 @@ private:
     void scheduleProbe(int delayMs);
     void beginProbe();
     void finishProbe(const ProbeResult &result);
+    void restartAfterConfirmedFailure(const ProbeResult &result);
     void scheduleRestart();
-    void setFailure(const QString &reason);
+    void setFailure(const QString &reason, const QString &reasonCode = QString());
     void emitStatus();
     void rememberOutput(const QString &line);
 
@@ -82,10 +93,15 @@ private:
     QByteArray m_probeToken;
     QString m_configPath;
     QString m_tunnelsPath;
+    QString m_backgroundDesktopName;
+    void *m_backgroundDesktop = nullptr;
     int m_consecutiveProbeFailures = 0;
     int m_restartAttempt = 0;
+    quint64 m_generation = 0;
     bool m_desiredRunning = false;
     bool m_probeInProgress = false;
+    bool m_verifiedInCurrentProcess = false;
+    bool m_recoveryRestartPending = false;
     bool m_stopping = false;
 };
 

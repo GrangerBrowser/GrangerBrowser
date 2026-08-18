@@ -402,6 +402,7 @@
   "error.dns": "DNS қатесі",
   "error.certificate": "Сертификат қатесі",
   "error.connection": "Қосылым қатесі",
+  "error.i2p_destination": "I2P атауы немесе мекенжайы қолжетімсіз",
   "error.http": "HTTP қатесі",
   "error.browser_navigation": "Шолғыштың шарлау қатесі",
   "error.ftp": "FTP қатесі",

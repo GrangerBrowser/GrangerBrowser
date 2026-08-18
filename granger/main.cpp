@@ -3501,9 +3501,13 @@ int runPrivateRouteLiveAcceptance(QApplication &app,
                 {QStringLiteral("routeVerified"), i2p.routeVerified},
                 {QStringLiteral("state"), i2p.state},
                 {QStringLiteral("bootstrapProgress"), i2p.bootstrapProgress},
+                {QStringLiteral("addressBookReady"), i2p.addressBookReady},
+                {QStringLiteral("addressBookEntries"), i2p.addressBookEntries},
+                {QStringLiteral("headless"), i2p.headless},
                 {QStringLiteral("probeDestination"), i2p.probeDestination},
                 {QStringLiteral("message"), i2p.message},
-                {QStringLiteral("error"), i2p.error}
+                {QStringLiteral("error"), i2p.error},
+                {QStringLiteral("reasonCode"), i2p.reasonCode}
             }}
         };
         QDir().mkpath(QFileInfo(outputPath).absolutePath());

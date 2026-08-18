@@ -324,6 +324,7 @@ Qt WebEngine and only opens it for a verified private route.
 
 - `.onion` destinations require verified Tor.
 - `.i2p` destinations require verified I2P.
+- Human-readable `.i2p` names use i2pd's local address book; they never fall back to system DNS.
 - Clearnet uses verified Tor.
 - Clearnet is blocked on I2P because the bundled configuration has no verified outproxy.
 - If both backends are unavailable, browsing remains blocked.

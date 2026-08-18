@@ -402,6 +402,7 @@
   "error.dns": "Ошибка DNS",
   "error.certificate": "Ошибка сертификата",
   "error.connection": "Ошибка подключения",
+  "error.i2p_destination": "Имя или адрес I2P недоступны",
   "error.http": "Ошибка HTTP",
   "error.browser_navigation": "Ошибка перехода браузера",
   "error.ftp": "Ошибка FTP",

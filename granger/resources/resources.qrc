@@ -108,6 +108,9 @@
     <qresource prefix="/legal">
         <file alias="pamp-lite-attribution.md">../pamp_lite/ATTRIBUTION.md</file>
     </qresource>
+    <qresource prefix="/i2p">
+        <file alias="hosts.txt">i2p/hosts.txt</file>
+    </qresource>
     <qresource prefix="/privacy">
         <file alias="network-rules-v1.json">privacy/network-rules-v1.json</file>
         <file alias="url-policy-v1.json">privacy/url-policy-v1.json</file>

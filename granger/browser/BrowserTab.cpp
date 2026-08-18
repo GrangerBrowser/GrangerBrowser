@@ -55,8 +55,14 @@ QString esc(const QString &value)
     return value.toHtmlEscaped();
 }
 
-QString loadingErrorCategory(QWebEngineLoadingInfo::ErrorDomain domain)
+QString loadingErrorCategory(QWebEngineLoadingInfo::ErrorDomain domain, const QUrl &url)
 {
+    const QString host = url.host().toLower();
+    if (host.endsWith(QStringLiteral(".i2p"))
+        && (domain == QWebEngineLoadingInfo::DnsErrorDomain
+            || domain == QWebEngineLoadingInfo::ConnectionErrorDomain)) {
+        return Localization::text(QStringLiteral("error.i2p_destination"));
+    }
     switch (domain) {
     case QWebEngineLoadingInfo::DnsErrorDomain: return Localization::text(QStringLiteral("error.dns"));
     case QWebEngineLoadingInfo::CertificateErrorDomain: return Localization::text(QStringLiteral("error.certificate"));
@@ -733,7 +739,8 @@ void BrowserTab::handleLoadingInfo(const QWebEngineLoadingInfo &info)
             return;
         }
         scheduleNavigationFailure(info.url().isEmpty() ? m_lastRequestedUrl : info.url(),
-                                  loadingErrorCategory(info.errorDomain()),
+                                  loadingErrorCategory(info.errorDomain(),
+                                                       info.url().isEmpty() ? m_lastRequestedUrl : info.url()),
                                   info.errorString().trimmed());
     }
 }

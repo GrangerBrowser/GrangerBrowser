@@ -402,6 +402,7 @@
   "error.dns": "DNS error",
   "error.certificate": "Certificate error",
   "error.connection": "Connection error",
+  "error.i2p_destination": "I2P name or destination unavailable",
   "error.http": "HTTP error",
   "error.browser_navigation": "Browser navigation error",
   "error.ftp": "FTP error",

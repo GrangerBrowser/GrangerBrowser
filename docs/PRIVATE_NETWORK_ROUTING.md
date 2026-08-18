@@ -19,6 +19,36 @@ The i2pd archive is the official Windows x64 MinGW release with SHA-256
 It is licensed under BSD-3-Clause. Binaries and certificates are read from the
 package; mutable router state is stored under the Granger user-data root.
 
+### I2P naming and startup
+
+Both `.b32.i2p` destinations and human-readable `.i2p` names are resolved by
+i2pd. Granger never sends an I2P hostname to Windows DNS, Tor DNS, or a
+clearnet resolver. An unknown name therefore fails inside the I2P backend.
+
+On a new profile, Granger copies a compiled address-book bootstrap to the
+writable I2P data directory before starting i2pd. The snapshot was retrieved
+through I2P from the i2pd 2.61.0 default subscription at
+`http://shx5vqsw7usdaunyzr2qmes2fq37oumybpudrd4jjj4e4vk4uusa.b32.i2p/hosts.txt`.
+Its source-file SHA-256 is
+`4EA21E8A9C631A60382DAF23BD90D0BAE0CAB742B93B21BBF3BD885F05F78000`.
+It is used only when neither a persisted address book nor an existing
+`hosts.txt` is present. i2pd then persists and updates the address book through
+its normal `http://reg.i2p/hosts.txt` subscription. Installation files remain
+read-only; address-book, NetDB, keys, tunnels, and logs remain in the Granger
+user-data directory.
+
+The startup states distinguish process launch, proxy availability, tunnel
+construction, route verification, and address-book readiness. A router may
+report `Firewalled` and still be usable for client browsing; that label alone
+does not fail verification.
+
+The official i2pd Windows archive includes a tray application. Granger starts
+that unmodified binary on a dedicated, non-visible Windows desktop and
+requests a normal window-message shutdown there. This keeps the bundled
+backend visible in Task Manager while preventing its window, tray icon, and
+startup notification from appearing on the user's desktop. The diagnostic web
+console listens only on `127.0.0.1:19770` and is not opened automatically.
+
 ## Verification and failover
 
 Opening a local proxy port is not sufficient to mark a backend connected. Tor
@@ -31,6 +61,15 @@ closes all current proxy sessions. The manager then checks the secondary
 backend and only installs a new route policy after verification. If neither
 backend is verified, the state is `NoPrivateRoute` and browsing stays blocked.
 A recovery cooldown prevents immediate switching back and forth.
+
+I2P health reports separate process exit, proxy loss, missing tunnels, probe
+timeout, invalid probe response, destination unreachability, and recovery
+verification. A single transient response does not revoke the last verified
+route. Three consecutive probe failures close the route gate; a confirmed
+proxy loss restarts i2pd immediately, while persistent tunnel/probe failures
+must continue before a managed restart. Probe work from an older process
+generation is discarded, so a late asynchronous result cannot overwrite the
+state of a restarted backend.
 
 Destination rules are independent of preference:
 
