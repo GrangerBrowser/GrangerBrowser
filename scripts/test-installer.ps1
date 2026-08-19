@@ -324,10 +324,14 @@ try {
     }
 
     $webOutput = Join-Path $testPath 'web.json'
+    $webFixture = Join-Path $testPath 'renderer-fixture.html'
+    Set-Content -LiteralPath $webFixture -Encoding UTF8 -Value `
+        '<!doctype html><meta charset="utf-8"><title>Granger renderer fixture</title><p>renderer-ok</p>'
+    $webFixtureUrl = ([Uri]::new($webFixture)).AbsoluteUri
     $webProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
-        -ArgumentList @('--smoke-url=https://example.com', "--smoke-output=$webOutput") -Wait -PassThru
+        -ArgumentList @("--smoke-url=$webFixtureUrl", "--smoke-output=$webOutput") -Wait -PassThru
     $web = Get-Content $webOutput -Raw | ConvertFrom-Json
-    if ($webProcess.ExitCode -ne 0 -or -not $web.ok -or ([Uri]$web.url).Host -ne 'example.com') {
+    if ($webProcess.ExitCode -ne 0 -or -not $web.ok -or $web.title -ne 'Granger renderer fixture') {
         throw "Installed browser WebEngine smoke failed."
     }
     $results.Granger = $true

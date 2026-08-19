@@ -158,10 +158,14 @@ try {
     }
 
     $webPath = Join-Path $outputRoot "webengine-smoke.json"
-    Invoke-ReleaseSmoke -Arguments @("--smoke-url=https://example.com", "--smoke-output=$webPath")
+    $webFixture = Join-Path $outputRoot "renderer-fixture.html"
+    Set-Content -LiteralPath $webFixture -Encoding UTF8 -Value `
+        '<!doctype html><meta charset="utf-8"><title>Granger renderer fixture</title><p>renderer-ok</p>'
+    $webFixtureUrl = ([Uri]::new($webFixture)).AbsoluteUri
+    Invoke-ReleaseSmoke -Arguments @("--smoke-url=$webFixtureUrl", "--smoke-output=$webPath")
     $web = Get-Content -LiteralPath $webPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $web.ok -or ([Uri]$web.url).Host -ne "example.com") {
-        throw "Downloaded release renderer did not load https://example.com."
+    if (-not $web.ok -or $web.title -ne "Granger renderer fixture") {
+        throw "Downloaded release renderer did not load its local fixture."
     }
 } finally {
     foreach ($name in $environmentNames) {

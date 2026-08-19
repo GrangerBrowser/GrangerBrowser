@@ -772,7 +772,8 @@ void clearApplicationProxy()
         applyApplicationProxy(routes->gatewayProxyUrl());
         return;
     }
-    QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
+    QNetworkProxy::setApplicationProxy(QNetworkProxy(
+        QNetworkProxy::Socks5Proxy, QStringLiteral("127.0.0.1"), 1));
 }
 
 QString embeddedImageDataUrl(const QString &resourcePath, const QByteArray &mimeType)
@@ -4763,8 +4764,7 @@ void MainWindow::finishPampAnalysis(const QString &jobId, const QJsonObject &pag
     const bool clearnetEnrichmentAllowed = usingPrivacyGateway
         ? (routes->status().activeNetwork == PrivacyNetworkKind::Tor
            && routes->status().torRouteVerified && routes->status().networkAllowed)
-        : (m_settings.torConnectionMode() == QStringLiteral("disabled")
-               || job.snapshot.torVerified || m_processProxyActive);
+        : (job.snapshot.torVerified || m_processProxyActive);
     if (!clearnetEnrichmentAllowed) {
         job.snapshot.limitations.append(
             QStringLiteral("DNS/RDAP enrichment was skipped because no verified private route with clearnet access was active; no direct fallback was attempted."));
@@ -4977,10 +4977,6 @@ bool MainWindow::destinationAllowedForNavigation(const QUrl &url, QString *reaso
         return routes->destinationAllowed(url, reason);
     }
     if (m_processProxyActive) return true;
-    if (qApp->property("granger.smokeMode").toBool()
-        && m_settings.torConnectionMode() == QStringLiteral("disabled")) {
-        return true;
-    }
     if (reason) *reason = QStringLiteral("No verified private route");
     return false;
 }
@@ -4995,7 +4991,7 @@ QString MainWindow::currentRouteLabel() const
         return status.activeNetwork == PrivacyNetworkKind::I2p
             ? QStringLiteral("I2P verified") : QStringLiteral("Tor verified");
     }
-    return m_processProxyActive ? m_processProxyUrl : QStringLiteral("Direct");
+    return m_processProxyActive ? m_processProxyUrl : QStringLiteral("Blocked");
 }
 
 QString MainWindow::securityStatusForUrl(const QUrl &url) const
@@ -6532,8 +6528,8 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         m_settings.setProxy(proxy, enabled, QStringLiteral("manual"));
         m_tor.setProxy(enabled ? proxy : QString());
         if (!enabled) {
-            updateRouteState(m_processProxyActive ? QStringLiteral("Applying") : QStringLiteral("Active"),
-                             m_processProxyActive ? QStringLiteral("Direct mode will become active after restart.") : QString());
+            updateRouteState(QStringLiteral("Blocked"),
+                             QStringLiteral("No verified private route is configured."));
         } else {
             updateRouteState(m_processProxyActive && m_processProxyUrl == proxy ? QStringLiteral("Active") : QStringLiteral("Applying"),
                              m_processProxyActive && m_processProxyUrl == proxy ? QString() : QStringLiteral("Restart required to apply Qt WebEngine route."));
@@ -6543,7 +6539,7 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
                          QString(),
                          enabled
                              ? QStringLiteral("Proxy endpoint is reachable. Restart Granger Browser to apply proxy to Qt WebEngine.")
-                             : QStringLiteral("Proxy disabled. Restart Granger Browser if a WebEngine proxy is currently active."));
+                             : QStringLiteral("Proxy disabled. Browsing remains blocked without a verified private route."));
         return;
     }
 
@@ -11053,10 +11049,10 @@ QString MainWindow::privacyDiagnosticsHtml() const
                ? currentRouteLabel()
                : Localization::text(QStringLiteral("privacy.diagnostics.no_verified_route")))
         : (tor.routeVerified
-               ? (m_activeConnectionStrategy.isEmpty() ? QStringLiteral("Tor")
-                                                       : m_activeConnectionStrategy)
-               : (m_processProxyActive ? QStringLiteral("Proxy")
-                                       : Localization::text(QStringLiteral("status.direct"))));
+                ? (m_activeConnectionStrategy.isEmpty() ? QStringLiteral("Tor")
+                                                        : m_activeConnectionStrategy)
+                : (m_processProxyActive ? QStringLiteral("Proxy")
+                                        : Localization::text(QStringLiteral("privacy.diagnostics.no_verified_route"))));
     const QString routeVerified = (usingPrivacyGateway
                                    ? privateRoute.networkAllowed : tor.routeVerified)
         ? Localization::text(QStringLiteral("privacy.status.protected"))

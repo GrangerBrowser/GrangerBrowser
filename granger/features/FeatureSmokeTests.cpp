@@ -3315,7 +3315,7 @@ int runPampLiveSmoke(QApplication &app,
     bool switchedDuringEnrichment = false;
     if (targetAccepted) {
         SettingsManager settings;
-        settings.setTorConnectionMode(QStringLiteral("disabled"));
+        settings.setTorConnectionMode(QStringLiteral("automatic"));
         ThemeManager theme;
         theme.apply(app);
         MainWindow window(settings, theme);
@@ -3332,7 +3332,7 @@ int runPampLiveSmoke(QApplication &app,
             return current.host().compare(target.host(), Qt::CaseInsensitive) == 0
                 && evaluatePage(tab->page(), QStringLiteral(
                        "document.readyState==='complete'&&document.body!==null"), 2500).toBool();
-        }, 60000);
+        }, 180000);
         results.record(QStringLiteral("live target loaded in the Granger Browser profile"),
                        pageLoaded, window.currentAddressForDiagnostics(), target.toString());
 
@@ -3473,7 +3473,7 @@ int runPampLiveSmoke(QApplication &app,
     QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
     const QJsonObject details{
         {QStringLiteral("target"), target.toString(QUrl::FullyEncoded)},
-        {QStringLiteral("routeMode"), QStringLiteral("Direct test profile")},
+        {QStringLiteral("routeMode"), QStringLiteral("Verified private route")},
         {QStringLiteral("switchedDuringEnrichment"), switchedDuringEnrichment},
         {QStringLiteral("reportId"), reportId},
         {QStringLiteral("report"), reportObject},

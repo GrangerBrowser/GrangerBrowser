@@ -24,6 +24,10 @@ if (Test-Path -LiteralPath $resolvedTest) { Remove-Item -LiteralPath $resolvedTe
 New-Item -ItemType Directory -Path $copiedPackage,$dataRoot,$settingsRoot,$unrelatedCwd -Force | Out-Null
 Copy-Item -Path (Join-Path $sourcePackage "*") -Destination $copiedPackage -Recurse -Force
 $executable = Join-Path $copiedPackage "GrangerBrowser.exe"
+$rendererFixture = Join-Path $testRoot "renderer-fixture.html"
+Set-Content -LiteralPath $rendererFixture -Encoding UTF8 -Value `
+    '<!doctype html><meta charset="utf-8"><title>Granger renderer fixture</title><p>renderer-ok</p>'
+$rendererFixtureUrl = ([Uri]::new($rendererFixture)).AbsoluteUri
 
 $versionInfo = (Get-Item -LiteralPath $executable).VersionInfo
 $brandingMetadata = [ordered]@{
@@ -220,6 +224,7 @@ userAgentProfile=default
     $strategyResult = Join-Path $testRoot "strategy-tests.json"
     $networkEnvironmentResult = Join-Path $testRoot "network-environment-smoke.json"
     $privateRouteResult = Join-Path $testRoot "private-route-smoke.json"
+    $networkBootstrapResult = Join-Path $testRoot "network-bootstrap-fail-closed.json"
     $i2pRuntimeResult = Join-Path $testRoot "i2p-runtime-smoke.json"
     $downloadResult = Join-Path $testRoot "download-smoke.json"
     $navigationResult = Join-Path $testRoot "navigation-error-tests.json"
@@ -342,7 +347,7 @@ userAgentProfile=default
         $env:GRANGER_DATA_ROOT = $primaryDataRoot
         $env:GRANGER_SETTINGS_ROOT = $primarySettingsRoot
     }
-    Invoke-GrangerBrowser @("--smoke-url=https://example.com", "--smoke-output=$browserResult")
+    Invoke-GrangerBrowser @("--smoke-url=$rendererFixtureUrl", "--smoke-output=$browserResult")
     Invoke-GrangerBrowser @("--smoke-navigation-errors", "--smoke-output=$navigationResult")
     Invoke-GrangerBrowser @("--smoke-bridge-tests", "--smoke-output=$bridgeResult")
     Invoke-GrangerBrowser @("--smoke-qr-tests", "--smoke-output=$qrResult")
@@ -357,6 +362,13 @@ userAgentProfile=default
     Invoke-GrangerBrowser @("--smoke-strategy-tests", "--smoke-output=$strategyResult")
     Invoke-GrangerBrowser @("--smoke-network-environment", "--smoke-output=$networkEnvironmentResult")
     Invoke-GrangerBrowser @("--smoke-private-routes", "--smoke-output=$privateRouteResult")
+    $relativeCopiedPackage = $copiedPackage.Substring(
+        [IO.Path]::GetFullPath($projectRoot).TrimEnd('\').Length + 1)
+    $relativeBootstrapResult = $networkBootstrapResult.Substring(
+        [IO.Path]::GetFullPath($projectRoot).TrimEnd('\').Length + 1)
+    $networkBootstrap = & (Join-Path $PSScriptRoot "test-network-bootstrap-fail-closed.ps1") `
+        -PackageDirectory $relativeCopiedPackage -OutputPath $relativeBootstrapResult
+    if (-not $networkBootstrap.ok) { throw "Network bootstrap fail-closed regression failed." }
     try {
         $env:GRANGER_DATA_ROOT = Join-Path $testRoot "i2p runtime data"
         $env:GRANGER_SETTINGS_ROOT = Join-Path $testRoot "i2p runtime settings"
@@ -657,59 +669,10 @@ userAgentProfile=default
         Remove-Job -Job $retryFailureDownloadServer -Force
     }
 
-    $searchChecks = [ordered]@{
-        DuckDuckGo = "https://duckduckgo.com/?q=granger%20browser"
-        Google = "https://www.google.com/search?q=granger%20browser"
-        Bing = "https://www.bing.com/search?q=granger%20browser"
-        Brave = "https://search.brave.com/search?q=granger%20browser"
-        Startpage = "https://www.startpage.com/sp/search?query=granger%20browser"
-        Mojeek = "https://www.mojeek.com/search?q=granger%20browser"
-        Yandex = "https://yandex.com/search/?text=%D1%82%D0%B5%D1%81%D1%82%20granger"
-        Onion = "https://ahmia.fi/search/?q=granger%20browser"
-    }
-    $searchResults = @{}
-    foreach ($entry in $searchChecks.GetEnumerator()) {
-        $path = Join-Path $testRoot ("search-{0}.json" -f $entry.Key.ToLowerInvariant())
-        $exitCode = Invoke-GrangerBrowser @("--smoke-url=$($entry.Value)", "--smoke-output=$path") -AllowNonZero
-        $providerResult = Get-Content -Raw -Encoding UTF8 -LiteralPath $path | ConvertFrom-Json
-        $resultPage = switch ($entry.Key) {
-            "DuckDuckGo" { [bool]$providerResult.ok -and $providerResult.url -match '^https://(?:www\.)?duckduckgo\.com/.*[?&]q=' }
-            "Google" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.google\.[^/]+/search[?]' }
-            "Bing" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.bing\.com/search[?]' }
-            "Brave" { [bool]$providerResult.ok -and $providerResult.url -match '^https://search\.brave\.com/search[?]' }
-            "Startpage" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.startpage\.com/sp/search[?]' }
-            "Mojeek" { [bool]$providerResult.ok -and $providerResult.url -match '^https://www\.mojeek\.com/search[?]' }
-            "Yandex" { [bool]$providerResult.ok -and $providerResult.url -match '^https://yandex\.[^/]+/search/[?]' }
-            "Onion" { [bool]$providerResult.ok -and $providerResult.url -match '^https://(?:www\.)?ahmia\.fi/search/[?]' }
-            default { $false }
-        }
-        $externalChallenge = -not $resultPage -and (
-            (-not $providerResult.ok -and (
-                $providerResult.url -match "google\.com/sorry|startpage\.com/.*(?:challenge|captcha)" -or
-                ($entry.Key -eq "Mojeek" -and $providerResult.title -match "403")
-            )) -or
-            ($entry.Key -eq "Yandex" -and [bool]$providerResult.ok -and
-                $providerResult.url -match '^https://(?:www\.)?yandex\.[^/]+/showcaptcha(?:[/?]|$)')
-        )
-        $ahmiaSearchRedirect = $entry.Key -eq "Onion" -and -not $resultPage -and
-            $providerResult.url -match '^https://(?:www\.)?ahmia\.fi/?$' -and
-            ($providerResult.reason -eq "timeout" -or $providerResult.title -match "Ahmia")
-        $externalLimitation = $externalChallenge -or $ahmiaSearchRedirect
-        $searchResults[$entry.Key] = [ordered]@{
-            Path = $path
-            OK = $resultPage
-            Loaded = [bool]$providerResult.ok
-            ExitCode = $exitCode
-            Reason = $providerResult.reason
-            RequestedUrl = $providerResult.requestedUrl
-            FinalUrl = $providerResult.url
-            Title = $providerResult.title
-            ExternalChallenge = $externalChallenge
-            ExternalLimitation = $externalLimitation
-        }
-        if (-not $searchResults[$entry.Key].OK -and -not $searchResults[$entry.Key].ExternalLimitation) {
-            throw "$($entry.Key) search navigation failed without a recognized external limitation."
-        }
+    $searchResults = [ordered]@{
+        Mode = "Offline URL-builder coverage"
+        Evidence = $productResult
+        LiveProviderNavigation = "Not attempted without a verified private route"
     }
 
     $product = Get-Content -Raw -Encoding UTF8 -LiteralPath $productResult | ConvertFrom-Json
@@ -718,6 +681,7 @@ userAgentProfile=default
     $strategy = Get-Content -Raw -Encoding UTF8 -LiteralPath $strategyResult | ConvertFrom-Json
     $networkEnvironment = Get-Content -Raw -Encoding UTF8 -LiteralPath $networkEnvironmentResult | ConvertFrom-Json
     $privateRoute = Get-Content -Raw -Encoding UTF8 -LiteralPath $privateRouteResult | ConvertFrom-Json
+    $networkBootstrap = Get-Content -Raw -Encoding UTF8 -LiteralPath $networkBootstrapResult | ConvertFrom-Json
     $i2pRuntime = Get-Content -Raw -Encoding UTF8 -LiteralPath $i2pRuntimeResult | ConvertFrom-Json
     $download = Get-Content -Raw -Encoding UTF8 -LiteralPath $downloadResult | ConvertFrom-Json
     $navigation = Get-Content -Raw -Encoding UTF8 -LiteralPath $navigationResult | ConvertFrom-Json
@@ -752,7 +716,7 @@ userAgentProfile=default
     $wipeDeletePrepare = Get-Content -Raw -Encoding UTF8 -LiteralPath $wipeDeletePrepareResult | ConvertFrom-Json
     $wipeDeleteVerify = Get-Content -Raw -Encoding UTF8 -LiteralPath $wipeDeleteVerifyResult | ConvertFrom-Json
     if (-not $product.ok -or -not $newTab.ok -or -not $browser.ok -or -not $strategy.ok -or -not $networkEnvironment.ok -or
-        -not $privateRoute.ok -or -not $i2pRuntime.ok -or -not $i2pRuntime.stopped -or
+        -not $privateRoute.ok -or -not $networkBootstrap.ok -or -not $i2pRuntime.ok -or -not $i2pRuntime.stopped -or
         -not $download.ok -or -not $download.sourcePageClosed -or
         -not $navigation.ok -or -not $bridge.ok -or -not $bridgePersistence.ok -or -not $qr.ok -or -not $qrFlow.ok -or -not $performance.ok -or -not $containerPerformance.ok -or
         -not $uiFocus.ok -or -not $developerTools.ok -or -not $contentPersistence.ok -or -not $contentFilterUpdate.ok -or
@@ -834,6 +798,7 @@ userAgentProfile=default
         StrategyTests = $strategyResult
         NetworkEnvironmentSmoke = $networkEnvironmentResult
         PrivateRouteSmoke = $privateRouteResult
+        NetworkBootstrapFailClosed = $networkBootstrapResult
         I2pRuntimeSmoke = $i2pRuntimeResult
         NavigationErrorTests = $navigationResult
         BridgeTests = $bridgeResult

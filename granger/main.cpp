@@ -202,6 +202,24 @@ bool isSupportedProxy(const QUrl &url)
             || scheme == QStringLiteral("https"));
 }
 
+bool isLoopbackProxy(const QString &proxyText)
+{
+    const QUrl proxy(proxyText.trimmed());
+    if (!isSupportedProxy(proxy) || proxy.port(-1) < 1 || proxy.port(-1) > 65535) {
+        return false;
+    }
+    if (proxy.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    QHostAddress address;
+    return address.setAddress(proxy.host()) && address.isLoopback();
+}
+
+void removeUntrustedChromiumNetworkOverrides()
+{
+    qunsetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+}
+
 void appendChromiumFlag(const QByteArray &flag)
 {
     QByteArray flags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS").trimmed();
@@ -456,6 +474,17 @@ int runSmoke(QApplication &app, const QUrl &url, const QString &outputPath)
     QTimer timeout;
     timeout.setSingleShot(true);
 
+    const auto addRouteEvidence = [&app](QJsonObject *result) {
+        result->insert(QStringLiteral("startupProcessProxy"),
+                       app.property("granger.startupProcessProxy").toString());
+        result->insert(QStringLiteral("privacyGateway"),
+                       app.property("granger.usePrivacyGateway").toBool());
+        result->insert(QStringLiteral("blockedTestGateway"),
+                       app.property("granger.blockedTestGateway").toBool());
+        result->insert(QStringLiteral("chromiumFlags"),
+                       QString::fromLocal8Bit(qgetenv("QTWEBENGINE_CHROMIUM_FLAGS")));
+    };
+
     QObject::connect(&timeout, &QTimer::timeout, &app, [&] {
         QJsonObject result;
         result.insert(QStringLiteral("ok"), false);
@@ -466,6 +495,7 @@ int runSmoke(QApplication &app, const QUrl &url, const QString &outputPath)
                       granger::sanitizeDownloadSourceUrl(
                           page.url().isValid() ? page.url() : url));
         result.insert(QStringLiteral("title"), page.title());
+        addRouteEvidence(&result);
         QFile file(outputPath);
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -480,6 +510,7 @@ int runSmoke(QApplication &app, const QUrl &url, const QString &outputPath)
         result.insert(QStringLiteral("ok"), ok);
         result.insert(QStringLiteral("url"), page.url().toString());
         result.insert(QStringLiteral("title"), page.title());
+        addRouteEvidence(&result);
         QFile file(outputPath);
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -1573,9 +1604,6 @@ int runUiScreenshot(QApplication &app,
                      const QString &qrImage,
                      int waitMs)
 {
-    if (waitForVerifiedRoute) {
-        QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
-    }
     auto *settings = new granger::SettingsManager(&app);
     if (waitForVerifiedRoute) {
         settings->setProxy(QString(), false);
@@ -3309,8 +3337,6 @@ int runAutomaticConnectionSmoke(QApplication &app, const QString &outputPath, co
                                          : externalSocksUrl.trimmed());
     settings->setUpstreamProxy(QString(), QString(), QString());
     settings->setTorConnectionMode(QStringLiteral("automatic"));
-    QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
-
     auto *theme = new granger::ThemeManager();
     theme->apply(app);
     auto *window = new granger::MainWindow(*settings, *theme);
@@ -3892,8 +3918,6 @@ int runExternalPrivacyAudit(QApplication &app,
             : externalSocksUrl.trimmed());
     settings->setUpstreamProxy(QString(), QString(), QString());
     settings->setTorConnectionMode(QStringLiteral("automatic"));
-    QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
-
     auto *theme = new granger::ThemeManager();
     theme->apply(app);
     auto *window = new granger::MainWindow(*settings, *theme);
@@ -4487,8 +4511,6 @@ int runBridgePersistenceSmoke(QApplication &app, const QString &outputPath)
     const bool oldProxyEnabled = settings->proxyEnabled();
     settings->setTorConnectionMode(QStringLiteral("disabled"));
     settings->setProxy(QString(), false);
-    QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
-
     auto *theme = new granger::ThemeManager();
     theme->apply(app);
     auto *window = new granger::MainWindow(*settings, *theme);
@@ -4625,9 +4647,7 @@ int runManagedModeSmoke(QApplication &app,
     settings->setTorConnectionMode(QStringLiteral("disabled"));
     const QString startupProcessProxy =
         qApp->property("granger.startupProcessProxy").toString().trimmed();
-    if (startupProcessProxy.isEmpty()) {
-        QNetworkProxy::setApplicationProxy(QNetworkProxy(QNetworkProxy::NoProxy));
-    } else {
+    if (!startupProcessProxy.isEmpty()) {
         applyWebEngineProxy(startupProcessProxy);
     }
 
@@ -5957,6 +5977,7 @@ int main(int argc, char *argv[])
         }
         return 4;
     }
+    removeUntrustedChromiumNetworkOverrides();
     applyWebRtcLeakProtectionStartupFlag();
     applyAntiTelemetryStartupFlags();
     applyFingerprintProcessFlags();
@@ -5967,7 +5988,7 @@ int main(int argc, char *argv[])
     const QString managedModeSmoke = startupArgumentValue(argc, argv, QStringLiteral("--smoke-managed-mode="));
     const QString privateRouteLiveAcceptance = startupArgumentValue(
         argc, argv, QStringLiteral("--private-route-live-acceptance="));
-    const QString startupProcessProxy = !smokeProxy.isEmpty()
+    QString startupProcessProxy = !smokeProxy.isEmpty()
         ? smokeProxy
         : (!managedModeSmoke.isEmpty()
                ? QStringLiteral("socks5://127.0.0.1:19050") : QString());
@@ -5980,7 +6001,22 @@ int main(int argc, char *argv[])
             break;
         }
     }
-    const bool usePrivacyGateway = smokeProxy.isEmpty() && !smokeMode;
+    const bool verifiedRouteSmoke = automaticRouteSmoke || externalPrivacyAudit
+        || hasStartupArgument(argc, argv, QStringLiteral("--ui-wait-for-verified-route"))
+        || hasStartupArgument(argc, argv, QStringLiteral("--smoke-pamp-live"));
+    if (!smokeProxy.isEmpty() && !isLoopbackProxy(smokeProxy)) {
+        fprintf(stderr, "Granger Browser rejected a non-loopback smoke proxy.\n");
+        return 7;
+    }
+    if (!smokeProxy.isEmpty()
+        && hasStartupArgument(argc, argv, QStringLiteral("--smoke-pamp-live"))) {
+        fprintf(stderr, "Pamp live acceptance must use the verified private-route gateway.\n");
+        return 7;
+    }
+    const bool usePrivacyGateway = startupProcessProxy.isEmpty()
+        && (!smokeMode || verifiedRouteSmoke);
+    const bool useBlockedTestGateway = startupProcessProxy.isEmpty()
+        && smokeMode && !usePrivacyGateway;
     if (!startupProcessProxy.isEmpty()) {
         applyWebEngineProxy(startupProcessProxy);
     }
@@ -6007,7 +6043,8 @@ int main(int argc, char *argv[])
     granger::PrivacyNetworkManager::installInstance(&privacyNetwork);
     app.setProperty("granger.usePrivacyGateway", usePrivacyGateway);
     app.setProperty("granger.smokeMode", smokeMode);
-    if (usePrivacyGateway) {
+    app.setProperty("granger.blockedTestGateway", useBlockedTestGateway);
+    if (usePrivacyGateway || useBlockedTestGateway) {
         QString gatewayError;
         if (!privacyNetwork.initializeGateway(&gatewayError)) {
             QMessageBox::critical(nullptr,
@@ -6016,10 +6053,14 @@ int main(int argc, char *argv[])
                                       .arg(gatewayError));
             return 6;
         }
-        applyWebEngineProxy(privacyNetwork.gatewayProxyUrl());
-        appendChromiumFlag(QByteArrayLiteral("--proxy-bypass-list=<-loopback>"));
+        startupProcessProxy = privacyNetwork.gatewayProxyUrl();
+        app.setProperty("granger.startupProcessProxy", startupProcessProxy);
+        applyWebEngineProxy(startupProcessProxy);
+        if (usePrivacyGateway) {
+            appendChromiumFlag(QByteArrayLiteral("--proxy-bypass-list=<-loopback>"));
+        }
         appendChromiumFlag(QByteArrayLiteral("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1"));
-        app.setProperty("granger.privacyGatewayProxy", privacyNetwork.gatewayProxyUrl());
+        app.setProperty("granger.privacyGatewayProxy", startupProcessProxy);
         QObject::connect(&app, &QCoreApplication::aboutToQuit,
                          &privacyNetwork, &granger::PrivacyNetworkManager::stop);
     }
