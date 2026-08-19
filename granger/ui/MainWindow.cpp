@@ -6500,7 +6500,7 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
             loadInternalPage(tab,
                              QStringLiteral("about:settings?category=connection"),
                              QString(),
-                             QStringLiteral("Manual and Direct proxy modes are disabled by the fail-closed private-route policy."));
+                             QStringLiteral("Manual WebEngine proxy modes are disabled by the fail-closed private-route policy."));
             return;
         }
         const QString proxy = decodedQueryItem(query, QStringLiteral("url")).trimmed();

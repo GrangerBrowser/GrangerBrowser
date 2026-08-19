@@ -87,9 +87,20 @@ try {
             "--smoke-profile-state",
             "--smoke-output=$(Join-Path $testRoot 'invalid-proxy.json')"
         )
-    $nonLoopbackProxyRejected = $proxyProbe.ExitCode -eq 7
+    $externalSmokeProxyRejected = $proxyProbe.ExitCode -eq 7
+    $argumentProbe = Start-Process -FilePath $executable -WorkingDirectory $testRoot -Wait -PassThru `
+        -ArgumentList @('--webEngineArgs', '--no-proxy-server')
+    $chromiumArgumentOverrideRejected = $argumentProbe.ExitCode -eq 8
+    $mixedModeProbe = Start-Process -FilePath $executable -WorkingDirectory $testRoot -Wait -PassThru `
+        -ArgumentList @(
+            '--smoke-managed-mode=direct',
+            "--smoke-url=$target",
+            "--smoke-output=$(Join-Path $testRoot 'mixed-mode.json')"
+        )
+    $mixedManagedModeRejected = $mixedModeProbe.ExitCode -eq 9
     $ok = -not $directConnectionObserved -and -not [bool]$browserResult.ok -and
-        $gatewayPinned -and $untrustedFlagsRemoved -and $nonLoopbackProxyRejected
+        $gatewayPinned -and $untrustedFlagsRemoved -and $externalSmokeProxyRejected -and
+        $chromiumArgumentOverrideRejected -and $mixedManagedModeRejected
 
     $result = [ordered]@{
         ok = $ok
@@ -100,7 +111,9 @@ try {
         blockedTestGateway = [bool]$browserResult.blockedTestGateway
         startupProcessProxy = [string]$browserResult.startupProcessProxy
         untrustedChromiumFlagsRemoved = $untrustedFlagsRemoved
-        nonLoopbackSmokeProxyRejected = $nonLoopbackProxyRejected
+        externalSmokeProxyRejected = $externalSmokeProxyRejected
+        chromiumArgumentOverrideRejected = $chromiumArgumentOverrideRejected
+        mixedManagedModeRejected = $mixedManagedModeRejected
         chromiumFlags = $flags
     }
     New-Item -ItemType Directory -Path (Split-Path -Parent $resultPath) -Force | Out-Null

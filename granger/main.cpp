@@ -202,22 +202,32 @@ bool isSupportedProxy(const QUrl &url)
             || scheme == QStringLiteral("https"));
 }
 
-bool isLoopbackProxy(const QString &proxyText)
-{
-    const QUrl proxy(proxyText.trimmed());
-    if (!isSupportedProxy(proxy) || proxy.port(-1) < 1 || proxy.port(-1) > 65535) {
-        return false;
-    }
-    if (proxy.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0) {
-        return true;
-    }
-    QHostAddress address;
-    return address.setAddress(proxy.host()) && address.isLoopback();
-}
-
 void removeUntrustedChromiumNetworkOverrides()
 {
     qunsetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+}
+
+bool hasUntrustedChromiumNetworkArguments(int argc, char *argv[])
+{
+    static const QStringList blockedPrefixes{
+        QStringLiteral("--no-proxy-server"),
+        QStringLiteral("--proxy-server"),
+        QStringLiteral("--proxy-bypass-list"),
+        QStringLiteral("--host-resolver-rules"),
+        QStringLiteral("--host-rules")
+    };
+    for (int i = 1; i < argc; ++i) {
+        const QString argument = QString::fromLocal8Bit(argv[i]).trimmed();
+        if (argument.compare(QStringLiteral("--webEngineArgs"), Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+        for (const QString &prefix : blockedPrefixes) {
+            if (argument.startsWith(prefix, Qt::CaseInsensitive)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void appendChromiumFlag(const QByteArray &flag)
@@ -306,6 +316,34 @@ bool hasStartupArgument(int argc, char *argv[], const QString &value)
         }
     }
     return false;
+}
+
+bool managedModeArgumentsAreIsolated(int argc, char *argv[])
+{
+    static const QStringList allowedPrefixes{
+        QStringLiteral("--smoke-managed-mode="),
+        QStringLiteral("--smoke-output="),
+        QStringLiteral("--smoke-upstream-url="),
+        QStringLiteral("--smoke-managed-bridge-line="),
+        QStringLiteral("--smoke-managed-bridge-file=")
+    };
+    for (int i = 1; i < argc; ++i) {
+        const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (!argument.startsWith(QStringLiteral("--smoke-"))) {
+            continue;
+        }
+        bool allowed = false;
+        for (const QString &prefix : allowedPrefixes) {
+            if (argument.startsWith(prefix)) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void applyWebEngineProxy(const QString &proxyText)
@@ -5977,6 +6015,10 @@ int main(int argc, char *argv[])
         }
         return 4;
     }
+    if (hasUntrustedChromiumNetworkArguments(argc, argv)) {
+        fprintf(stderr, "Granger Browser rejected an external Chromium network override.\n");
+        return 8;
+    }
     removeUntrustedChromiumNetworkOverrides();
     applyWebRtcLeakProtectionStartupFlag();
     applyAntiTelemetryStartupFlags();
@@ -5988,10 +6030,12 @@ int main(int argc, char *argv[])
     const QString managedModeSmoke = startupArgumentValue(argc, argv, QStringLiteral("--smoke-managed-mode="));
     const QString privateRouteLiveAcceptance = startupArgumentValue(
         argc, argv, QStringLiteral("--private-route-live-acceptance="));
-    QString startupProcessProxy = !smokeProxy.isEmpty()
-        ? smokeProxy
-        : (!managedModeSmoke.isEmpty()
-               ? QStringLiteral("socks5://127.0.0.1:19050") : QString());
+    if (!managedModeSmoke.isEmpty() && !managedModeArgumentsAreIsolated(argc, argv)) {
+        fprintf(stderr, "Granger Browser rejected mixed managed-route smoke arguments.\n");
+        return 9;
+    }
+    QString startupProcessProxy = !managedModeSmoke.isEmpty()
+        ? QStringLiteral("socks5://127.0.0.1:19050") : QString();
     bool smokeMode = false;
     for (int i = 1; i < argc; ++i) {
         const QString argument = QString::fromLocal8Bit(argv[i]);
@@ -6004,13 +6048,8 @@ int main(int argc, char *argv[])
     const bool verifiedRouteSmoke = automaticRouteSmoke || externalPrivacyAudit
         || hasStartupArgument(argc, argv, QStringLiteral("--ui-wait-for-verified-route"))
         || hasStartupArgument(argc, argv, QStringLiteral("--smoke-pamp-live"));
-    if (!smokeProxy.isEmpty() && !isLoopbackProxy(smokeProxy)) {
-        fprintf(stderr, "Granger Browser rejected a non-loopback smoke proxy.\n");
-        return 7;
-    }
-    if (!smokeProxy.isEmpty()
-        && hasStartupArgument(argc, argv, QStringLiteral("--smoke-pamp-live"))) {
-        fprintf(stderr, "Pamp live acceptance must use the verified private-route gateway.\n");
+    if (!smokeProxy.isEmpty()) {
+        fprintf(stderr, "Granger Browser rejected an external smoke proxy.\n");
         return 7;
     }
     const bool usePrivacyGateway = startupProcessProxy.isEmpty()
