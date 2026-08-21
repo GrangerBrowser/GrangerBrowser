@@ -4249,8 +4249,8 @@ int runExternalPrivacyAudit(QApplication &app,
         item.insert(QStringLiteral("screenshotPath"), screenshotPath);
         item.insert(QStringLiteral("screenshotSaved"), screenshotSaved);
 
-        const auto collectMainWorldProbe =
-            [&, item, stage, hostMatches, tab](const QJsonObject &dnsFetchDiagnostic) {
+        auto collectMainWorldProbe =
+            [&, item, stage, hostMatches, tab](const QJsonObject &dnsFetchDiagnostic) mutable {
         tab->page()->runJavaScript(externalPrivacyAuditProbeScript(),
                                    [&, item, stage, hostMatches, dnsFetchDiagnostic](const QVariant &value) mutable {
             const QByteArray probeBytes = value.toString().toUtf8();
