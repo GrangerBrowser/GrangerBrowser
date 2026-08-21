@@ -758,7 +758,7 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                        && HttpsFirstPolicy::evaluate(QUrl(QStringLiteral("http://sub.example.com/")),
                                                      HttpsFirstMode::Strict,
                                                      {QStringLiteral("example.com")}).upgrade);
-    results.record(QStringLiteral("route security labels distinguish Direct, Tor and Onion"),
+    results.record(QStringLiteral("route security labels distinguish HTTPS, Tor and Onion"),
                    HttpsFirstPolicy::routeSecurityStatus(QUrl(QStringLiteral("https://example.com")), false)
                            == QStringLiteral("https-direct")
                        && HttpsFirstPolicy::routeSecurityStatus(QUrl(QStringLiteral("http://example.com")), true)
@@ -1122,7 +1122,7 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                    compact(QJsonObject::fromVariantMap(torWebGl)));
     const QVariantMap normalCanvas = normalSurfaces.value(QStringLiteral("canvas")).toMap();
     const QVariantMap torCanvas = torSurfaces.value(QStringLiteral("canvas")).toMap();
-    results.record(QStringLiteral("Protected Canvas readback is stable within the Direct profile"),
+    results.record(QStringLiteral("Protected Canvas readback is stable within the standard profile"),
                    !normalCanvas.value(QStringLiteral("restricted")).toBool()
                        && normalCanvas.value(QStringLiteral("stable")).toBool(),
                    compact(QJsonObject::fromVariantMap(normalCanvas)));
@@ -1214,7 +1214,7 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
     results.record(QStringLiteral("Tor restricts high-risk device and advertising APIs"),
                    sensitiveApisRestricted,
                    compact(QJsonObject::fromVariantMap(torApiTypes)));
-    results.record(QStringLiteral("Direct and Tor fingerprint identities are stable and isolated"),
+    results.record(QStringLiteral("Standard and Tor fingerprint identities are stable and isolated"),
                    manager.fingerprintScriptSource(PrivacyProfileKind::Normal)
                            != manager.fingerprintScriptSource(PrivacyProfileKind::Tor)
                        && manager.fingerprintScriptSource(PrivacyProfileKind::Normal)

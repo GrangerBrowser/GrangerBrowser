@@ -1073,7 +1073,7 @@ QWebEngineProfile *ContainerManager::profileFor(const QString &containerId, Priv
                 QStringLiteral("container cache"));
         } else if (kind == PrivacyProfileKind::Tor) {
             // Tor starts with a clean route-specific store. Importing the old mixed
-            // Direct/Tor store would preserve the cross-route identity leak.
+            // Standard/Tor store would preserve the cross-route identity leak.
             profileRoot = AppPaths::containerTorProfileRoot(cleanId);
             cacheRoot = AppPaths::containerTorCacheRoot(cleanId);
         } else {

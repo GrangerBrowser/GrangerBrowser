@@ -722,7 +722,7 @@ int runFeatureSmokeTests(QApplication &app,
                        researchOnion && researchOnion != research
                            && researchOnion->persistentStoragePath()
                                    != research->persistentStoragePath());
-        results.record(QStringLiteral("Direct and Tor identities in one Space use different profiles"),
+        results.record(QStringLiteral("Standard and Tor identities in one Space use different profiles"),
                        research && researchTor && researchTor == researchTorAgain
                            && researchTor != research && researchTor != researchOnion
                            && BrowserProfile::kindForProfile(research)

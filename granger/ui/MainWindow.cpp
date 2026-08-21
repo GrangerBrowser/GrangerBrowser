@@ -8747,7 +8747,8 @@ void MainWindow::loadDownloadHistory()
         item.mimeType = jsonString(object, QStringLiteral("mimeType"));
         item.state = jsonString(object, QStringLiteral("state"), QStringLiteral("Completed"));
         item.reason = jsonString(object, QStringLiteral("reason"));
-        item.route = jsonString(object, QStringLiteral("route"), QStringLiteral("Direct"));
+        item.route = jsonString(object, QStringLiteral("route"),
+                                QStringLiteral("Unknown legacy route"));
         item.spaceId = jsonString(object, QStringLiteral("spaceId"));
         item.spaceName = jsonString(object, QStringLiteral("spaceName"));
         item.receivedBytes = qint64(object.value(QStringLiteral("receivedBytes")).toDouble());
