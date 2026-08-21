@@ -40,6 +40,51 @@ namespace {
 constexpr auto kFingerprintScriptName = "granger-privacy-policy-v1";
 constexpr auto kStorageCleanupMarker = "clear-normal-site-storage-on-startup.flag";
 
+QString standardUserAgentPlatform()
+{
+#ifdef Q_OS_LINUX
+    return QStringLiteral("X11; Linux x86_64");
+#else
+    return QStringLiteral("Windows NT 10.0; Win64; x64");
+#endif
+}
+
+QString compatibleUserAgentPlatformToken()
+{
+#ifdef Q_OS_LINUX
+    return QStringLiteral("Linux x86_64");
+#else
+    return QStringLiteral("Windows NT");
+#endif
+}
+
+QString standardNavigatorPlatform()
+{
+#ifdef Q_OS_LINUX
+    return QStringLiteral("Linux x86_64");
+#else
+    return QStringLiteral("Win32");
+#endif
+}
+
+QString standardClientHintsPlatform()
+{
+#ifdef Q_OS_LINUX
+    return QStringLiteral("Linux");
+#else
+    return QStringLiteral("Windows");
+#endif
+}
+
+QString standardClientHintsPlatformVersion()
+{
+#ifdef Q_OS_LINUX
+    return QString();
+#else
+    return QStringLiteral("10.0.0");
+#endif
+}
+
 QString profilesPath()
 {
     return AppPaths::stateFile(QStringLiteral("privacy_profiles.json"));
@@ -1566,7 +1611,8 @@ QJsonObject PrivacyPolicyManager::architectureDiagnostics() const
 bool PrivacyPolicyManager::isCompatibleUserAgent(const QString &userAgent)
 {
     const QString clean = userAgent.trimmed();
-    if (clean.isEmpty() || !clean.contains(QStringLiteral("Windows NT"), Qt::CaseInsensitive)
+    if (clean.isEmpty()
+        || !clean.contains(compatibleUserAgentPlatformToken(), Qt::CaseInsensitive)
         || !clean.contains(QStringLiteral("AppleWebKit/537.36"), Qt::CaseInsensitive)
         || !clean.contains(QStringLiteral("Safari/537.36"), Qt::CaseInsensitive)
         || clean.contains(QStringLiteral("Firefox/"), Qt::CaseInsensitive)) {
@@ -1585,9 +1631,9 @@ QString PrivacyPolicyManager::standardChromiumUserAgent(const QString &engineUse
     Q_UNUSED(engineUserAgent)
     const QString major = QString::fromLatin1(qWebEngineChromiumVersion())
                               .section(QLatin1Char('.'), 0, 0);
-    return QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%1.0.0.0 "
-                          "Safari/537.36").arg(major);
+    return QStringLiteral("Mozilla/5.0 (%1) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%2.0.0.0 "
+                          "Safari/537.36").arg(standardUserAgentPlatform(), major);
 }
 
 bool PrivacyPolicyManager::applyPendingStartupCleanup(QStringList *errors)
@@ -1749,9 +1795,9 @@ void PrivacyPolicyManager::applyProfileSettings(QWebEngineProfile *profile, Priv
                 const QRegularExpressionMatch match = versionPattern.match(profile->httpUserAgent());
                 if (match.hasMatch()) hintVersion = match.captured(1);
             }
-            hints->setPlatform(QStringLiteral("Windows"));
+            hints->setPlatform(standardClientHintsPlatform());
             const bool reduced = fingerprint.clientHintsMode == QStringLiteral("reduced");
-            hints->setPlatformVersion(reduced ? QString() : QStringLiteral("10.0.0"));
+            hints->setPlatformVersion(reduced ? QString() : standardClientHintsPlatformVersion());
             hints->setArch(reduced ? QString() : QStringLiteral("x86"));
             hints->setBitness(reduced ? QString() : QStringLiteral("64"));
             hints->setIsMobile(false);
@@ -1828,6 +1874,8 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
     const QString userAgent = publicUserAgent(kind);
     const QString appVersion = userAgent.startsWith(QStringLiteral("Mozilla/"))
         ? userAgent.mid(QStringLiteral("Mozilla/").size()) : userAgent;
+    const QString navigatorPlatform = standardNavigatorPlatform();
+    const QString clientHintsPlatform = standardClientHintsPlatform();
     const auto jsonString = [](const QString &value) {
         QByteArray encoded = QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
         return QString::fromUtf8(encoded.mid(1, encoded.size() - 2));
@@ -1838,7 +1886,7 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
   if (location.hostname === 'granger.local' || globalThis.__grangerPrivacyInstalled) return;
   const rules = __RULES__;
   const sessionRules = __SESSION_RULES__;
-  const base = { fingerprint: __FP__, strict: __STRICT__, webRtc: __WEBRTC__, webAssembly: __WASM__, persistentStorage: __STORAGE__, gpc: __GPC__, dnt: __DNT__, restrictReferrer: __RESTRICT_REFERRER__, webGL: '__WEBGL__', canvas: '__CANVAS__', audio: '__AUDIO__', fonts: '__FONTS__', screen: '__SCREEN__', timezone: '__TIMEZONE__', hardware: '__HARDWARE__', locale: __LOCALE__, languages: Object.freeze(__LANGUAGES__), workers: __WORKERS__, identitySeed: __IDENTITY_SEED__, userAgent: __USER_AGENT__, appVersion: __APP_VERSION__, chromiumMajor: '__CHROMIUM_MAJOR__' };
+  const base = { fingerprint: __FP__, strict: __STRICT__, webRtc: __WEBRTC__, webAssembly: __WASM__, persistentStorage: __STORAGE__, gpc: __GPC__, dnt: __DNT__, restrictReferrer: __RESTRICT_REFERRER__, webGL: '__WEBGL__', canvas: '__CANVAS__', audio: '__AUDIO__', fonts: '__FONTS__', screen: '__SCREEN__', timezone: '__TIMEZONE__', hardware: '__HARDWARE__', locale: __LOCALE__, languages: Object.freeze(__LANGUAGES__), workers: __WORKERS__, identitySeed: __IDENTITY_SEED__, userAgent: __USER_AGENT__, appVersion: __APP_VERSION__, navigatorPlatform: __NAVIGATOR_PLATFORM__, clientHintsPlatform: __CLIENT_HINTS_PLATFORM__, chromiumMajor: '__CHROMIUM_MAJOR__' };
   const matchRule = () => {
     const origin = location.origin;
     const host = location.hostname.toLowerCase();
@@ -1929,7 +1977,7 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
   if (policy.fingerprint) {
     define(Navigator.prototype, 'appVersion', base.appVersion);
     define(Navigator.prototype, 'vendor', 'Google Inc.');
-    define(Navigator.prototype, 'platform', 'Win32');
+    define(Navigator.prototype, 'platform', base.navigatorPlatform);
     define(Navigator.prototype, 'maxTouchPoints', 0);
     define(Navigator.prototype, 'language', base.locale);
     define(Navigator.prototype, 'languages', base.languages);
@@ -1954,7 +2002,7 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
             const reduced = {
               brands: Array.from(this.brands || []),
               mobile: false,
-              platform: 'Windows'
+              platform: base.clientHintsPlatform
             };
             for (const name of names) {
               if (name === 'uaFullVersion') reduced[name] = base.chromiumMajor + '.0.0.0';
@@ -2705,6 +2753,8 @@ QString PrivacyPolicyManager::buildFingerprintScript(PrivacyProfileKind kind,
     source.replace(QStringLiteral("__IDENTITY_SEED__"), QString::number(identitySeed));
     source.replace(QStringLiteral("__USER_AGENT__"), jsonString(userAgent));
     source.replace(QStringLiteral("__APP_VERSION__"), jsonString(appVersion));
+    source.replace(QStringLiteral("__NAVIGATOR_PLATFORM__"), jsonString(navigatorPlatform));
+    source.replace(QStringLiteral("__CLIENT_HINTS_PLATFORM__"), jsonString(clientHintsPlatform));
     source.replace(QStringLiteral("__CHROMIUM_MAJOR__"), chromiumMajor);
     source.replace(QStringLiteral("__LOCALE__"), jsonString(matrix.locale));
     source.replace(QStringLiteral("__LANGUAGES__"),

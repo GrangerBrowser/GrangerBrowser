@@ -53,6 +53,36 @@
 namespace granger {
 namespace {
 
+QString expectedNavigatorPlatform()
+{
+#ifdef Q_OS_LINUX
+    return QStringLiteral("Linux x86_64");
+#else
+    return QStringLiteral("Win32");
+#endif
+}
+
+QString expectedClientHintsPlatform()
+{
+#ifdef Q_OS_LINUX
+    return QStringLiteral("Linux");
+#else
+    return QStringLiteral("Windows");
+#endif
+}
+
+QString wrongMajorChromiumUserAgent()
+{
+#ifdef Q_OS_LINUX
+    constexpr auto platform = "X11; Linux x86_64";
+#else
+    constexpr auto platform = "Windows NT 10.0; Win64; x64";
+#endif
+    return QStringLiteral("Mozilla/5.0 (%1) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/1.0.0.0 Safari/537.36")
+        .arg(QString::fromLatin1(platform));
+}
+
 struct JavaScriptEvaluationState final {
     QVariant value;
     QPointer<QEventLoop> loop;
@@ -903,7 +933,8 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                        && normalJs.value(QStringLiteral("audioContext")).toString() == QStringLiteral("function"));
     results.record(QStringLiteral("Balanced navigator values are internally standardized"),
                    normalJs.value(QStringLiteral("installed")).toString() == QStringLiteral("v1")
-                       && normalJs.value(QStringLiteral("platform")).toString() == QStringLiteral("Win32")
+                       && normalJs.value(QStringLiteral("platform")).toString()
+                              == expectedNavigatorPlatform()
                        && normalJs.value(QStringLiteral("hardwareConcurrency")).toInt() == 4
                        && normalJs.value(QStringLiteral("maxTouchPoints")).toInt() == 0);
     results.record(QStringLiteral("Balanced blocks Local Font Access without disabling page fonts"),
@@ -1036,7 +1067,7 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
     QString torSurfaceError;
     const QVariantMap torSurfaces = evaluateFingerprintSurfaces(
         manager, PrivacyProfileKind::Tor, &torSurfaceError);
-    results.record(QStringLiteral("fingerprint surface probes execute in Direct and Tor profiles"),
+    results.record(QStringLiteral("fingerprint surface probes execute in standard and Tor profiles"),
                    normalSurfaceError.isEmpty() && torSurfaceError.isEmpty()
                        && normalSurfaces.value(QStringLiteral("fatalError")).toString().isEmpty()
                        && torSurfaces.value(QStringLiteral("fatalError")).toString().isEmpty(),
@@ -1067,7 +1098,7 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
     results.record(QStringLiteral("Client Hints match the reduced Chromium identity"),
                    clientHintBrandClean
                        && clientHints.value(QStringLiteral("platform")).toString()
-                              == QStringLiteral("Windows")
+                              == expectedClientHintsPlatform()
                        && !clientHints.value(QStringLiteral("mobile")).toBool()
                        && highHints.value(QStringLiteral("architecture")).toString().isEmpty()
                        && highHints.value(QStringLiteral("bitness")).toString().isEmpty()
@@ -1912,7 +1943,7 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
     results.record(QStringLiteral("Firefox and wrong-major custom identities are rejected"),
                    !PrivacyPolicyManager::isCompatibleUserAgent(QStringLiteral("Mozilla/5.0 Firefox/128.0"))
                        && !PrivacyPolicyManager::isCompatibleUserAgent(
-                           QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/1.0.0.0 Safari/537.36")));
+                           wrongMajorChromiumUserAgent()));
 
     PrivacyConfiguration strict = PrivacyPolicyManager::defaultConfiguration(PrivacyPreset::Strict, QStringLiteral("Strict test"));
     QString strictError;
