@@ -21,7 +21,7 @@ i2pd_version="2.61.0"
 i2pd_asset="i2pd_2.61.0-1jammy1_amd64.deb"
 i2pd_url="https://github.com/PurpleI2P/i2pd/releases/download/${i2pd_version}/${i2pd_asset}"
 i2pd_archive_sha256="09348999d4561c46037e3cc2aa2b9d76ec7ac3007db2c1d4a9f92b20b9ca8687"
-i2pd_binary_sha256="252823e8f3dde6232d2a178027d2a249afa81b7a4595273bcdb4cd3500852b1"
+i2pd_binary_sha256="252823e8f3dde6232d2a178027d2a249afa81b7a4595273bcdbe4cd3500852b1"
 
 fail() {
     printf 'Linux runtime staging failed: %s\n' "$*" >&2
@@ -51,6 +51,8 @@ download_pinned() {
     local url="$1"
     local path="$2"
     local expected="$3"
+    [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "invalid pinned SHA-256 for $(basename "$path")"
     if [[ ! -f "$path" ]]; then
         curl --fail --location --proto '=https' --tlsv1.2 \
             --retry 3 --output "${path}.part" "$url"
@@ -105,6 +107,8 @@ declare -A tor_file_hashes=(
 )
 for relative_path in "${!tor_file_hashes[@]}"; do
     file_path="$tor_extract/$relative_path"
+    [[ "${tor_file_hashes[$relative_path]}" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || fail "invalid pinned SHA-256 for $relative_path"
     [[ -f "$file_path" ]] || fail "Tor archive is missing $relative_path"
     printf '%s  %s\n' "${tor_file_hashes[$relative_path]}" "$file_path" \
         | sha256sum --check --status || fail "unexpected Tor file: $relative_path"
