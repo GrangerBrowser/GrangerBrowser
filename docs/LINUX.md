@@ -47,6 +47,17 @@ privacy runtimes and notices, rejects glibc/loader bundling and unresolved
 libraries, and then creates the AppImage. The AppImage, AppDir, downloaded SDK,
 runtime archives, profiles, logs, and acceptance captures must not be committed.
 
+Pinned AppImage packaging tools:
+
+- linuxdeploy `1-alpha-20251107-1`, SHA-256
+  `C20CD71E3A4E3B80C3483CEF793CDA3F4E990ACA14014D23C544CA3CE1270B4D`
+- linuxdeploy Qt plugin `1-alpha-20250213-1`, SHA-256
+  `15106BE885C1C48A021198E7E1E9A48CE9D02A86DD0A1848F00BDBF3C1C92724`
+
+Both tools are fetched from their official GitHub release repositories and
+validated before execution. Their MIT license texts and source records are
+stored under `third_party/linuxdeploy/` and copied into the AppImage.
+
 ## Privacy runtimes
 
 `scripts/fetch-linux-runtimes.sh` accepts only pinned official x86_64 inputs.

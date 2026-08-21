@@ -4,9 +4,9 @@ Granger Browser is a native C++/Qt desktop application. The packaged browser eng
 Qt WebEngine and is Chromium-based.
 
 The release package contains third-party Qt runtime components, the Tor Expert
-Bundle, the PurpleI2P i2pd runtime, and the ISC-licensed quirc QR decoder by Daniel Beer. Their notices and
-license texts are copied into the release `licenses` directory by
-`scripts/package-release.ps1`.
+Bundle, the PurpleI2P i2pd runtime, and the ISC-licensed quirc QR decoder by
+Daniel Beer. Their notices and license texts are copied into the packaged
+license directory by the platform packaging scripts.
 
 Qt modules are distributed under the license options stated by the Qt Project
 for each module and build. This notice is not a substitute for the applicable
@@ -21,6 +21,11 @@ The bundled i2pd 2.61.0 Windows x64 and Linux x86_64 runtimes are provided by
 the PurpleI2P Project under the BSD-3-Clause license. Their license and pinned
 source/checksum records are retained in the package metadata and under
 `third_party/i2pd/`.
+
+The Linux AppImage is assembled with pinned linuxdeploy and linuxdeploy Qt
+plugin builds. Those packaging tools and the AppImage output plugin are
+MIT-licensed. Their source records and license texts are retained under
+`third_party/linuxdeploy/` and copied into the AppImage.
 
 Search-provider vector marks from Simple Icons are packaged locally under CC0
 1.0. Product names and marks remain the property of their respective owners.

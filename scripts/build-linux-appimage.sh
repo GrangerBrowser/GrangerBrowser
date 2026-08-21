@@ -63,6 +63,12 @@ cp -a "$project_root/NOTICE.txt" "$project_root/DISTRIBUTION.md" \
     "$appdir/usr/share/licenses/granger-browser/"
 cp -a "$project_root/third_party/i2pd/LICENSE" \
     "$appdir/usr/share/licenses/granger-browser/i2pd-BSD-3-Clause.txt"
+cp -a "$project_root/third_party/linuxdeploy/LICENSE.txt" \
+    "$appdir/usr/share/licenses/granger-browser/linuxdeploy-MIT.txt"
+cp -a "$project_root/third_party/linuxdeploy/LICENSE-appimage-plugin.txt" \
+    "$appdir/usr/share/licenses/granger-browser/linuxdeploy-appimage-plugin-MIT.txt"
+cp -a "$project_root/third_party/linuxdeploy/README.md" \
+    "$appdir/usr/share/licenses/granger-browser/linuxdeploy-SOURCES.md"
 cp -a "$runtime_root/tor/docs/." "$appdir/usr/share/licenses/granger-browser/"
 if [[ -d "$qt_root/LICENSES" ]]; then
     cp -a "$qt_root/LICENSES" "$appdir/usr/share/licenses/granger-browser/Qt-LICENSES"
