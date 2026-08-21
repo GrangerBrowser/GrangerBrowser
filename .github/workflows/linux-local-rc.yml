@@ -30,7 +30,8 @@ jobs:
             build-essential ninja-build curl ca-certificates gnupg jq zstd \
             patchelf file binutils libfuse2 xvfb xauth iproute2 tcpdump \
             libboost-program-options1.74.0 libminiupnpc17 libssl3 zlib1g \
-            libgl1 libegl1 libopengl0 libfontconfig1 libdbus-1-3 libnss3 \
+            libgl1 libegl1 libopengl0 libgl1-mesa-dev libegl1-mesa-dev \
+            libfontconfig1 libdbus-1-3 libnss3 \
             libnspr4 libasound2 libx11-xcb1 libxcomposite1 libxdamage1 \
             libxrandr2 libxtst6 libdrm2 libgbm1 libxshmfence1 libxcb1 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
