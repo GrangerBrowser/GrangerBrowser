@@ -83,12 +83,22 @@ jq -e --arg data "$test_root/xdg/data" --arg cache "$test_root/xdg/cache" '
     .ok == true
     and (.qtVersion == "6.11.2")
     and (.qtWebEngineVersion == "6.11.2")
+    and (.profileUserAgent | contains("X11; Linux x86_64"))
+    and (.javascriptUserAgent | contains("X11; Linux x86_64"))
     and (.persistentStoragePath | startswith($data))
     and (.cachePath | startswith($cache))
     and (.webEngineProcessPath | endswith("/usr/bin/QtWebEngineProcess"))
     and (.webEngineResourcesPath | endswith("/usr/bin/resources"))
     and (.webEngineLocalesPath | endswith("/usr/bin/translations/qtwebengine_locales"))
 ' "$profile_report" >/dev/null || fail "profile/XDG/WebEngine runtime assertions failed"
+
+privacy_report="$report_root/privacy-smoke.json"
+run_extracted 300 \
+    --smoke-privacy-tests "--smoke-output=$privacy_report" \
+    >"$report_root/privacy-smoke.log" 2>&1 \
+    || fail "standalone privacy suite failed"
+jq -e '.ok == true' "$privacy_report" >/dev/null \
+    || fail "standalone privacy report did not pass"
 
 routes_report="$report_root/private-route-deterministic.json"
 run_extracted 120 \
