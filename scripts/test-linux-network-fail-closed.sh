@@ -8,6 +8,11 @@ report="$report_root/network-namespace-fail-closed.json"
 
 mkdir -p "$report_root"
 
+fail() {
+    printf 'Linux network namespace acceptance failed: %s\n' "$*" >&2
+    exit 1
+}
+
 skip() {
     jq -n --arg reason "$1" \
         '{ok:false,status:"UNVERIFIED",reason:$reason,packetLevelAcceptance:"UNVERIFIED"}' \
@@ -136,6 +141,9 @@ wait "$tcpdump_pid" 2>/dev/null || true
 tcpdump_pid=""
 sudo -n chown "$(id -u):$(id -g)" "$pcap" 2>/dev/null || true
 packet_count="$(tcpdump -nn -r "$pcap" 2>/dev/null | wc -l)"
+tcp_packet_count="$(tcpdump -nn -r "$pcap" tcp 2>/dev/null | wc -l)"
+udp_packet_count="$(tcpdump -nn -r "$pcap" udp 2>/dev/null | wc -l)"
+dns_packet_count="$(tcpdump -nn -r "$pcap" 'port 53' 2>/dev/null | wc -l)"
 listener_requests="$(grep -Ec '"(GET|POST|CONNECT|HEAD) ' "$listener_log" || true)"
 
 non_loopback_blocked=false
@@ -143,7 +151,7 @@ i2p_blocked=false
 if [[ "$non_loopback_exit" -ne 0 ]] && jq -e '
     .ok == false and .blockedTestGateway == true
     and (.startupProcessProxy | startswith("socks5://127.0.0.1:"))
-    and (.chromiumFlags | contains("--host-resolver-rules=MAP * ~NOTFOUND"))
+    and (.chromiumFlags | contains("--host-resolver-rules=\"MAP * ~NOTFOUND"))
     and (.chromiumFlags | contains("--no-sandbox") | not)
     and (.chromiumFlags | contains("--no-proxy-server") | not)
 ' "$report_root/non-loopback-navigation.json" >/dev/null 2>&1; then
@@ -151,7 +159,7 @@ if [[ "$non_loopback_exit" -ne 0 ]] && jq -e '
 fi
 if [[ "$i2p_exit" -ne 0 ]] && jq -e '
     .ok == false and .blockedTestGateway == true
-    and (.chromiumFlags | contains("--host-resolver-rules=MAP * ~NOTFOUND"))
+    and (.chromiumFlags | contains("--host-resolver-rules=\"MAP * ~NOTFOUND"))
 ' "$report_root/i2p-dns-navigation.json" >/dev/null 2>&1; then
     i2p_blocked=true
 fi
@@ -169,6 +177,9 @@ jq -n \
     --arg hostInterface "$host_if" \
     --arg target "$host_address:18080" \
     --argjson packets "$packet_count" \
+    --argjson tcpPackets "$tcp_packet_count" \
+    --argjson udpPackets "$udp_packet_count" \
+    --argjson dnsPackets "$dns_packet_count" \
     --argjson requests "$listener_requests" \
     --argjson nonLoopbackBlocked "$non_loopback_blocked" \
     --argjson i2pBlocked "$i2p_blocked" \
@@ -178,7 +189,8 @@ jq -n \
       method:"network namespace + veth + tcpdump",
       namespace:$namespace,hostInterface:$hostInterface,target:$target,
       capturedPackets:$packets,listenerRequests:$requests,
-      directTcpPackets:$packets,directUdpPackets:$packets,systemDnsPackets:$packets,
+      directTcpPackets:$tcpPackets,directUdpPackets:$udpPackets,
+      systemDnsPackets:$dnsPackets,
       nonLoopbackNavigationBlocked:$nonLoopbackBlocked,
       i2pNavigationBlockedWithoutDns:$i2pBlocked,
       noSandboxArgumentExit:$noSandboxExit,noProxyArgumentExit:$noProxyExit,
