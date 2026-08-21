@@ -2,7 +2,7 @@
 
 # Granger Browser
 
-### Privacy-focused Windows browser with integrated Tor and I2P, isolated browsing environments and built-in privacy controls.
+### Privacy-focused desktop browser with integrated Tor and I2P, isolated browsing environments and built-in privacy controls.
 
 Native C++20 · Qt 6 · Chromium · Tor · I2P
 
@@ -31,7 +31,9 @@ Native C++20 · Qt 6 · Chromium · Tor · I2P
 
 ## What is Granger?
 
-**Granger Browser** is a native privacy-oriented desktop browser for Windows.
+**Granger Browser** is a native privacy-oriented desktop browser. Windows x64
+is the public release target; a native Linux x86_64 AppImage is under local RC
+development and is not yet published for download.
 
 It is built with **C++20, Qt Widgets and Qt WebEngine**, using Chromium as the underlying web engine while adding its own privacy controls, managed Tor and I2P routing, isolated browsing environments, site permissions, content filtering and native desktop UI.
 
@@ -229,13 +231,13 @@ The installer and portable download use the same complete Qt, WebEngine, ICU, Vi
 | Windows 10 x64 | Supported target, testing coverage may vary |
 | Windows ARM64 | Not currently provided |
 | Windows x86 | Not supported |
-| Linux | Not currently supported |
+| Linux x86_64 | Native local RC in development; no public download |
 | macOS | Not currently supported |
 | Windows 7 / 8 / 8.1 | Not supported |
 
-Granger currently ships as a **Windows x64 browser**.
-
-Cross-platform support may be considered later, but the current codebase and release pipeline are focused on modern 64-bit Windows systems.
+Granger currently ships publicly as a **Windows x64 browser**. The Linux target
+is native C++/Qt code, not Wine, but still requires independent physical-host
+acceptance before any public release.
 
 ---
 
@@ -317,11 +319,12 @@ That condition is reported as an actual connection failure rather than silently 
 
 ## Private network routing
 
-Tor is the default preferred privacy network. The Windows package contains Tor
-0.4.9.11 from the signed Tor Expert Bundle 15.0.20. I2P is bundled as a managed
-secondary backend using official PurpleI2P i2pd 2.61.0. Network preference is
-not a direct-mode switch: Granger keeps a local fail-closed gateway in front of
-Qt WebEngine and only opens it for a verified private route.
+Tor is the default preferred privacy network. Windows packages and the native
+Linux local RC use Tor 0.4.9.11 from signed Tor Expert Bundle 15.0.20 inputs.
+I2P is bundled as a managed secondary backend using official PurpleI2P i2pd
+2.61.0. Network preference is not a direct-mode switch: Granger keeps a local
+fail-closed gateway in front of Qt WebEngine and only opens it for a verified
+private route.
 
 - `.onion` destinations require verified Tor.
 - `.i2p` destinations require verified I2P.
@@ -456,6 +459,10 @@ Mutable browser data is stored outside the portable package under:
 %LOCALAPPDATA%\Granger\Granger Browser\
 ```
 
+The native Linux local RC uses the corresponding XDG config, data, and cache
+locations. The AppImage mount remains read-only; see
+[docs/LINUX.md](docs/LINUX.md) for the exact layout.
+
 This can include:
 
 - browser profile
@@ -485,8 +492,8 @@ Granger currently uses:
 | Qt | 6.11.2 |
 | Networking privacy | Managed Tor and bundled I2P |
 | Build system | CMake |
-| Primary compiler | MSVC 2022 x64 |
-| Primary platform | Windows x64 |
+| Compilers | MSVC 2022 x64; GCC for Linux RC |
+| Platforms | Windows x64; Linux x86_64 local RC |
 
 Qt WebEngine is Chromium-based, but Granger is not Chromium itself and does not claim feature parity with Chrome, Chromium, Firefox, Tor Browser or Mullvad Browser.
 
@@ -509,6 +516,9 @@ Required Qt modules include:
 - WebEngineWidgets
 - WebChannel
 - Positioning
+
+These commands describe the public Windows build. Native Linux x86_64 build
+and AppImage instructions are in [docs/LINUX.md](docs/LINUX.md).
 
 Build and package:
 
@@ -590,7 +600,7 @@ Bug reports are especially useful when they include:
 
 ```text
 Granger version:
-Windows version:
+Operating system and version:
 CPU:
 GPU:
 Connection mode:

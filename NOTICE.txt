@@ -17,10 +17,10 @@ The Tor Expert Bundle retains the Tor Project and bundled-library license texts
 provided in its `docs` directory. Packaging copies those files without replacing
 their terms.
 
-The bundled i2pd 2.61.0 Windows x64 runtime is provided by the PurpleI2P
-Project under the BSD-3-Clause license. Its license and pinned source/checksum
-record are packaged as `licenses/i2pd-LICENSE.txt` and
-`licenses/i2pd-SOURCE.md`.
+The bundled i2pd 2.61.0 Windows x64 and Linux x86_64 runtimes are provided by
+the PurpleI2P Project under the BSD-3-Clause license. Their license and pinned
+source/checksum records are retained in the package metadata and under
+`third_party/i2pd/`.
 
 Search-provider vector marks from Simple Icons are packaged locally under CC0
 1.0. Product names and marks remain the property of their respective owners.

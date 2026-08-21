@@ -23,16 +23,33 @@ Tor, lyrebird 0.8.1, Conjure, `pt_config.json`, `geoip`, and `geoip6` in
 `deployment-metadata.json`. The package retains the upstream Tor, lyrebird,
 Conjure, libevent, OpenSSL, and zlib notices.
 
+The native Linux x86_64 local RC uses Tor 0.4.9.11 and lyrebird 0.8.1 from the
+signed Tor Expert Bundle 15.0.20. Its pinned archive SHA-256 is
+`3B39A2A7FBF43EF28B9AE0A6AFCA02A12935232F81769E4FEF7472D6B5676EAF`.
+The build validates the detached signature against the same Tor Browser
+Developers primary fingerprint and records hashes for the Linux Tor,
+lyrebird, Conjure, GeoIP, and transport configuration files.
+
 The i2pd archive is the official Windows x64 MinGW release with SHA-256
 `A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F`.
 It is licensed under BSD-3-Clause. Binaries and certificates are read from the
 package; mutable router state is stored under the Granger user-data root.
 
+The Linux local RC uses PurpleI2P's official Ubuntu Jammy amd64 package with
+SHA-256
+`09348999D4561C46037E3CC2AA2B9D76EC7AC3007DB2C1D4A9F92B20B9CA8687`.
+The staged i2pd binary SHA-256 is
+`252823E8F3DDE6232D2A178027D2A249AFA81B7A4595273BCDBE4CD3500852B1`.
+Linux Tor and I2P mutable state follows the Granger XDG data root; neither
+backend writes into the read-only AppImage mount or falls back to a system
+installation.
+
 ### I2P naming and startup
 
 Both `.b32.i2p` destinations and human-readable `.i2p` names are resolved by
-i2pd. Granger never sends an I2P hostname to Windows DNS, Tor DNS, or a
-clearnet resolver. An unknown name therefore fails inside the I2P backend.
+i2pd. Granger never sends an I2P hostname to Windows or Linux system DNS, Tor
+DNS, or a clearnet resolver. An unknown name therefore fails inside the I2P
+backend.
 
 On a new profile, Granger copies a compiled address-book bootstrap to the
 writable I2P data directory before starting i2pd. The snapshot was retrieved

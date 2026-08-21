@@ -1,8 +1,11 @@
 # Building Granger Browser
 
-Granger Browser is a native C++20/Qt 6 application. The release target is a GUI-subsystem executable named `GrangerBrowser.exe`; it does not open a console and does not invoke Python.
+Granger Browser is a native C++20/Qt 6 application. Windows is the public
+release target. A native Linux x86_64 AppImage target is available as a local
+RC build and does not use Wine. Neither packaged target invokes Python at
+runtime.
 
-## Requirements
+## Windows requirements
 
 - CMake 3.24+
 - Visual Studio 2022 with the MSVC x64 toolchain
@@ -148,6 +151,31 @@ After acceptance, `create-portable-archive.ps1` writes
 the complete PE file from the canonical package. Publish that ZIP as a GitHub
 Release asset; GitHub's generated source archives are not portable application
 packages.
+
+## Linux local RC
+
+The native Linux build requires CMake 3.24+, Ninja, a C++20 GCC or Clang
+toolchain, GnuPG, standard ELF/AppImage tooling, and the official Qt 6.11.2
+`linux_gcc_64` SDK with WebEngine, WebChannel, Positioning, and SerialPort.
+SerialPort is packaged because Qt's NMEA positioning plugin depends on it.
+
+```bash
+export QT_ROOT="$HOME/Qt/6.11.2/gcc_64"
+scripts/build-linux-appimage.sh
+scripts/test-linux-appimage.sh
+```
+
+`scripts/fetch-linux-runtimes.sh` downloads only pinned official Tor and
+PurpleI2P artifacts, verifies their hashes, validates the Tor detached OpenPGP
+signature, checks embedded versions, and stages native Linux executables under
+ignored `output/` storage. The resulting AppImage contains package-local Qt,
+Qt WebEngine, Tor, lyrebird, Conjure, and i2pd runtimes. It does not fall back
+to system Tor or i2pd.
+
+The manual `Build Linux local RC` workflow builds and tests the native package
+but never creates a tag or GitHub Release. See [docs/LINUX.md](docs/LINUX.md)
+for prerequisites, runtime inventory, XDG paths, sandbox checks, packet tests,
+and current portability limitations.
 
 ## Mutable Data
 
