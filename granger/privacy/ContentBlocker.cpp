@@ -38,6 +38,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <utility>
 
 namespace granger {
 namespace {
@@ -54,6 +55,23 @@ constexpr qint64 kMaximumCompiledCacheBytes = 192 * 1024 * 1024;
 constexpr quint32 kCompiledCacheMagic = 0x44534342;
 constexpr quint16 kCompiledCacheVersion = 1;
 constexpr int kMaximumRecentEvents = 256;
+
+template <typename T>
+class AtomicSharedPtr final {
+public:
+    std::shared_ptr<const T> load() const noexcept
+    {
+        return std::atomic_load_explicit(&m_value, std::memory_order_acquire);
+    }
+
+    void store(std::shared_ptr<const T> value) noexcept
+    {
+        std::atomic_store_explicit(&m_value, std::move(value), std::memory_order_release);
+    }
+
+private:
+    std::shared_ptr<const T> m_value;
+};
 
 enum CategoryFlag {
     CategoryAds = 1 << 0,
@@ -1487,7 +1505,7 @@ private:
     }
 
     mutable QMutex m_mutex;
-    std::atomic<std::shared_ptr<const Snapshot>> m_snapshot;
+    AtomicSharedPtr<Snapshot> m_snapshot;
 };
 
 class TrackerDomainPolicy final {
@@ -1617,7 +1635,7 @@ private:
     }
 
     mutable QMutex m_mutex;
-    std::atomic<std::shared_ptr<const Snapshot>> m_snapshot;
+    AtomicSharedPtr<Snapshot> m_snapshot;
 };
 
 class BlockingStatistics final {
@@ -2106,8 +2124,8 @@ public:
     FilterUpdateManager updates;
     UrlPolicy urlPolicy;
     QStringList customRules;
-    std::atomic<std::shared_ptr<const CompiledRuleSet>> rules;
-    std::atomic<std::shared_ptr<const BlockingOptions>> options;
+    AtomicSharedPtr<CompiledRuleSet> rules;
+    AtomicSharedPtr<BlockingOptions> options;
     std::atomic<quint64> generation{0};
 };
 
