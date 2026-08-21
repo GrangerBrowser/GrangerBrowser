@@ -23,11 +23,14 @@ skip() {
     exit 77
 }
 
-for command_name in ip tcpdump jq python3 timeout sudo Xvfb; do
+for command_name in ip tcpdump jq python3 timeout sudo Xvfb pgrep; do
     command -v "$command_name" >/dev/null 2>&1 || skip "missing command: $command_name"
 done
 [[ -x "$appimage" ]] || skip "AppImage is unavailable"
+[[ "$(id -u)" -ne 0 ]] \
+    || skip "run this test as an unprivileged user with passwordless sudo"
 sudo -n true >/dev/null 2>&1 || skip "passwordless sudo is unavailable"
+test_user="$(id -un)"
 
 suffix="$$"
 namespace="granger-fc-$suffix"
@@ -44,11 +47,27 @@ tcpdump_pid=""
 listener_pid=""
 xvfb_pid=""
 
-cleanup() {
-    if [[ -n "$tcpdump_pid" ]]; then
-        sudo -n kill "$tcpdump_pid" 2>/dev/null || true
-        wait "$tcpdump_pid" 2>/dev/null || true
+stop_tcpdump() {
+    [[ -n "$tcpdump_pid" ]] || return 0
+    tcpdump_child="$(pgrep -P "$tcpdump_pid" | head -n 1 || true)"
+    if [[ -n "$tcpdump_child" ]]; then
+        sudo -n kill -INT "$tcpdump_child" 2>/dev/null || true
     fi
+    for _ in $(seq 1 40); do
+        kill -0 "$tcpdump_pid" 2>/dev/null || break
+        sleep 0.25
+    done
+    if kill -0 "$tcpdump_pid" 2>/dev/null; then
+        [[ -n "$tcpdump_child" ]] \
+            && sudo -n kill -TERM "$tcpdump_child" 2>/dev/null || true
+        sudo -n kill -TERM "$tcpdump_pid" 2>/dev/null || true
+    fi
+    wait "$tcpdump_pid" 2>/dev/null || true
+    tcpdump_pid=""
+}
+
+cleanup() {
+    stop_tcpdump
     if [[ -n "$listener_pid" ]]; then
         kill "$listener_pid" 2>/dev/null || true
         wait "$listener_pid" 2>/dev/null || true
@@ -96,8 +115,8 @@ sleep 1
 
 namespace_env=(
     "HOME=$test_root/home"
-    "USER=${USER:-runner}"
-    "LOGNAME=${LOGNAME:-${USER:-runner}}"
+    "USER=$test_user"
+    "LOGNAME=$test_user"
     "DISPLAY=$DISPLAY"
     "PATH=/usr/bin:/bin"
     "XDG_CONFIG_HOME=$test_root/xdg/config"
@@ -115,7 +134,7 @@ namespace_env=(
 )
 
 run_in_namespace() {
-    sudo -n ip netns exec "$namespace" sudo -n -u "${USER:-runner}" \
+    sudo -n ip netns exec "$namespace" sudo -n -u "$test_user" \
         env -i "${namespace_env[@]}" timeout 60 "$appimage" "$@"
 }
 
@@ -143,9 +162,7 @@ no_proxy_exit=$?
 set -e
 
 sleep 2
-sudo -n kill "$tcpdump_pid" 2>/dev/null || true
-wait "$tcpdump_pid" 2>/dev/null || true
-tcpdump_pid=""
+stop_tcpdump
 sudo -n chown "$(id -u):$(id -g)" "$pcap" 2>/dev/null || true
 packet_count="$(tcpdump -nn -r "$pcap" 2>/dev/null | wc -l)"
 tcp_packet_count="$(tcpdump -nn -r "$pcap" tcp 2>/dev/null | wc -l)"

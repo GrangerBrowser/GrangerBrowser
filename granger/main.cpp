@@ -576,9 +576,46 @@ int runSmoke(QApplication &app, const QUrl &url, const QString &outputPath)
     return app.exec();
 }
 
-int runRendererSandboxProbe(QApplication &app)
+int runRendererSandboxProbe(QApplication &app, const QString &outputPath)
 {
     auto *page = new QWebEnginePage(granger::BrowserProfile::instance(), &app);
+    QObject::connect(page, &QWebEnginePage::loadFinished, &app,
+                     [page, outputPath](bool loaded) {
+        if (outputPath.isEmpty()) {
+            return;
+        }
+        const auto writeResult = [page, outputPath](bool javascriptExecuted,
+                                                     int value) {
+            QJsonObject result;
+            result.insert(QStringLiteral("ok"), javascriptExecuted && value == 42);
+            result.insert(QStringLiteral("pageLoaded"), true);
+            result.insert(QStringLiteral("javascriptExecuted"), javascriptExecuted);
+            result.insert(QStringLiteral("value"), value);
+            result.insert(QStringLiteral("title"), page->title());
+            QFile file(outputPath);
+            QDir().mkpath(QFileInfo(outputPath).absolutePath());
+            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                file.write(QJsonDocument(result).toJson(QJsonDocument::Indented));
+            }
+        };
+        if (!loaded) {
+            QJsonObject result;
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("pageLoaded"), false);
+            result.insert(QStringLiteral("javascriptExecuted"), false);
+            QFile file(outputPath);
+            QDir().mkpath(QFileInfo(outputPath).absolutePath());
+            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                file.write(QJsonDocument(result).toJson(QJsonDocument::Indented));
+            }
+            return;
+        }
+        page->runJavaScript(
+            QStringLiteral("document.documentElement.dataset.grangerRendererProbe = 'ok'; 42"),
+            [writeResult](const QVariant &value) {
+                writeResult(value.isValid(), value.toInt());
+            });
+    });
     page->setHtml(QStringLiteral("<!doctype html><title>Granger renderer probe</title>"),
                   QUrl(QStringLiteral("about:blank")));
     QTimer::singleShot(120000, &app, [&app] { app.quit(); });
@@ -6211,7 +6248,8 @@ int main(int argc, char *argv[])
     }
     const QString smokeUrl = argumentValue(arguments, QStringLiteral("--smoke-url="));
     if (arguments.contains(QStringLiteral("--smoke-renderer-sandbox"))) {
-        return runRendererSandboxProbe(app);
+        return runRendererSandboxProbe(
+            app, argumentValue(arguments, QStringLiteral("--smoke-output=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-idle-event-profile"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

@@ -1158,6 +1158,7 @@ int runFeatureSmokeTests(QApplication &app,
                            + QStringLiteral("; ")
                            + junctionRetryErrors.join(QStringLiteral("; ")));
 
+#ifdef Q_OS_WIN
         const QString lockedId = QStringLiteral("55555555-5555-4555-8555-555555555555");
         const QString lockedRoot = AppPaths::containerRoot(lockedId);
         const QString lockedStorage = AppPaths::containerStorageRoot(lockedId);
@@ -1165,23 +1166,17 @@ int runFeatureSmokeTests(QApplication &app,
         const bool lockFixturesWritten =
             writeFile(QDir(lockedRoot).filePath(QStringLiteral("metadata.marker")), "metadata")
             && writeFile(lockedFile, "locked");
-#ifdef Q_OS_WIN
         const std::wstring nativeLockedFile = QDir::toNativeSeparators(lockedFile).toStdWString();
         HANDLE lockedHandle = CreateFileW(nativeLockedFile.c_str(), GENERIC_READ | GENERIC_WRITE,
                                           0, nullptr, OPEN_EXISTING,
                                           FILE_ATTRIBUTE_NORMAL, nullptr);
         const bool fileLocked = lockedHandle != INVALID_HANDLE_VALUE;
-#else
-        const bool fileLocked = false;
-#endif
         QStringList lockedErrors;
         const bool lockedCleanupDeferred = lockFixturesWritten && fileLocked
             && writeLegacyCleanup(lockedId)
             && !ContainerManager::applyPendingCleanup(&lockedErrors)
             && QFileInfo::exists(lockedStorage);
-#ifdef Q_OS_WIN
         if (lockedHandle != INVALID_HANDLE_VALUE) CloseHandle(lockedHandle);
-#endif
         QStringList lockedRetryErrors;
         const bool lockedCleanupRetried = lockedCleanupDeferred
             && ContainerManager::applyPendingCleanup(&lockedRetryErrors)
@@ -1192,6 +1187,7 @@ int runFeatureSmokeTests(QApplication &app,
                        lockedErrors.join(QStringLiteral("; "))
                            + QStringLiteral("; ")
                            + lockedRetryErrors.join(QStringLiteral("; ")));
+#endif
 
         const bool uncommittedQueueWritten = writeLegacyCleanup(researchId);
         QStringList uncommittedErrors;
@@ -1689,7 +1685,7 @@ int runFeatureSmokeTests(QApplication &app,
                                 == DesignTokens::sidebarSpaceSwitcherHeight
                             && previousSpaceButton->isVisible()
                             && nextSpaceButton->isVisible()
-                            && currentSpaceButton->text().contains(defaultDisplayName)
+                            && currentSpaceButton->accessibleName() == defaultDisplayName
                             && currentSpaceButton->property("sidebarCount").toString()
                                 == QStringLiteral("20")
                             && currentSpaceButton->property("active").toBool()
@@ -1701,14 +1697,20 @@ int runFeatureSmokeTests(QApplication &app,
                            && tabsHeader->accessibleName() == Localization::text(
                                QStringLiteral("spaces.tabs_header")),
                        tabsHeader
-                            ? QStringLiteral("label=%1; tabs=%2; space=%3; spaces=%4")
+                            ? QStringLiteral("label=%1; tabs=%2; space=%3; spaceTabs=%4; "
+                                             "spaces=%5; previousVisible=%6; nextVisible=%7")
                                   .arg(tabsHeader->text(),
                                        tabsHeader->property("sidebarCount").toString(),
                                        currentSpaceButton
                                            ? currentSpaceButton->accessibleName()
                                            : QStringLiteral("missing"))
+                                  .arg(currentSpaceButton
+                                           ? currentSpaceButton->property("sidebarCount").toString()
+                                           : QStringLiteral("missing"))
                                   .arg(spaceMenu
                                            ? spaceMenu->property("spaceCount").toInt() : -1)
+                                  .arg(previousSpaceButton && previousSpaceButton->isVisible())
+                                  .arg(nextSpaceButton && nextSpaceButton->isVisible())
                             : QStringLiteral("missing header"));
 
         if (nextSpaceButton) nextSpaceButton->click();
