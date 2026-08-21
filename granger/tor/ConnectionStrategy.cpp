@@ -115,11 +115,7 @@ QString findExecutableByName(const QString &name, const QStringList &directories
     if (!configured.isEmpty()) {
         return configured;
     }
-    QString path = QStandardPaths::findExecutable(name);
-    if (path.isEmpty() && !name.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)) {
-        path = QStandardPaths::findExecutable(name + QStringLiteral(".exe"));
-    }
-    return path.isEmpty() ? QString() : QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
+    return QString();
 }
 
 QString processOutput(const QString &program, const QStringList &arguments)
@@ -322,12 +318,14 @@ TorRuntime TorBinaryResolver::resolve(const QString &projectRoot)
     runtime.lyrebirdPath = findExecutableByName(QStringLiteral("lyrebird"), directories, qEnvironmentVariable("GRANGER_LYREBIRD_PATH"));
 
     const QString appDir = QCoreApplication::applicationDirPath();
+    runtime.checkedTorPaths << QDir(appDir).filePath(QStringLiteral("runtime/tor/tor"));
+    runtime.checkedLyrebirdPaths << QDir(appDir).filePath(QStringLiteral("runtime/tor/pluggable_transports/lyrebird"));
+#ifdef Q_OS_WIN
     runtime.checkedTorPaths << QDir(appDir).filePath(QStringLiteral("runtime/tor/tor.exe"));
     runtime.checkedLyrebirdPaths << QDir(appDir).filePath(QStringLiteral("runtime/tor/pluggable_transports/lyrebird.exe"));
+#endif
     if (!qEnvironmentVariable("GRANGER_TOR_PATH").trimmed().isEmpty()) runtime.checkedTorPaths << qEnvironmentVariable("GRANGER_TOR_PATH");
     if (!qEnvironmentVariable("GRANGER_LYREBIRD_PATH").trimmed().isEmpty()) runtime.checkedLyrebirdPaths << qEnvironmentVariable("GRANGER_LYREBIRD_PATH");
-    runtime.checkedTorPaths << QStringLiteral("PATH: tor.exe");
-    runtime.checkedLyrebirdPaths << QStringLiteral("PATH: lyrebird.exe");
 
     const QString runtimeRoot = qEnvironmentVariable("GRANGER_RUNTIME_ROOT").trimmed();
     QStringList geoIpCandidates{

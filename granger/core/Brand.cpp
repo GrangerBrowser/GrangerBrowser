@@ -8,7 +8,11 @@ namespace {
 constexpr auto kOrganizationName = "Granger";
 constexpr auto kOrganizationDomain = "granger.local";
 constexpr auto kApplicationName = "Granger Browser";
+#ifdef Q_OS_WIN
 constexpr auto kExecutableName = "GrangerBrowser.exe";
+#else
+constexpr auto kExecutableName = "GrangerBrowser";
+#endif
 constexpr auto kSettingsFileName = "GrangerBrowser.ini";
 constexpr auto kCredentialTarget = "GrangerBrowser/UpstreamProxyPassword";
 constexpr auto kInternalHost = "granger.local";

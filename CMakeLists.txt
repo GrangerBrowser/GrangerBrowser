@@ -73,6 +73,8 @@ qt_add_executable(granger_browser
     granger/network/PrivateRouteSmokeTests.h
     granger/network/PrivacyNetworkManager.cpp
     granger/network/PrivacyNetworkManager.h
+    granger/platform/ManagedProcess.cpp
+    granger/platform/ManagedProcess.h
     granger/privacy/PrivacyTypes.cpp
     granger/privacy/PrivacyTypes.h
     granger/privacy/PrivacyConfigSerializer.cpp
@@ -127,6 +129,13 @@ qt_add_executable(granger_browser
     third_party/quirc/lib/version_db.c
 )
 
+if(UNIX AND NOT APPLE)
+    target_sources(granger_browser PRIVATE
+        granger/platform/linux/LinuxSignalHandler.cpp
+        granger/platform/linux/LinuxSignalHandler.h
+    )
+endif()
+
 if(WIN32)
     target_sources(granger_browser PRIVATE granger/resources/GrangerBrowser.rc)
 endif()
@@ -144,10 +153,30 @@ target_link_libraries(granger_browser PRIVATE
     Qt6::WebEngineWidgets
 )
 
+if(UNIX AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_options(granger_browser PRIVATE
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=."
+        "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=."
+        "-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=."
+    )
+endif()
+
+set_target_properties(granger_browser PROPERTIES OUTPUT_NAME "GrangerBrowser")
+
 if(WIN32)
     target_link_libraries(granger_browser PRIVATE Advapi32 Iphlpapi Psapi Shell32 User32 Winhttp Ws2_32)
     set_target_properties(granger_browser PROPERTIES
         WIN32_EXECUTABLE TRUE
-        OUTPUT_NAME "GrangerBrowser"
     )
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS granger_browser RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/linux/granger-browser.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES granger/resources/app-icon.png
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps
+        RENAME granger-browser.png)
 endif()

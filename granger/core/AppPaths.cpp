@@ -39,7 +39,11 @@ QString AppPaths::dataRoot()
     }
     QString root = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     if (root.isEmpty()) {
+#ifdef Q_OS_WIN
         root = QDir::home().filePath(QStringLiteral("AppData/Local/Granger/Granger Browser"));
+#else
+        root = QDir::home().filePath(QStringLiteral(".local/share/granger"));
+#endif
     }
     return QDir(root).absolutePath();
 }
@@ -172,7 +176,11 @@ QString AppPaths::webEngineCacheRoot()
         root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     }
     if (root.isEmpty()) {
+#ifdef Q_OS_WIN
         root = QDir(dataRoot()).filePath(QStringLiteral("cache"));
+#else
+        root = QDir::home().filePath(QStringLiteral(".cache/granger"));
+#endif
     }
     return QDir(root).filePath(QStringLiteral("webengine"));
 }

@@ -94,7 +94,12 @@ int runBrandSmokeTests(QApplication &app, const QString &outputPath)
                        && Brand::organizationDomain() == QStringLiteral("granger.local")
                        && Brand::applicationName() == QStringLiteral("Granger Browser")
                        && Brand::productName() == QStringLiteral("Granger Browser")
-                       && Brand::executableName() == QStringLiteral("GrangerBrowser.exe"));
+#ifdef Q_OS_WIN
+                       && Brand::executableName() == QStringLiteral("GrangerBrowser.exe")
+#else
+                       && Brand::executableName() == QStringLiteral("GrangerBrowser")
+#endif
+                       );
     results.record(QStringLiteral("runtime application metadata uses the current identity"),
                    QCoreApplication::organizationName() == Brand::organizationName()
                        && QCoreApplication::organizationDomain() == Brand::organizationDomain()

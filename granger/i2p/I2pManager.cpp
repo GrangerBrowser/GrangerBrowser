@@ -1,6 +1,7 @@
 #include "granger/i2p/I2pManager.h"
 
 #include "granger/core/AppPaths.h"
+#include "granger/platform/ManagedProcess.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -149,6 +150,15 @@ QString absoluteRuntimePath(const QString &relative)
     return QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(relative);
 }
 
+QString i2pExecutableName()
+{
+#ifdef Q_OS_WIN
+    return QStringLiteral("i2pd.exe");
+#else
+    return QStringLiteral("i2pd");
+#endif
+}
+
 }
 
 I2pManager::I2pManager(QObject *parent)
@@ -234,7 +244,8 @@ bool I2pManager::start(QString *error)
     m_status.executablePath = findExecutable();
     if (m_status.executablePath.isEmpty()) {
         const QString reason = QStringLiteral("Bundled i2pd runtime not found: %1")
-                                   .arg(absoluteRuntimePath(QStringLiteral("runtime/i2p/i2pd.exe")));
+                                   .arg(absoluteRuntimePath(
+                                       QStringLiteral("runtime/i2p/%1").arg(i2pExecutableName())));
         setFailure(reason);
         if (error) *error = reason;
         return false;
@@ -383,7 +394,8 @@ bool I2pManager::desiredRunning() const
 
 QString I2pManager::findExecutable() const
 {
-    const QString bundled = absoluteRuntimePath(QStringLiteral("runtime/i2p/i2pd.exe"));
+    const QString bundled = absoluteRuntimePath(
+        QStringLiteral("runtime/i2p/%1").arg(i2pExecutableName()));
     if (QFileInfo(bundled).isFile()) return QDir::toNativeSeparators(bundled);
     const QString configured = qEnvironmentVariable("GRANGER_I2P_PATH").trimmed();
     const QFileInfo configuredInfo(configured);
@@ -609,6 +621,7 @@ bool I2pManager::writeConfiguration(QString *error)
 void I2pManager::startProcess()
 {
     m_process = new QProcess(this);
+    configureManagedProcess(m_process);
     m_process->setProgram(m_status.executablePath);
     m_process->setArguments({QStringLiteral("--conf"), m_configPath,
                              QStringLiteral("--tunconf"), m_tunnelsPath,

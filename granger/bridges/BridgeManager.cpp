@@ -131,17 +131,6 @@ QString findTransportExecutable(const QString &baseName)
         }
     }
 
-    QString path = QStandardPaths::findExecutable(baseName);
-    if (!path.isEmpty()) {
-        return QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
-    }
-    if (!baseName.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)) {
-        path = QStandardPaths::findExecutable(baseName + QStringLiteral(".exe"));
-        if (!path.isEmpty()) {
-            return QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
-        }
-    }
-
     return QString();
 }
 

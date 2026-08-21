@@ -105,6 +105,10 @@
 #include "granger/ui/ThemeManager.h"
 #include "granger/ui/UiFocusSmokeTests.h"
 
+#ifdef Q_OS_LINUX
+#include "granger/platform/linux/LinuxSignalHandler.h"
+#endif
+
 namespace {
 
 void configureSettingsStorageOverride()
@@ -143,7 +147,13 @@ void startupMessageHandler(QtMsgType type, const QMessageLogContext &context, co
 void configureBundledWebEngineRuntime()
 {
     const QString root = QCoreApplication::applicationDirPath();
-    const QString helper = QDir(root).filePath(QStringLiteral("QtWebEngineProcess.exe"));
+    const QString helperName =
+#ifdef Q_OS_WIN
+        QStringLiteral("QtWebEngineProcess.exe");
+#else
+        QStringLiteral("QtWebEngineProcess");
+#endif
+    const QString helper = QDir(root).filePath(helperName);
     const QString resources = QDir(root).filePath(QStringLiteral("resources"));
     const QString locales = QDir(root).filePath(QStringLiteral("translations/qtwebengine_locales"));
     if (!QFileInfo::exists(helper)
@@ -205,6 +215,7 @@ bool isSupportedProxy(const QUrl &url)
 void removeUntrustedChromiumNetworkOverrides()
 {
     qunsetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+    qunsetenv("QTWEBENGINE_DISABLE_SANDBOX");
 }
 
 bool hasUntrustedChromiumNetworkArguments(int argc, char *argv[])
@@ -214,7 +225,10 @@ bool hasUntrustedChromiumNetworkArguments(int argc, char *argv[])
         QStringLiteral("--proxy-server"),
         QStringLiteral("--proxy-bypass-list"),
         QStringLiteral("--host-resolver-rules"),
-        QStringLiteral("--host-rules")
+        QStringLiteral("--host-rules"),
+        QStringLiteral("--no-sandbox"),
+        QStringLiteral("--disable-setuid-sandbox"),
+        QStringLiteral("--single-process")
     };
     for (int i = 1; i < argc; ++i) {
         const QString argument = QString::fromLocal8Bit(argv[i]).trimmed();
@@ -6077,6 +6091,15 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+#ifdef Q_OS_LINUX
+    granger::LinuxSignalHandler linuxSignals(&app);
+    QString signalError;
+    if (!linuxSignals.install(&signalError)) {
+        fprintf(stderr, "Granger Browser could not install Linux signal handling: %s\n",
+                signalError.toLocal8Bit().constData());
+        return 10;
+    }
+#endif
     if (!startupProcessProxy.isEmpty()) {
         applyWebEngineProxy(startupProcessProxy);
     }

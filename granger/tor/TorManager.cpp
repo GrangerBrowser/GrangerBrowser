@@ -1,6 +1,7 @@
 #include "granger/tor/TorManager.h"
 
 #include "granger/tor/NetworkEnvironmentProbe.h"
+#include "granger/platform/ManagedProcess.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -65,15 +66,6 @@ QString findTorExecutable()
         if (info.isAbsolute() && info.exists() && info.isFile()) {
             return QDir::toNativeSeparators(info.absoluteFilePath());
         }
-    }
-
-    QString path = QStandardPaths::findExecutable(QStringLiteral("tor"));
-    if (!path.isEmpty()) {
-        return QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
-    }
-    path = QStandardPaths::findExecutable(QStringLiteral("tor.exe"));
-    if (!path.isEmpty()) {
-        return QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
     }
 
     return QString();
@@ -294,8 +286,15 @@ bool TorManager::applyBridgeConfig(const QString &torrcPath,
         : QDir::toNativeSeparators(QFileInfo(torExecutable).absoluteFilePath());
     m_status.torExecutable = torPath;
     if (torPath.isEmpty()) {
-        const QString reason = QStringLiteral("tor not found. Checked bundled runtime: %1; configured GRANGER_TOR_PATH; PATH: tor.exe")
-                                   .arg(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("runtime/tor/tor.exe")));
+        const QString reason = QStringLiteral("Bundled Tor runtime not found: %1")
+                                   .arg(QDir(QCoreApplication::applicationDirPath())
+                                            .filePath(QStringLiteral("runtime/tor/tor%1"))
+#ifdef Q_OS_WIN
+                                            .arg(QStringLiteral(".exe"))
+#else
+                                            .arg(QString())
+#endif
+                                   );
         setBridgeFailed(reason);
         if (error) {
             *error = reason;
@@ -448,6 +447,7 @@ bool TorManager::writeTorrc(const QString &torrcPath, const QString &torrcText, 
 bool TorManager::verifyTorConfig(const QString &torPath, const QString &torrcPath, QString *output, QString *error) const
 {
     QProcess process;
+    configureManagedProcess(&process);
     process.setProgram(torPath);
     process.setArguments(QStringList() << QStringLiteral("--verify-config") << QStringLiteral("-f") << torrcPath);
     process.setProcessChannelMode(QProcess::SeparateChannels);
@@ -614,6 +614,7 @@ bool TorManager::socksHttpProbe(QString *body, QString *error) const
 void TorManager::startTorProcess(const QString &torPath, const QString &torrcPath)
 {
     m_process = new QProcess(this);
+    configureManagedProcess(m_process);
     m_process->setProgram(torPath);
     m_process->setArguments(QStringList() << QStringLiteral("-f") << torrcPath);
     m_torOutputBuffer.clear();
