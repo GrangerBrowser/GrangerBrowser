@@ -59,7 +59,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/Qt/${{ env.QT_VERSION }}
-          key: qt-linux-${{ env.QT_VERSION }}-webengine-v1
+          key: qt-linux-${{ env.QT_VERSION }}-webengine-serialport-v1
 
       - name: Install official Qt SDK
         run: |
@@ -70,13 +70,14 @@ jobs:
               | grep -q .; then
             "$RUNNER_TEMP/aqt-venv/bin/aqt" install-qt \
               -O "$HOME/Qt" linux desktop "$QT_VERSION" linux_gcc_64 \
-              -m qtwebengine qtwebchannel qtpositioning
+              -m qtwebengine qtwebchannel qtpositioning qtserialport
           fi
           qmake_path="$(find "$HOME/Qt/$QT_VERSION" -type f -path '*/bin/qmake' \
             -print -quit)"
           test -n "$qmake_path"
           qt_root="$(dirname "$(dirname "$qmake_path")")"
           test -f "$qt_root/lib/cmake/Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake"
+          test -f "$qt_root/lib/cmake/Qt6SerialPort/Qt6SerialPortConfig.cmake"
           echo "QT_ROOT=$qt_root" >> "$GITHUB_ENV"
           "$qmake_path" -query QT_VERSION
 
@@ -85,7 +86,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/Qt/${{ env.QT_VERSION }}
-          key: qt-linux-${{ env.QT_VERSION }}-webengine-v1
+          key: qt-linux-${{ env.QT_VERSION }}-webengine-serialport-v1
 
       - name: Build native AppImage
         run: |
