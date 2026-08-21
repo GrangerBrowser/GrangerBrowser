@@ -56,7 +56,8 @@ DESTDIR="$appdir" cmake --install "$build_dir" --config Release
 
 browser="$appdir/usr/bin/GrangerBrowser"
 [[ -x "$browser" ]] || fail "installed GrangerBrowser executable is missing"
-mkdir -p "$appdir/usr/bin/runtime" "$appdir/usr/share/licenses/granger-browser"
+mkdir -p "$appdir/usr/bin/runtime" "$appdir/usr/lib" \
+    "$appdir/usr/share/licenses/granger-browser"
 cp -a "$runtime_root/tor" "$appdir/usr/bin/runtime/"
 cp -a "$runtime_root/i2p" "$appdir/usr/bin/runtime/"
 cp -a "$project_root/NOTICE.txt" "$project_root/DISTRIBUTION.md" \
@@ -73,6 +74,17 @@ cp -a "$runtime_root/tor/docs/." "$appdir/usr/share/licenses/granger-browser/"
 if [[ -d "$qt_root/LICENSES" ]]; then
     cp -a "$qt_root/LICENSES" "$appdir/usr/share/licenses/granger-browser/Qt-LICENSES"
 fi
+nss_softokn="$(find /usr/lib /lib -type f -path '*/nss/libsoftokn3.so' -print -quit)"
+[[ -n "$nss_softokn" ]] || fail "libnss3 softoken runtime is unavailable"
+nss_module_dir="$(dirname "$nss_softokn")"
+for module in libsoftokn3.so libfreebl3.so libfreeblpriv3.so libnssckbi.so; do
+    [[ -f "$nss_module_dir/$module" ]] || fail "NSS runtime module is missing: $module"
+    cp -L "$nss_module_dir/$module" "$appdir/usr/lib/$module"
+done
+[[ -f /usr/share/doc/libnss3/copyright ]] \
+    || fail "libnss3 copyright record is unavailable"
+cp -a /usr/share/doc/libnss3/copyright \
+    "$appdir/usr/share/licenses/granger-browser/nss3-copyright.txt"
 chmod 0755 "$browser" \
     "$appdir/usr/bin/runtime/tor/tor" \
     "$appdir/usr/bin/runtime/tor/pluggable_transports/lyrebird" \
@@ -130,6 +142,11 @@ required_files=(
     "usr/resources/qtwebengine_devtools_resources.pak"
     "usr/resources/v8_context_snapshot.bin"
     "usr/translations/qtwebengine_locales/en-US.pak"
+    "usr/lib/libsoftokn3.so"
+    "usr/lib/libfreebl3.so"
+    "usr/lib/libfreeblpriv3.so"
+    "usr/lib/libnssckbi.so"
+    "usr/lib/libsqlite3.so.0"
     "usr/bin/runtime/tor/tor"
     "usr/bin/runtime/tor/libcrypto.so.3"
     "usr/bin/runtime/tor/libevent-2.1.so.7"
@@ -144,6 +161,7 @@ required_files=(
     "usr/share/licenses/granger-browser/linuxdeploy-MIT.txt"
     "usr/share/licenses/granger-browser/linuxdeploy-appimage-plugin-MIT.txt"
     "usr/share/licenses/granger-browser/linuxdeploy-SOURCES.md"
+    "usr/share/licenses/granger-browser/nss3-copyright.txt"
 )
 for relative_path in "${required_files[@]}"; do
     [[ -e "$appdir/$relative_path" ]] || fail "AppDir is missing $relative_path"

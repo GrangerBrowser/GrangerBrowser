@@ -136,9 +136,13 @@ Run the acceptance scripts on native Linux:
 
 ```bash
 scripts/test-linux-appimage.sh
-sudo scripts/test-linux-network-fail-closed.sh
+scripts/test-linux-network-fail-closed.sh
 GRANGER_LINUX_FULL_LIVE_ACCEPTANCE=1 scripts/test-linux-private-routes.sh
 ```
+
+The namespace and socket tests run as an unprivileged user and require
+passwordless `sudo` only for their narrowly scoped namespace and process
+inspection commands.
 
 The namespace test uses a disposable network namespace, veth pair, full
 interface packet capture, and a controlled non-loopback listener. It must
