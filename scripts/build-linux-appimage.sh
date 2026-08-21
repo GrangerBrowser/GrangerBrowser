@@ -20,7 +20,7 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
 }
 
-for command_name in cmake ninja curl sha256sum file ldd readelf strings jq; do
+for command_name in cmake ninja curl sha256sum file ldd readelf jq; do
     require_command "$command_name"
 done
 [[ "$(uname -s)" == "Linux" ]] || fail "this script must run natively on Linux"
@@ -56,14 +56,9 @@ DESTDIR="$appdir" cmake --install "$build_dir" --config Release
 
 browser="$appdir/usr/bin/GrangerBrowser"
 [[ -x "$browser" ]] || fail "installed GrangerBrowser executable is missing"
-mkdir -p "$appdir/usr/bin/runtime" "$appdir/usr/bin/resources" \
-    "$appdir/usr/bin/translations" "$appdir/usr/share/licenses/granger-browser"
+mkdir -p "$appdir/usr/bin/runtime" "$appdir/usr/share/licenses/granger-browser"
 cp -a "$runtime_root/tor" "$appdir/usr/bin/runtime/"
 cp -a "$runtime_root/i2p" "$appdir/usr/bin/runtime/"
-cp -a "$qt_root/libexec/QtWebEngineProcess" "$appdir/usr/bin/"
-cp -a "$qt_root/resources/." "$appdir/usr/bin/resources/"
-cp -a "$qt_root/translations/qtwebengine_locales" \
-    "$appdir/usr/bin/translations/"
 cp -a "$project_root/NOTICE.txt" "$project_root/DISTRIBUTION.md" \
     "$appdir/usr/share/licenses/granger-browser/"
 cp -a "$project_root/third_party/i2pd/LICENSE" \
@@ -72,17 +67,7 @@ cp -a "$runtime_root/tor/docs/." "$appdir/usr/share/licenses/granger-browser/"
 if [[ -d "$qt_root/LICENSES" ]]; then
     cp -a "$qt_root/LICENSES" "$appdir/usr/share/licenses/granger-browser/Qt-LICENSES"
 fi
-cat >"$appdir/usr/bin/qt.conf" <<'EOF'
-[Paths]
-Prefix=..
-Libraries=lib
-Plugins=plugins
-Qml2Imports=qml
-LibraryExecutables=bin
-Data=bin
-Translations=bin/translations
-EOF
-chmod 0755 "$browser" "$appdir/usr/bin/QtWebEngineProcess" \
+chmod 0755 "$browser" \
     "$appdir/usr/bin/runtime/tor/tor" \
     "$appdir/usr/bin/runtime/tor/pluggable_transports/lyrebird" \
     "$appdir/usr/bin/runtime/tor/pluggable_transports/conjure-client" \
@@ -123,7 +108,6 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 "$linuxdeploy" --appimage-extract-and-run \
     --appdir "$appdir" \
     --executable "$browser" \
-    --executable "$appdir/usr/bin/QtWebEngineProcess" \
     --executable "$appdir/usr/bin/runtime/i2p/i2pd" \
     --desktop-file "$project_root/packaging/linux/granger-browser.desktop" \
     --icon-file "$project_root/granger/resources/app-icon.png" \
@@ -132,13 +116,14 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 
 required_files=(
     "usr/bin/GrangerBrowser"
-    "usr/bin/QtWebEngineProcess"
-    "usr/bin/resources/icudtl.dat"
-    "usr/bin/resources/qtwebengine_resources.pak"
-    "usr/bin/resources/qtwebengine_resources_100p.pak"
-    "usr/bin/resources/qtwebengine_resources_200p.pak"
-    "usr/bin/resources/v8_context_snapshot.bin"
-    "usr/bin/translations/qtwebengine_locales/en-US.pak"
+    "usr/libexec/QtWebEngineProcess"
+    "usr/resources/icudtl.dat"
+    "usr/resources/qtwebengine_resources.pak"
+    "usr/resources/qtwebengine_resources_100p.pak"
+    "usr/resources/qtwebengine_resources_200p.pak"
+    "usr/resources/qtwebengine_devtools_resources.pak"
+    "usr/resources/v8_context_snapshot.bin"
+    "usr/translations/qtwebengine_locales/en-US.pak"
     "usr/bin/runtime/tor/tor"
     "usr/bin/runtime/tor/libcrypto.so.3"
     "usr/bin/runtime/tor/libevent-2.1.so.7"
@@ -154,10 +139,18 @@ required_files=(
 for relative_path in "${required_files[@]}"; do
     [[ -e "$appdir/$relative_path" ]] || fail "AppDir is missing $relative_path"
 done
+chmod 0755 "$appdir/usr/libexec/QtWebEngineProcess"
+if [[ -e "$appdir/usr/bin/QtWebEngineProcess" \
+      || -d "$appdir/usr/bin/resources" \
+      || -d "$appdir/usr/bin/translations/qtwebengine_locales" ]]; then
+    fail "AppDir contains a duplicate Qt WebEngine runtime layout"
+fi
 
-if find "$appdir/usr/lib" -maxdepth 2 -type f \
+forbidden_system_runtime="$(find "$appdir/usr/lib" -maxdepth 2 -type f \
     \( -name 'libc.so.6' -o -name 'libpthread.so.0' -o -name 'libdl.so.2' \
-       -o -name 'librt.so.1' -o -name 'ld-linux*.so*' \) | grep -q .; then
+       -o -name 'librt.so.1' -o -name 'ld-linux*.so*' \) -print -quit)"
+if [[ -n "$forbidden_system_runtime" ]]; then
+    printf '%s\n' "$forbidden_system_runtime" >&2
     fail "AppDir incorrectly bundles glibc or its loader"
 fi
 debug_runtime_matches="$({
@@ -168,7 +161,7 @@ if [[ -n "$debug_runtime_matches" ]]; then
     printf '%s\n' "$debug_runtime_matches" >&2
     fail "AppDir contains a debug runtime"
 fi
-if strings "$browser" | grep -Fq "$project_root"; then
+if grep -aFq "$project_root" "$browser"; then
     fail "GrangerBrowser contains an absolute build/source path"
 fi
 

@@ -78,8 +78,8 @@ cleanup() {
 trap cleanup EXIT
 chmod 700 "$gpg_home"
 gpg --batch --homedir "$gpg_home" --import "$tor_key" >/dev/null 2>&1
-gpg --batch --homedir "$gpg_home" --with-colons --fingerprint \
-    | grep -Fq "fpr:::::::::${tor_key_fingerprint}:" \
+key_listing="$(gpg --batch --homedir "$gpg_home" --with-colons --fingerprint)"
+grep -Fq "fpr:::::::::${tor_key_fingerprint}:" <<<"$key_listing" \
     || fail "Tor signing-key fingerprint mismatch"
 signature_status="$(gpg --batch --homedir "$gpg_home" --status-fd 1 \
     --verify "$tor_signature" "$tor_archive" 2>&1)" \
@@ -92,7 +92,9 @@ awk -v expected="$tor_key_fingerprint" '
 ' <<<"$signature_status" \
     || fail "Tor archive was not signed by the pinned Tor Browser Developers key"
 
-if tar -tzf "$tor_archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+tor_archive_entries="$(tar -tzf "$tor_archive")" \
+    || fail "Tor archive inventory could not be read"
+if grep -Eq '(^/|(^|/)\.\.(/|$))' <<<"$tor_archive_entries"; then
     fail "Tor archive contains an unsafe path"
 fi
 tar -xzf "$tor_archive" -C "$tor_extract"

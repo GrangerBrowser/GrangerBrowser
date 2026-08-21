@@ -10,7 +10,7 @@ fail() {
     exit 1
 }
 
-for command_name in jq timeout sha256sum ldd file strings pgrep; do
+for command_name in jq timeout sha256sum ldd file pgrep; do
     command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
 done
 [[ -x "$appimage" ]] || fail "AppImage is missing or not executable: $appimage"
@@ -87,9 +87,9 @@ jq -e --arg data "$test_root/xdg/data" --arg cache "$test_root/xdg/cache" '
     and (.javascriptUserAgent | contains("X11; Linux x86_64"))
     and (.persistentStoragePath | startswith($data))
     and (.cachePath | startswith($cache))
-    and (.webEngineProcessPath | endswith("/usr/bin/QtWebEngineProcess"))
-    and (.webEngineResourcesPath | endswith("/usr/bin/resources"))
-    and (.webEngineLocalesPath | endswith("/usr/bin/translations/qtwebengine_locales"))
+    and (.webEngineProcessPath | endswith("/usr/libexec/QtWebEngineProcess"))
+    and (.webEngineResourcesPath | endswith("/usr/resources"))
+    and (.webEngineLocalesPath | endswith("/usr/translations/qtwebengine_locales"))
 ' "$profile_report" >/dev/null || fail "profile/XDG/WebEngine runtime assertions failed"
 
 privacy_report="$report_root/privacy-smoke.json"
@@ -137,7 +137,7 @@ unresolved_report="$report_root/unresolved-libraries.txt"
 : >"$unresolved_report"
 for executable in \
     "$squashfs_root/usr/bin/GrangerBrowser" \
-    "$squashfs_root/usr/bin/QtWebEngineProcess" \
+    "$squashfs_root/usr/libexec/QtWebEngineProcess" \
     "$squashfs_root/usr/bin/runtime/tor/tor" \
     "$squashfs_root/usr/bin/runtime/tor/pluggable_transports/lyrebird" \
     "$squashfs_root/usr/bin/runtime/tor/pluggable_transports/conjure-client" \
@@ -213,8 +213,8 @@ done
 [[ "$children_cleaned" == true ]] || fail "managed Linux child process survived browser shutdown"
 
 source_references=false
-if strings "$squashfs_root/usr/bin/GrangerBrowser" \
-    | grep -Eq '/home/runner/work/|/GrangerBrowser/(build|output)/'; then
+if grep -aEq '/home/runner/work/|/GrangerBrowser/(build|output)/' \
+    "$squashfs_root/usr/bin/GrangerBrowser"; then
     source_references=true
 fi
 [[ "$source_references" == false ]] || fail "AppImage embeds a CI source/build path"
