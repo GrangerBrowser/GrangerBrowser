@@ -1,0 +1,145 @@
+name: Build Linux local RC
+
+on:
+  workflow_dispatch:
+    inputs:
+      full_live_network:
+        description: Run managed Tor/I2P route-loss acceptance
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      QT_VERSION: 6.11.2
+      AQT_VERSION: 3.3.0
+      GRANGER_LINUX_FULL_LIVE_ACCEPTANCE: ${{ inputs.full_live_network && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install native build and acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential ninja-build curl ca-certificates gnupg jq zstd \
+            patchelf file binutils libfuse2 xvfb xauth iproute2 tcpdump \
+            libboost-program-options1.74.0 libminiupnpc17 libssl3 zlib1g \
+            libgl1 libegl1 libopengl0 libfontconfig1 libdbus-1-3 libnss3 \
+            libnspr4 libasound2 libx11-xcb1 libxcomposite1 libxdamage1 \
+            libxrandr2 libxtst6 libdrm2 libgbm1 libxshmfence1 libxcb1 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 \
+            libxcb-xinerama0 libxkbcommon0 libxkbcommon-x11-0
+          cmake --version
+          ninja --version
+
+      - name: Validate Linux scripts
+        run: |
+          bash -n \
+            packaging/linux/AppRun \
+            scripts/fetch-linux-runtimes.sh \
+            scripts/build-linux-appimage.sh \
+            scripts/test-linux-appimage.sh \
+            scripts/test-linux-network-fail-closed.sh \
+            scripts/test-linux-private-routes.sh
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Cache Qt SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/Qt/${{ env.QT_VERSION }}
+          key: qt-linux-${{ env.QT_VERSION }}-webengine-v1
+
+      - name: Install official Qt SDK
+        run: |
+          python -m venv "$RUNNER_TEMP/aqt-venv"
+          "$RUNNER_TEMP/aqt-venv/bin/pip" install --disable-pip-version-check \
+            "aqtinstall==$AQT_VERSION"
+          if ! find "$HOME/Qt/$QT_VERSION" -type f -path '*/bin/qmake' -print -quit \
+              | grep -q .; then
+            "$RUNNER_TEMP/aqt-venv/bin/aqt" install-qt \
+              -O "$HOME/Qt" linux desktop "$QT_VERSION" linux_gcc_64 \
+              -m qtwebengine qtwebchannel qtpositioning
+          fi
+          qmake_path="$(find "$HOME/Qt/$QT_VERSION" -type f -path '*/bin/qmake' \
+            -print -quit)"
+          test -n "$qmake_path"
+          qt_root="$(dirname "$(dirname "$qmake_path")")"
+          test -f "$qt_root/lib/cmake/Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake"
+          echo "QT_ROOT=$qt_root" >> "$GITHUB_ENV"
+          "$qmake_path" -query QT_VERSION
+
+      - name: Build native AppImage
+        run: |
+          chmod +x packaging/linux/AppRun scripts/*.sh
+          scripts/build-linux-appimage.sh
+
+      - name: Test standalone AppImage and Chromium sandbox
+        run: scripts/test-linux-appimage.sh
+
+      - name: Test kernel-level fail-closed behavior
+        id: packet_test
+        run: |
+          set +e
+          scripts/test-linux-network-fail-closed.sh
+          status=$?
+          set -e
+          if [[ "$status" -eq 77 ]]; then
+            echo "Network namespace test is unavailable on this runner."
+          elif [[ "$status" -ne 0 ]]; then
+            exit "$status"
+          fi
+
+      - name: Test managed Tor and I2P routes
+        run: scripts/test-linux-private-routes.sh
+
+      - name: Assemble local RC acceptance record
+        if: always()
+        run: |
+          mkdir -p output/linux/acceptance
+          packet_status="UNVERIFIED"
+          if jq -e '.ok == true' \
+              output/linux/acceptance/network-namespace-fail-closed.json \
+              >/dev/null 2>&1; then
+            packet_status="PASS"
+          elif [[ -f output/linux/acceptance/network-namespace-fail-closed.json ]]; then
+            packet_status="$(jq -r '.status // "UNVERIFIED"' \
+              output/linux/acceptance/network-namespace-fail-closed.json)"
+          fi
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg runner "$RUNNER_OS $ImageOS" \
+            --arg packet "$packet_status" \
+            --argjson build "$(cat output/linux/linux-build-report.json 2>/dev/null || echo null)" \
+            --argjson appimage "$(cat output/linux/acceptance/appimage-acceptance.json 2>/dev/null || echo null)" \
+            --argjson routes "$(cat output/linux/acceptance/live/live-private-route-summary.json 2>/dev/null || echo null)" \
+            '{commit:$commit,environment:$runner,build:$build,
+              appImageAcceptance:$appimage,privateRoutes:$routes,
+              packetLevelAcceptance:$packet,publicReleaseCreated:false}' \
+            > output/linux/acceptance-summary.json
+
+      - name: Upload local RC and evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: granger-linux-local-rc-${{ github.sha }}
+          path: |
+            output/linux/GrangerBrowser-0.4.4-x86_64.AppImage
+            output/linux/SHA256SUMS-linux.txt
+            output/linux/linux-build-report.json
+            output/linux/acceptance-summary.json
+            output/linux/acceptance/**/*.json
+            output/linux/acceptance/**/*.log
+            output/linux/acceptance/**/*.txt
+            output/linux/acceptance/**/*.pcap
+          if-no-files-found: warn
+          retention-days: 7

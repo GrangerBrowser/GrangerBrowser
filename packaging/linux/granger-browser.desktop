@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Granger Browser
+Comment=Privacy browser with managed Tor and I2P routing
+Exec=GrangerBrowser %U
+Icon=granger-browser
+Categories=Network;WebBrowser;
+Terminal=false
+StartupNotify=true
+MimeType=x-scheme-handler/http;x-scheme-handler/https;

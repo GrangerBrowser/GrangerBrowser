@@ -42,6 +42,8 @@ Testing/
 *.exe
 *.so
 *.dylib
+*.AppImage
+*.tar.zst
 *.pak
 *.qm
 *.bin
@@ -123,3 +125,5 @@ Desktop.ini
 # by pamp/.gitignore; the packaged browser still does not copy the full runtime.
 
 /release/
+/AppDir/
+/build-linux/

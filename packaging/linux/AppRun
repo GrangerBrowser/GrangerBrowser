@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+APPDIR="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)}"
+
+# The package owns all Qt and Chromium startup paths. Caller-provided paths or
+# sandbox switches must not weaken the browser before its C++ startup guards run.
+unset QTDIR QT_SELECT QTWEBENGINE_DISABLE_SANDBOX QTWEBENGINE_CHROMIUM_FLAGS
+unset GRANGER_RUNTIME_ROOT GRANGER_TOR_PATH GRANGER_LYREBIRD_PATH
+unset GRANGER_TRANSPORT_PATH GRANGER_I2P_PATH
+unset DARKSEARCH_RUNTIME_ROOT DARKSEARCH_TOR_PATH DARKSEARCH_I2P_PATH
+export QT_PLUGIN_PATH="$APPDIR/usr/plugins"
+export QML2_IMPORT_PATH="$APPDIR/usr/qml"
+export QTWEBENGINEPROCESS_PATH="$APPDIR/usr/bin/QtWebEngineProcess"
+export QTWEBENGINE_RESOURCES_PATH="$APPDIR/usr/bin/resources"
+export QTWEBENGINE_LOCALES_PATH="$APPDIR/usr/bin/translations/qtwebengine_locales"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/usr/bin/runtime/tor"
+
+exec "$APPDIR/usr/bin/GrangerBrowser" "$@"
