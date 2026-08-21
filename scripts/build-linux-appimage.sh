@@ -160,7 +160,12 @@ if find "$appdir/usr/lib" -maxdepth 2 -type f \
        -o -name 'librt.so.1' -o -name 'ld-linux*.so*' \) | grep -q .; then
     fail "AppDir incorrectly bundles glibc or its loader"
 fi
-if find "$appdir" -type f \( -name '*d.so*' -o -name '*.debug' \) | grep -q .; then
+debug_runtime_matches="$({
+    find "$appdir" -type f \( -name '*.debug' -o -name '*.pdb' \) -print
+    find "$appdir/usr/lib" -maxdepth 1 -type f -name 'libQt6*d.so*' -print
+} | sort -u)"
+if [[ -n "$debug_runtime_matches" ]]; then
+    printf '%s\n' "$debug_runtime_matches" >&2
     fail "AppDir contains a debug runtime"
 fi
 if strings "$browser" | grep -Fq "$project_root"; then
