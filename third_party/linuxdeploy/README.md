@@ -12,7 +12,10 @@ Upstream repositories:
 
 - <https://github.com/linuxdeploy/linuxdeploy>
 - <https://github.com/linuxdeploy/linuxdeploy-plugin-qt>
+- <https://github.com/linuxdeploy/linuxdeploy-plugin-appimage>
 
 linuxdeploy and its Qt plugin are MIT-licensed. The generated AppImage also
-uses the MIT-licensed linuxdeploy AppImage output plugin. The applicable
-license texts are retained in this directory and copied into the AppImage.
+uses the MIT-licensed AppImage output plugin embedded in the pinned linuxdeploy
+AppImage. The linuxdeploy artifact hash above covers that embedded tool. The
+applicable license texts are retained in this directory and copied into the
+AppImage.

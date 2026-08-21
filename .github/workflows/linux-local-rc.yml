@@ -43,13 +43,15 @@ jobs:
 
       - name: Validate Linux scripts
         run: |
-          bash -n \
+          for script in \
             packaging/linux/AppRun \
             scripts/fetch-linux-runtimes.sh \
             scripts/build-linux-appimage.sh \
             scripts/test-linux-appimage.sh \
             scripts/test-linux-network-fail-closed.sh \
-            scripts/test-linux-private-routes.sh
+            scripts/test-linux-private-routes.sh; do
+            bash -n "$script"
+          done
 
       - uses: actions/setup-python@v6
         with:

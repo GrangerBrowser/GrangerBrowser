@@ -448,7 +448,7 @@ void applyWebRtcLeakProtectionStartupFlag()
 
 void applyFingerprintProcessFlags()
 {
-    // Renderer and worker contexts otherwise inherit the Windows UI locale
+    // Renderer and worker contexts otherwise inherit the host UI locale
     // before a document-level policy script can run. Browser chrome remains
     // localized by Granger Browser's own translation layer.
     appendChromiumFlag(QByteArrayLiteral("--lang=en-US"));

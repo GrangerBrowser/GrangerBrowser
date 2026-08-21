@@ -178,6 +178,8 @@ renderer_cmdline="$(tr '\0' ' ' <"/proc/$renderer_pid/cmdline")"
 renderer_seccomp="$(awk '/^Seccomp:/ {print $2}' <<<"$renderer_status")"
 renderer_no_new_privs="$(awk '/^NoNewPrivs:/ {print $2}' <<<"$renderer_status")"
 [[ "$renderer_seccomp" == "2" ]] || fail "renderer seccomp mode is $renderer_seccomp, expected 2"
+[[ "$renderer_no_new_privs" == "1" ]] \
+    || fail "renderer NoNewPrivs is $renderer_no_new_privs, expected 1"
 [[ "$renderer_cmdline" != *"--no-sandbox"* ]] || fail "renderer received --no-sandbox"
 
 managed_pids=()

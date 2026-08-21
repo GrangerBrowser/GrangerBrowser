@@ -129,7 +129,8 @@ The package does not set `--no-sandbox` or `QTWEBENGINE_DISABLE_SANDBOX`.
 `scripts/test-linux-appimage.sh` launches the copied AppImage from a detached
 path with poisoned Qt variables, verifies package-local Qt/WebEngine paths,
 runs the privacy and deterministic route suites, audits ELF dependencies, and
-requires a renderer with seccomp filter mode 2 and no `--no-sandbox` flag.
+requires a renderer with `NoNewPrivs=1`, seccomp filter mode 2, and no
+`--no-sandbox` flag.
 
 Run the acceptance scripts on native Linux:
 

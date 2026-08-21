@@ -87,8 +87,8 @@ mkdir -p "$test_root/home" "$test_root/xdg/config" "$test_root/xdg/data" \
     "$test_root/xdg/cache" "$test_root/xdg/runtime"
 chmod 0700 "$test_root/xdg/runtime"
 
-sudo -n ip netns exec "$namespace" tcpdump -U -i any -nn \
-    -w "$pcap" "host $host_address or port 53" >/dev/null 2>&1 &
+sudo -n ip netns exec "$namespace" tcpdump -U -i "$ns_if" -nn \
+    -w "$pcap" >/dev/null 2>&1 &
 tcpdump_pid=$!
 sleep 1
 
@@ -186,7 +186,7 @@ jq -n \
     --argjson noSandboxExit "$no_sandbox_exit" \
     --argjson noProxyExit "$no_proxy_exit" \
     '{ok:$ok,status:(if $ok then "PASS" else "FAIL" end),
-      method:"network namespace + veth + tcpdump",
+      method:"network namespace + veth + full-interface tcpdump",
       namespace:$namespace,hostInterface:$hostInterface,target:$target,
       capturedPackets:$packets,listenerRequests:$requests,
       directTcpPackets:$tcpPackets,directUdpPackets:$udpPackets,

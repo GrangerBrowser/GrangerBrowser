@@ -141,6 +141,9 @@ required_files=(
     "usr/bin/runtime/tor/pluggable_transports/pt_config.json"
     "usr/bin/runtime/i2p/i2pd"
     "usr/bin/runtime/i2p/certificates"
+    "usr/share/licenses/granger-browser/linuxdeploy-MIT.txt"
+    "usr/share/licenses/granger-browser/linuxdeploy-appimage-plugin-MIT.txt"
+    "usr/share/licenses/granger-browser/linuxdeploy-SOURCES.md"
 )
 for relative_path in "${required_files[@]}"; do
     [[ -e "$appdir/$relative_path" ]] || fail "AppDir is missing $relative_path"
