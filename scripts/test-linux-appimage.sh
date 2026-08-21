@@ -143,7 +143,8 @@ before_qt="$(pgrep -f 'QtWebEngineProcess' || true)"
 before_tor="$(pgrep -x tor || true)"
 before_i2pd="$(pgrep -x i2pd || true)"
 env -i "${base_env[@]}" APPIMAGE_EXTRACT_AND_RUN=1 \
-    "$detached_app" >"$report_root/sandbox-runtime.log" 2>&1 &
+    "$detached_app" --smoke-renderer-sandbox \
+    >"$report_root/sandbox-runtime.log" 2>&1 &
 app_pid=$!
 
 renderer_pid=""
@@ -190,6 +191,9 @@ fi
 wait "$app_pid" || true
 app_pid=""
 sleep 1
+if grep -Fq 'Failed parsing rule:' "$report_root/sandbox-runtime.log"; then
+    fail "Chromium rejected the packaged host resolver policy"
+fi
 children_cleaned=true
 for candidate in "$renderer_pid" "${managed_pids[@]}"; do
     if [[ -n "$candidate" ]] && kill -0 "$candidate" 2>/dev/null; then

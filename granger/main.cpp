@@ -576,6 +576,15 @@ int runSmoke(QApplication &app, const QUrl &url, const QString &outputPath)
     return app.exec();
 }
 
+int runRendererSandboxProbe(QApplication &app)
+{
+    auto *page = new QWebEnginePage(granger::BrowserProfile::instance(), &app);
+    page->setHtml(QStringLiteral("<!doctype html><title>Granger renderer probe</title>"),
+                  QUrl(QStringLiteral("about:blank")));
+    QTimer::singleShot(120000, &app, [&app] { app.quit(); });
+    return app.exec();
+}
+
 class DiagnosticHeaderInterceptor final : public QWebEngineUrlRequestInterceptor {
 public:
     DiagnosticHeaderInterceptor(const QString &mode, QObject *parent)
@@ -6137,7 +6146,8 @@ int main(int argc, char *argv[])
         if (usePrivacyGateway) {
             appendChromiumFlag(QByteArrayLiteral("--proxy-bypass-list=<-loopback>"));
         }
-        appendChromiumFlag(QByteArrayLiteral("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1"));
+        appendChromiumFlag(QByteArrayLiteral(
+            "--host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1\""));
         app.setProperty("granger.privacyGatewayProxy", startupProcessProxy);
         QObject::connect(&app, &QCoreApplication::aboutToQuit,
                          &privacyNetwork, &granger::PrivacyNetworkManager::stop);
@@ -6200,6 +6210,9 @@ int main(int argc, char *argv[])
                                qMax(1600, argumentValue(arguments, QStringLiteral("--ui-wait-ms=")).toInt()));
     }
     const QString smokeUrl = argumentValue(arguments, QStringLiteral("--smoke-url="));
+    if (arguments.contains(QStringLiteral("--smoke-renderer-sandbox"))) {
+        return runRendererSandboxProbe(app);
+    }
     if (arguments.contains(QStringLiteral("--smoke-idle-event-profile"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
         return runIdleEventProfile(
