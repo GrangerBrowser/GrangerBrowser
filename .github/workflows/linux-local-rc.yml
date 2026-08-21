@@ -55,7 +55,8 @@ jobs:
           python-version: '3.12'
 
       - name: Cache Qt SDK
-        uses: actions/cache@v5
+        id: qt-cache
+        uses: actions/cache/restore@v5
         with:
           path: ~/Qt/${{ env.QT_VERSION }}
           key: qt-linux-${{ env.QT_VERSION }}-webengine-v1
@@ -78,6 +79,13 @@ jobs:
           test -f "$qt_root/lib/cmake/Qt6WebEngineWidgets/Qt6WebEngineWidgetsConfig.cmake"
           echo "QT_ROOT=$qt_root" >> "$GITHUB_ENV"
           "$qmake_path" -query QT_VERSION
+
+      - name: Save Qt SDK cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/Qt/${{ env.QT_VERSION }}
+          key: qt-linux-${{ env.QT_VERSION }}-webengine-v1
 
       - name: Build native AppImage
         run: |
