@@ -133,7 +133,7 @@ if (-not (Test-Path -LiteralPath $qtD3dCompiler -PathType Leaf)) {
 Assert-ValidPublisherSignature -Path $qtD3dCompiler -PublisherPattern "Microsoft"
 Copy-Item -LiteralPath $qtD3dCompiler -Destination (Join-Path $resolvedPackage "d3dcompiler_47.dll") -Force
 
-# Qt 6.11.1's Windows 11 24H2 build links Qt6Core against the Windows ICU
+# Qt 6.11.2's Windows 11 24H2 build links Qt6Core against the Windows ICU
 # compatibility DLL. Deploy the signed Microsoft ICU pair app-local so the
 # package does not depend on the target Windows image providing icuuc.dll.
 $windowsSystemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
@@ -200,6 +200,23 @@ if ($packagedI2pCertificates.Count -lt 1) {
     throw "Packaged i2pd certificate bundle is empty."
 }
 
+$torRuntimeInfo = & (Join-Path $PSScriptRoot "fetch-tor-runtime.ps1")
+if (-not $torRuntimeInfo.OK -or -not $torRuntimeInfo.SignatureVerified) {
+    throw "Pinned Tor runtime staging failed."
+}
+$expertRoot = $torRuntimeInfo.RuntimeRoot
+$runtimeTor = Join-Path $resolvedPackage "runtime/tor"
+$runtimePt = Join-Path $runtimeTor "pluggable_transports"
+$runtimeData = Join-Path $runtimeTor "data"
+New-Item -ItemType Directory -Path $runtimePt -Force | Out-Null
+New-Item -ItemType Directory -Path $runtimeData -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $expertRoot "tor/tor.exe") -Destination $runtimeTor
+Copy-Item -LiteralPath (Join-Path $expertRoot "data/geoip") -Destination $runtimeData
+Copy-Item -LiteralPath (Join-Path $expertRoot "data/geoip6") -Destination $runtimeData
+Copy-Item -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/lyrebird.exe") -Destination $runtimePt
+Copy-Item -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/conjure-client.exe") -Destination $runtimePt
+Copy-Item -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/pt_config.json") -Destination $runtimePt
+
 $qtVersion = (Get-Item -LiteralPath (Join-Path $QtRoot "bin/Qt6Core.dll")).VersionInfo.FileVersion
 $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "Qt6Core.dll" -Source "Qt $qtVersion msvc2022_64"
@@ -213,10 +230,16 @@ $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "MSVCP140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "VCRUNTIME140.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "VCRUNTIME140_1.dll" -Source "Microsoft VC143 CRT $vcRedistVersion"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/tor.exe" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion), Tor $($torRuntimeInfo.TorVersion)"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/pluggable_transports/lyrebird.exe" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion), lyrebird $($torRuntimeInfo.LyrebirdVersion)"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/pluggable_transports/conjure-client.exe" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion), Conjure $($torRuntimeInfo.ConjureVersion)"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/pluggable_transports/pt_config.json" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion)"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/data/geoip" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion) GeoIP database"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/data/geoip6" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion) GeoIP database"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/i2p/i2pd.exe" -Source "PurpleI2P i2pd $($i2pRuntimeInfo.Version) official Windows x64 MinGW release"
 )
 [pscustomobject]@{
-    SchemaVersion = 1
+    SchemaVersion = 2
     ProductVersion = (Get-Item -LiteralPath (Join-Path $resolvedPackage "GrangerBrowser.exe")).VersionInfo.ProductVersion
     Architecture = "x64"
     QtVersion = $qtVersion
@@ -224,6 +247,22 @@ $deploymentRuntimeFiles = @(
     WinDeployQtVersion = (Get-Item -LiteralPath $windeployqt).VersionInfo.FileVersion
     WindowsSdkVersion = $windowsSdkVersion
     VcRuntimeVersion = $vcRedistVersion
+    TorBundleVersion = $torRuntimeInfo.BundleVersion
+    TorVersion = $torRuntimeInfo.TorVersion
+    TorSource = $torRuntimeInfo.Source
+    TorArchiveSHA256 = $torRuntimeInfo.ArchiveSHA256
+    TorSignatureSource = $torRuntimeInfo.SignatureSource
+    TorSignatureSHA256 = $torRuntimeInfo.SignatureSHA256
+    TorSigningKeySource = $torRuntimeInfo.SigningKeySource
+    TorSigningKeyFingerprint = $torRuntimeInfo.SigningKeyFingerprint
+    TorSigningKeySHA256 = $torRuntimeInfo.SigningKeySHA256
+    TorSignatureVerified = [bool]$torRuntimeInfo.SignatureVerified
+    TorLicense = $torRuntimeInfo.TorLicense
+    LyrebirdVersion = $torRuntimeInfo.LyrebirdVersion
+    LyrebirdLicense = $torRuntimeInfo.LyrebirdLicense
+    ConjureVersion = $torRuntimeInfo.ConjureVersion
+    ConjureGoVersion = $torRuntimeInfo.ConjureGoVersion
+    GeoIpBundleVersion = $torRuntimeInfo.BundleVersion
     I2pVersion = $i2pRuntimeInfo.Version
     I2pSource = $i2pRuntimeInfo.Source
     I2pArchiveSHA256 = $i2pRuntimeInfo.ArchiveSHA256
@@ -231,21 +270,6 @@ $deploymentRuntimeFiles = @(
     I2pCertificateCount = $packagedI2pCertificates.Count
     RuntimeFiles = $deploymentRuntimeFiles
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $resolvedPackage "deployment-metadata.json") -Encoding UTF8
-
-$expertRoot = Join-Path $projectRoot "output/tor-expert"
-$runtimeTor = Join-Path $resolvedPackage "runtime/tor"
-$runtimePt = Join-Path $runtimeTor "pluggable_transports"
-$runtimeData = Join-Path $runtimeTor "data"
-New-Item -ItemType Directory -Path $runtimePt -Force | Out-Null
-New-Item -ItemType Directory -Path $runtimeData -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $expertRoot "tor/tor.exe") -Destination $runtimeTor
-Copy-Item -LiteralPath (Join-Path $expertRoot "data/geoip") -Destination $runtimeData
-Copy-Item -LiteralPath (Join-Path $expertRoot "data/geoip6") -Destination $runtimeData
-Copy-Item -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/lyrebird.exe") -Destination $runtimePt
-Copy-Item -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/pt_config.json") -Destination $runtimePt
-if (Test-Path -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/conjure-client.exe")) {
-    Copy-Item -LiteralPath (Join-Path $expertRoot "tor/pluggable_transports/conjure-client.exe") -Destination $runtimePt
-}
 
 $licenses = Join-Path $resolvedPackage "licenses"
 $releaseDocs = Join-Path $resolvedPackage "docs"
@@ -299,7 +323,7 @@ $required = @(
     "docs/screenshots/sidebar-layout-stability/duckduckgo-rail.png", "docs/screenshots/sidebar-layout-stability/duckduckgo-expanded.png",
     "docs/screenshots/sidebar-layout-stability/duckduckgo-after-toggle-stress.png", "docs/screenshots/sidebar-layout-stability/sidebar-100.png",
     "docs/screenshots/sidebar-layout-stability/sidebar-150.png", "docs/screenshots/sidebar-layout-stability/sidebar-200.png",
-    "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "licenses/i2pd-LICENSE.txt", "licenses/i2pd-SOURCE.md", "bridge.png", "runtime/tor/tor.exe",
+    "licenses/quirc-LICENSE.txt", "licenses/lucide-LICENSE.txt", "licenses/simple-icons-LICENSE.md", "licenses/EasyList-CC-BY-SA-3.0.txt", "licenses/CONTENT_FILTER_SOURCES.md", "licenses/UI_ASSET_SOURCES.md", "licenses/UI_DESIGN_REFERENCES.md", "licenses/SPACES_DOWNLOAD_REFERENCES.md", "licenses/Pamp-Lite-ATTRIBUTION.md", "licenses/tor.txt", "licenses/lyrebird.txt", "licenses/conjure.txt", "licenses/i2pd-LICENSE.txt", "licenses/i2pd-SOURCE.md", "bridge.png", "runtime/tor/tor.exe",
     "runtime/tor/data/geoip", "runtime/tor/data/geoip6", "runtime/tor/pluggable_transports/lyrebird.exe",
     "runtime/tor/pluggable_transports/conjure-client.exe", "runtime/tor/pluggable_transports/pt_config.json",
     "runtime/i2p/i2pd.exe", "runtime/i2p/LICENSE.txt", "runtime/i2p/certificates"

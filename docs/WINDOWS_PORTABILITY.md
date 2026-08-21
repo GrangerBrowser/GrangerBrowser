@@ -24,8 +24,8 @@ size and SHA-256 of each packaged file.
 ## Packaging Gates
 
 `scripts/build-release.ps1` performs a clean x64 Release build, runs
-`windeployqt`, deploys the app-local VC143 runtime, adds the Tor and pinned
-official i2pd runtimes, and
+`windeployqt`, deploys the app-local VC143 runtime, verifies the pinned signed
+Tor Expert Bundle and official i2pd archive, and
 then runs the copied-package acceptance suite. Package-local `qt.conf` and
 `QTWEBENGINE_*` runtime selection keep the helper, resources, and locales next
 to the application. The D3D compiler from the selected Qt distribution and the
@@ -39,6 +39,7 @@ debugger plugins are not shipped.
 - unresolved imports on the build host;
 - Git LFS pointer files inside the package;
 - missing Qt WebEngine, platform, VC runtime, Tor, transport, or I2P files;
+- mismatched Tor bundle/version/signature metadata, missing Tor notices, or altered Tor/transport/GeoIP files;
 - mismatched i2pd version/checksum metadata or an empty I2P certificate bundle;
 - non-local `qt.conf` paths or mismatched deployment metadata;
 - invalid upstream signatures for Qt, VC, or D3D runtime files;
@@ -62,7 +63,8 @@ explicitly which physical or virtual Windows versions were tested.
 
 `scripts/verify-release-asset.ps1` downloads the published ZIP and checksum
 back from GitHub, verifies SHA-256, extracts it into a fresh directory, repeats
-the PE/Loader audit, runs the WebEngine helper with poisoned external runtime
-paths, and loads a real HTTPS page. The release workflow runs this check on a
-clean GitHub-hosted Windows Server runner; that result is useful remote evidence
-but is not reported as a physical Windows 10 or Windows 11 test.
+the PE/Loader audit, and runs the WebEngine helper and local renderer fixture
+with poisoned external runtime paths. External navigation is a separate
+private-route acceptance check. A clean GitHub-hosted Windows runner is useful
+remote evidence but is not reported as a physical Windows 10 or Windows 11
+test.

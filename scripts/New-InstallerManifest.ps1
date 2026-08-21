@@ -42,6 +42,14 @@ $version = ([string]$metadata.ProductVersion).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$' -or [string]$metadata.Architecture -ne 'x64') {
     throw "Portable deployment metadata has an unsupported version or architecture."
 }
+if ([int]$metadata.SchemaVersion -ne 2 -or
+    [string]$metadata.TorBundleVersion -ne '15.0.20' -or
+    [string]$metadata.TorVersion -ne '0.4.9.11' -or
+    -not [bool]$metadata.TorSignatureVerified -or
+    [string]$metadata.LyrebirdVersion -ne '0.8.1' -or
+    [string]$metadata.I2pVersion -ne '2.61.0') {
+    throw "Portable deployment metadata does not describe the validated private-network runtimes."
+}
 $expectedArchiveName = "Granger-Browser-v$version-windows-x64.zip"
 if ([IO.Path]::GetFileName($archivePath) -ne $expectedArchiveName) {
     throw "Portable archive name must be $expectedArchiveName"

@@ -10,7 +10,7 @@ Native C++20 · Qt 6 · Chromium · Tor · I2P
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-202124?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/zakhar-git/Granger-Browser/releases/latest)
 [![C++](https://img.shields.io/badge/C%2B%2B-20-202124?style=for-the-badge&logo=cplusplus&logoColor=white)](#build-from-source)
-[![Qt](https://img.shields.io/badge/Qt-6.11.1-202124?style=for-the-badge&logo=qt&logoColor=41CD52)](#technology)
+[![Qt](https://img.shields.io/badge/Qt-6.11.2-202124?style=for-the-badge&logo=qt&logoColor=41CD52)](#technology)
 [![Status](https://img.shields.io/badge/Status-Beta-B33951?style=for-the-badge)](#project-status)
 [![Tor](https://img.shields.io/badge/Tor-Integrated-202124?style=for-the-badge&logo=torproject&logoColor=7D4698)](#tor)
 
@@ -57,7 +57,7 @@ Managed Tor routing directly inside the browser.
 
 Supports:
 
-- Direct Tor
+- Tor without a bridge
 - obfs4
 - WebTunnel
 - Snowflake
@@ -297,7 +297,7 @@ Granger should not report a verified connection merely because `tor.exe` started
 
 Supported connection strategies currently include:
 
-- Direct
+- Tor without a bridge
 - obfs4
 - WebTunnel
 - Snowflake
@@ -317,9 +317,10 @@ That condition is reported as an actual connection failure rather than silently 
 
 ## Private network routing
 
-Tor is the default preferred privacy network. I2P is bundled as a managed
-secondary backend using official PurpleI2P i2pd 2.61.0. The preference is not a
-direct/network-off switch: Granger keeps a local fail-closed gateway in front of
+Tor is the default preferred privacy network. The Windows package contains Tor
+0.4.9.11 from the signed Tor Expert Bundle 15.0.20. I2P is bundled as a managed
+secondary backend using official PurpleI2P i2pd 2.61.0. Network preference is
+not a direct-mode switch: Granger keeps a local fail-closed gateway in front of
 Qt WebEngine and only opens it for a verified private route.
 
 - `.onion` destinations require verified Tor.
@@ -481,7 +482,7 @@ Granger currently uses:
 | Language | C++20 |
 | Desktop UI | Qt Widgets |
 | Browser engine | Qt WebEngine / Chromium |
-| Qt | 6.11.1 |
+| Qt | 6.11.2 |
 | Networking privacy | Managed Tor and bundled I2P |
 | Build system | CMake |
 | Primary compiler | MSVC 2022 x64 |
@@ -498,7 +499,7 @@ Qt WebEngine is Chromium-based, but Granger is not Chromium itself and does not 
 - Visual Studio 2022
 - MSVC x64 toolchain
 - CMake 3.24+
-- Qt 6.11.1
+- Qt 6.11.2
 
 Required Qt modules include:
 
@@ -513,7 +514,7 @@ Build and package:
 
 ```powershell
 .\scripts\build-release.ps1 `
-    -QtRoot "$env:USERPROFILE\Qt\6.11.1\msvc2022_64"
+    -QtRoot "$env:USERPROFILE\Qt\6.11.2\msvc2022_64"
 ```
 
 For complete instructions, see:

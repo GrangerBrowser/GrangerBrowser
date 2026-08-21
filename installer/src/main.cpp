@@ -757,7 +757,10 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         L"VCRUNTIME140.dll", L"VCRUNTIME140_1.dll", L"resources/icudtl.dat",
         L"resources/qtwebengine_resources.pak", L"translations/qtwebengine_locales/en-US.pak",
         L"runtime/tor/tor.exe", L"runtime/tor/pluggable_transports/lyrebird.exe",
-        L"runtime/tor/pluggable_transports/pt_config.json", L"runtime/i2p/i2pd.exe",
+        L"runtime/tor/pluggable_transports/conjure-client.exe",
+        L"runtime/tor/pluggable_transports/pt_config.json", L"runtime/tor/data/geoip",
+        L"runtime/tor/data/geoip6", L"runtime/i2p/i2pd.exe",
+        L"licenses/tor.txt", L"licenses/lyrebird.txt", L"licenses/conjure.txt",
         L"runtime/i2p/LICENSE.txt", L"licenses/i2pd-LICENSE.txt", L"licenses/i2pd-SOURCE.md",
         L"deployment-metadata.json",
         L"release-manifest.json"
@@ -773,7 +776,22 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
     const std::wstring packageVersion = deployment.GetNamedString(L"ProductVersion").c_str();
     if (CompareVersions(packageVersion, manifest.version) != 0
         || Lower(deployment.GetNamedString(L"Architecture").c_str()) != L"x64"
+        || deployment.GetNamedNumber(L"SchemaVersion") != 2
+        || std::wstring(deployment.GetNamedString(L"TorBundleVersion").c_str()) != L"15.0.20"
+        || std::wstring(deployment.GetNamedString(L"TorVersion").c_str()) != L"0.4.9.11"
+        || std::wstring(deployment.GetNamedString(L"TorArchiveSHA256").c_str())
+               != L"D59BFF934E3AD876E1623E24AE60C19AEEA56F50178093B9F86FBA230639F949"
+        || std::wstring(deployment.GetNamedString(L"TorSigningKeyFingerprint").c_str())
+               != L"EF6E286DDA85EA2A4BA7DE684E2C6E8793298290"
+        || !deployment.GetNamedBoolean(L"TorSignatureVerified")
+        || std::wstring(deployment.GetNamedString(L"TorLicense").c_str()) != L"GPL-3.0-or-later"
+        || std::wstring(deployment.GetNamedString(L"LyrebirdVersion").c_str()) != L"0.8.1"
+        || std::wstring(deployment.GetNamedString(L"LyrebirdLicense").c_str()) != L"BSD-3-Clause"
+        || std::wstring(deployment.GetNamedString(L"ConjureVersion").c_str()) != L"devel"
+        || std::wstring(deployment.GetNamedString(L"GeoIpBundleVersion").c_str()) != L"15.0.20"
         || std::wstring(deployment.GetNamedString(L"I2pVersion").c_str()) != L"2.61.0"
+        || std::wstring(deployment.GetNamedString(L"I2pArchiveSHA256").c_str())
+               != L"A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F"
         || std::wstring(deployment.GetNamedString(L"I2pLicense").c_str()) != L"BSD-3-Clause"
         || deployment.GetNamedNumber(L"I2pCertificateCount") < 1) {
         throw InstallerError("Package metadata does not match the release manifest");
@@ -809,6 +827,8 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         L"GrangerBrowser.exe", L"Qt6Core.dll", L"Qt6WebEngineCore.dll",
         L"QtWebEngineProcess.exe", L"icu.dll", L"icuuc.dll",
         L"runtime/tor/tor.exe", L"runtime/tor/pluggable_transports/lyrebird.exe",
+        L"runtime/tor/pluggable_transports/conjure-client.exe",
+        L"runtime/tor/data/geoip", L"runtime/tor/data/geoip6",
         L"runtime/i2p/i2pd.exe"
     };
     for (const wchar_t *relative : criticalHashes) {
@@ -816,6 +836,20 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         if (record == records.end()
             || Sha256File(runtimeRoot / relative) != record->second.second) {
             throw InstallerError("Critical runtime file failed release-manifest verification");
+        }
+    }
+    const std::array<std::pair<const wchar_t *, const wchar_t *>, 7> pinnedPrivateNetworkHashes{{
+        {L"runtime/tor/tor.exe", L"ea61ba0ed5b89d0622d2894b2a86f5ff34ce9b48e6e40d64341e7c0c7ee03e08"},
+        {L"runtime/tor/pluggable_transports/lyrebird.exe", L"83d4d39d438a36066af5161806a448b5d099033dda901ecd0b2663ec58a5790f"},
+        {L"runtime/tor/pluggable_transports/conjure-client.exe", L"6fb2dce9803157a6b871d6b5cd644b4d216350d81623e5548b887040da1ba5cb"},
+        {L"runtime/tor/pluggable_transports/pt_config.json", L"3f11d303c30191b3b1d382b9badd882d87fd87550d061f7d25a1b31226fc9b75"},
+        {L"runtime/tor/data/geoip", L"af9ccd060a712d090ee07d5678b5d45b0038ec1573116fae724a6695a8485703"},
+        {L"runtime/tor/data/geoip6", L"2393124667ba2ccb4c806f226a33b2ef7a8188d1ba55831c1a5d3dca2b062514"},
+        {L"runtime/i2p/i2pd.exe", L"3bfac576443ea76586c2ab3d688cba98edaaacaaaabd72308c058249f10c493e"}
+    }};
+    for (const auto &[relative, expected] : pinnedPrivateNetworkHashes) {
+        if (Sha256File(runtimeRoot / relative) != expected) {
+            throw InstallerError("Pinned private-network runtime hash mismatch");
         }
     }
     log.write(L"Package structure and release manifest validated");

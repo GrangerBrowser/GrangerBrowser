@@ -1,11 +1,11 @@
 [CmdletBinding()]
 param(
     [string]$OutputRoot = "$env:USERPROFILE\Qt",
-    [string]$ArchiveCache = "$env:LOCALAPPDATA\GrangerBrowserBuild\qt-6.11.1-archives"
+    [string]$ArchiveCache = "$env:LOCALAPPDATA\GrangerBrowserBuild\qt-6.11.2-archives"
 )
 
 $ErrorActionPreference = "Stop"
-$version = "6.11.1"
+$version = "6.11.2"
 $arch = "msvc2022_64"
 $target = [IO.Path]::GetFullPath((Join-Path $OutputRoot "$version\$arch"))
 $resolvedRoot = [IO.Path]::GetFullPath($OutputRoot).TrimEnd('\')
@@ -17,8 +17,8 @@ if (Test-Path -LiteralPath $target) {
     throw "Qt installation already exists: $target"
 }
 
-$desktopRepository = "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6111/qt6_6111_msvc2022_64"
-$webEngineRepository = "https://download.qt.io/online/qtsdkrepository/windows_x86/extensions/qtwebengine/6111/msvc2022_64"
+$desktopRepository = "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6112/qt6_6112_msvc2022_64"
+$webEngineRepository = "https://download.qt.io/online/qtsdkrepository/windows_x86/extensions/qtwebengine/6112/msvc2022_64"
 $desktopMetadata = [xml](Invoke-WebRequest -Uri "$desktopRepository/Updates.xml" -UseBasicParsing -TimeoutSec 60).Content
 $webEngineMetadata = [xml](Invoke-WebRequest -Uri "$webEngineRepository/Updates.xml" -UseBasicParsing -TimeoutSec 60).Content
 
@@ -29,7 +29,7 @@ function Get-PackageNode {
     return $node
 }
 
-$basePackage = Get-PackageNode $desktopMetadata "qt.qt6.6111.win64_msvc2022_64"
+$basePackage = Get-PackageNode $desktopMetadata "qt.qt6.6112.win64_msvc2022_64"
 $packages = @(
     [pscustomobject]@{
         Repository = $desktopRepository
@@ -40,17 +40,17 @@ $packages = @(
     },
     [pscustomobject]@{
         Repository = $desktopRepository
-        Node = Get-PackageNode $desktopMetadata "qt.qt6.6111.addons.qtpositioning.win64_msvc2022_64"
+        Node = Get-PackageNode $desktopMetadata "qt.qt6.6112.addons.qtpositioning.win64_msvc2022_64"
         Archives = @()
     },
     [pscustomobject]@{
         Repository = $desktopRepository
-        Node = Get-PackageNode $desktopMetadata "qt.qt6.6111.addons.qtwebchannel.win64_msvc2022_64"
+        Node = Get-PackageNode $desktopMetadata "qt.qt6.6112.addons.qtwebchannel.win64_msvc2022_64"
         Archives = @()
     },
     [pscustomobject]@{
         Repository = $webEngineRepository
-        Node = Get-PackageNode $webEngineMetadata "extensions.qtwebengine.6111.win64_msvc2022_64"
+        Node = Get-PackageNode $webEngineMetadata "extensions.qtwebengine.6112.win64_msvc2022_64"
         Archives = @()
     }
 )
@@ -62,13 +62,13 @@ foreach ($package in $packages) {
 
 New-Item -ItemType Directory -Path $resolvedCache -Force | Out-Null
 $staleStagingDirectories = @(Get-ChildItem -LiteralPath $resolvedRoot -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
-    $_.Name -like '.qt-6.11.1-staging-*' -and
+    $_.Name -like '.qt-6.11.2-staging-*' -and
     $_.FullName.StartsWith($resolvedRoot + '\', [StringComparison]::OrdinalIgnoreCase)
 })
 foreach ($staleStaging in $staleStagingDirectories) {
     Remove-Item -LiteralPath $staleStaging.FullName -Recurse -Force
 }
-$staging = Join-Path $resolvedRoot (".qt-6.11.1-staging-" + [guid]::NewGuid().ToString('N'))
+$staging = Join-Path $resolvedRoot (".qt-6.11.2-staging-" + [guid]::NewGuid().ToString('N'))
 if (-not $staging.StartsWith($resolvedRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "Qt staging directory escaped OutputRoot."
 }

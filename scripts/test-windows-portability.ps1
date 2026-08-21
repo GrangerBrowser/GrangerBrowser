@@ -277,6 +277,9 @@ $requiredFiles = @(
     "runtime/tor/pluggable_transports/lyrebird.exe",
     "runtime/tor/pluggable_transports/conjure-client.exe",
     "runtime/tor/pluggable_transports/pt_config.json",
+    "licenses/tor.txt",
+    "licenses/lyrebird.txt",
+    "licenses/conjure.txt",
     "runtime/i2p/i2pd.exe",
     "runtime/i2p/LICENSE.txt",
     "licenses/i2pd-LICENSE.txt",
@@ -309,15 +312,40 @@ if (-not ([string]$qtPaths.LibraryExecutables).Equals('.', [StringComparison]::O
 
 $deploymentMetadataPath = Join-Path $packageRoot "deployment-metadata.json"
 $deploymentMetadata = Get-Content -LiteralPath $deploymentMetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ([int]$deploymentMetadata.SchemaVersion -ne 1 -or
+if ([int]$deploymentMetadata.SchemaVersion -ne 2 -or
     [string]$deploymentMetadata.Architecture -ne "x64" -or
-    [string]$deploymentMetadata.QtVersion -notmatch '^6\.11\.1(?:\.0)?$' -or
-    [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.1(?:\.0)?$' -or
+    [string]$deploymentMetadata.QtVersion -notmatch '^6\.11\.2(?:\.0)?$' -or
+    [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.2(?:\.0)?$' -or
+    [string]$deploymentMetadata.TorBundleVersion -ne "15.0.20" -or
+    [string]$deploymentMetadata.TorVersion -ne "0.4.9.11" -or
+    [string]$deploymentMetadata.TorArchiveSHA256 -ne "D59BFF934E3AD876E1623E24AE60C19AEEA56F50178093B9F86FBA230639F949" -or
+    [string]$deploymentMetadata.TorSigningKeyFingerprint -ne "EF6E286DDA85EA2A4BA7DE684E2C6E8793298290" -or
+    -not [bool]$deploymentMetadata.TorSignatureVerified -or
+    [string]$deploymentMetadata.TorLicense -ne "GPL-3.0-or-later" -or
+    [string]$deploymentMetadata.LyrebirdVersion -ne "0.8.1" -or
+    [string]$deploymentMetadata.LyrebirdLicense -ne "BSD-3-Clause" -or
+    [string]$deploymentMetadata.ConjureVersion -ne "devel" -or
+    [string]$deploymentMetadata.GeoIpBundleVersion -ne "15.0.20" -or
     [string]$deploymentMetadata.I2pVersion -ne "2.61.0" -or
     [string]$deploymentMetadata.I2pArchiveSHA256 -ne "A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F" -or
     [string]$deploymentMetadata.I2pLicense -ne "BSD-3-Clause" -or
     [int]$deploymentMetadata.I2pCertificateCount -lt 1) {
-    throw "Deployment metadata does not describe the supported Qt 6.11.1 x64 runtime."
+    throw "Deployment metadata does not describe the supported Qt 6.11.2 x64 runtime."
+}
+$pinnedPrivateNetworkFiles = [ordered]@{
+    "runtime/tor/tor.exe" = "EA61BA0ED5B89D0622D2894B2A86F5FF34CE9B48E6E40D64341E7C0C7EE03E08"
+    "runtime/tor/pluggable_transports/lyrebird.exe" = "83D4D39D438A36066AF5161806A448B5D099033DDA901ECD0B2663EC58A5790F"
+    "runtime/tor/pluggable_transports/conjure-client.exe" = "6FB2DCE9803157A6B871D6B5CD644B4D216350D81623E5548B887040DA1BA5CB"
+    "runtime/tor/pluggable_transports/pt_config.json" = "3F11D303C30191B3B1D382B9BADD882D87FD87550D061F7D25A1B31226FC9B75"
+    "runtime/tor/data/geoip" = "AF9CCD060A712D090EE07D5678B5D45B0038EC1573116FAE724A6695A8485703"
+    "runtime/tor/data/geoip6" = "2393124667BA2CCB4C806F226A33B2EF7A8188D1BA55831C1A5D3DCA2B062514"
+    "runtime/i2p/i2pd.exe" = "3BFAC576443EA76586C2AB3D688CBA98EDAAACAAAABD72308C058249F10C493E"
+}
+foreach ($entry in $pinnedPrivateNetworkFiles.GetEnumerator()) {
+    $actual = (Get-FileHash -LiteralPath (Join-Path $packageRoot $entry.Key) -Algorithm SHA256).Hash
+    if (-not $actual.Equals($entry.Value, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Pinned private-network runtime hash mismatch: $($entry.Key)"
+    }
 }
 $i2pCertificates = @(
     Get-ChildItem -LiteralPath (Join-Path $packageRoot "runtime/i2p/certificates") -Recurse -File -ErrorAction Stop
@@ -348,6 +376,10 @@ foreach ($entry in $deploymentMetadata.RuntimeFiles) {
 foreach ($relativePath in @("Qt6Core.dll", "Qt6WebEngineCore.dll", "QtWebEngineProcess.exe",
                              "d3dcompiler_47.dll", "icu.dll", "icuuc.dll", "dxcompiler.dll", "dxil.dll",
                              "MSVCP140.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll",
+                             "runtime\tor\tor.exe", "runtime\tor\pluggable_transports\lyrebird.exe",
+                             "runtime\tor\pluggable_transports\conjure-client.exe",
+                             "runtime\tor\pluggable_transports\pt_config.json",
+                             "runtime\tor\data\geoip", "runtime\tor\data\geoip6",
                              "runtime\i2p\i2pd.exe")) {
     if (-not $metadataPaths.Contains($relativePath)) {
         throw "Deployment metadata does not cover $relativePath"

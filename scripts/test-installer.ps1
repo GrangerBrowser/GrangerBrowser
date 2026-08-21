@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Setup = "output/distribution/GrangerSetup.exe",
-    [string]$PackageArchive = "output/distribution/Granger-Browser-v0.4.3-windows-x64.zip",
+    [string]$PackageArchive = "output/distribution/Granger-Browser-v0.4.4-windows-x64.zip",
     [string]$TestRoot = "output/installer-acceptance"
 )
 
@@ -33,6 +33,11 @@ $packagePath = Resolve-WorkspacePath $PackageArchive
 $testPath = Resolve-WorkspacePath $TestRoot
 if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) { throw "Setup not found: $setupPath" }
 if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) { throw "Package not found: $packagePath" }
+$packageName = [IO.Path]::GetFileName($packagePath)
+if ($packageName -notmatch '^Granger-Browser-v(\d+\.\d+\.\d+)-windows-x64\.zip$') {
+    throw "Unexpected portable package name: $packageName"
+}
+$packageVersion = $Matches[1]
 if (Test-Path -LiteralPath $testPath) { Remove-Item -LiteralPath $testPath -Recurse -Force }
 New-Item -ItemType Directory -Path $testPath -Force | Out-Null
 
@@ -110,7 +115,7 @@ $baseUrl = "http://127.0.0.1:$port"
 $manifestPath = Join-Path $serverRoot 'manifest.json'
 [ordered]@{
     schemaVersion = 1
-    version = '0.4.3'
+    version = $packageVersion
     architecture = 'x64'
     minimumWindowsVersion = '10.0.17763'
     packageUrl = "$baseUrl/package.zip"
@@ -285,7 +290,7 @@ try {
     $results.Rerun = $true
 
     $testRegistry = "HKCU:\Software\Granger Browser\InstallerTests\$testId"
-    Set-ItemProperty -LiteralPath $testRegistry -Name DisplayVersion -Value '0.4.2'
+    Set-ItemProperty -LiteralPath $testRegistry -Name DisplayVersion -Value '0.4.3'
     $updateResult = Join-Path $testPath 'update.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch',
@@ -348,10 +353,11 @@ try {
         $torPassed = $torProcess.ExitCode -eq 0 -and $tor.ok -and $tor.routeVerified `
             -and $tor.bootstrapProgress -eq 100
         if ($torPassed) { break }
-        $retryableTimeout = $torAttempt -lt $maxTorAttempts -and $tor.bootstrapProgress -gt 0 `
+        $retryableVerificationFailure = $torAttempt -lt $maxTorAttempts `
+            -and $tor.bootstrapProgress -eq 100 -and -not $tor.routeVerified `
             -and $tor.configVerificationOutput -match 'Configuration was valid' `
-            -and $tor.reason -match 'timed out'
-        if (-not $retryableTimeout) { break }
+            -and $tor.reason -match 'route verification|check endpoint|timed out'
+        if (-not $retryableVerificationFailure) { break }
         Start-Sleep -Seconds 2
     }
     if (-not $torPassed) {
@@ -360,19 +366,35 @@ try {
     $results.Tor = $true
     $results.TorAttempts = $torAttempt
 
-    $i2pProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
-        -ArgumentList @('--smoke-i2p-runtime', "--smoke-output=$i2pOutput", '--smoke-timeout-ms=240000') `
-        -Wait -PassThru
-    $i2p = Get-Content -LiteralPath $i2pOutput -Raw | ConvertFrom-Json
-    if ($i2pProcess.ExitCode -ne 0 -or -not $i2p.ok `
-        -or -not $i2p.firstRouteVerified -or -not $i2p.secondRouteVerified `
-        -or -not $i2p.firstAddressBookReady -or -not $i2p.bootstrapContainsExpectedNames `
-        -or -not $i2p.humanReadableConnected -or -not $i2p.humanReadableHttpResponse `
-        -or -not $i2p.externalB32Connected -or -not $i2p.externalB32HttpResponse `
-        -or -not $i2p.unknownNameBlocked -or -not $i2p.headlessConfigured) {
-        throw "Installed browser managed I2P smoke failed."
+    $i2pPassed = $false
+    $maxI2pAttempts = 2
+    for ($i2pAttempt = 1; $i2pAttempt -le $maxI2pAttempts; $i2pAttempt++) {
+        $i2pOutput = Join-Path $testPath $(if ($i2pAttempt -eq 1) { 'managed-i2p.json' } else { 'managed-i2p-retry.json' })
+        $i2pProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
+            -ArgumentList @('--smoke-i2p-runtime', "--smoke-output=$i2pOutput", '--smoke-timeout-ms=300000') `
+            -Wait -PassThru
+        $i2p = Get-Content -LiteralPath $i2pOutput -Raw | ConvertFrom-Json
+        $i2pPassed = $i2pProcess.ExitCode -eq 0 -and $i2p.ok `
+            -and $i2p.firstRouteVerified -and $i2p.secondRouteVerified `
+            -and $i2p.firstAddressBookReady -and $i2p.bootstrapContainsExpectedNames `
+            -and $i2p.humanReadableConnected -and $i2p.humanReadableHttpResponse `
+            -and $i2p.externalB32Connected -and $i2p.externalB32HttpResponse `
+            -and $i2p.unknownNameBlocked -and $i2p.headlessConfigured `
+            -and $i2p.routeLossObserved -and $i2p.restartRequested -and $i2p.stopped `
+            -and -not $i2p.outproxyConfigured -and $i2p.clearnetPolicy -eq 'blocked'
+        if ($i2pPassed) { break }
+        $retryableReseedFailure = $i2pAttempt -lt $maxI2pAttempts `
+            -and $i2p.started -and $i2p.stopped -and $i2p.firstAddressBookReady `
+            -and -not $i2p.firstRouteVerified `
+            -and $i2p.finalError -match 'SOCKS is not listening|timed out|reseed'
+        if (-not $retryableReseedFailure) { break }
+        Start-Sleep -Seconds 2
+    }
+    if (-not $i2pPassed) {
+        throw "Installed browser managed I2P smoke failed after $i2pAttempt attempt(s)."
     }
     $results.I2P = $true
+    $results.I2PAttempts = $i2pAttempt
     $results.I2PAddressBook = $true
     $results.I2PExternalB32 = $true
     $results.I2PHeadless = $true
@@ -399,7 +421,7 @@ try {
     $invalidManifest = Join-Path $serverRoot 'invalid-zip.json'
     $invalidSize = (Get-Item $invalidZip).Length
     [ordered]@{
-        schemaVersion = 1; version = '0.4.3'; architecture = 'x64'
+        schemaVersion = 1; version = $packageVersion; architecture = 'x64'
         minimumWindowsVersion = '10.0.17763'; packageUrl = "$baseUrl/invalid.zip"
         packageSize = $invalidSize
         sha256 = (Get-FileHash $invalidZip -Algorithm SHA256).Hash.ToLowerInvariant()

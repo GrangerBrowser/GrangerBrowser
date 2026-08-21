@@ -14,6 +14,15 @@ WebEngine route.
   therefore blocked while I2P is the only active route.
 - There is no Direct, No Proxy, or system-proxy user mode.
 
+The Windows package uses Tor 0.4.9.11 from the official Tor Expert Bundle
+15.0.20. The pinned archive SHA-256 is
+`D59BFF934E3AD876E1623E24AE60C19AEEA56F50178093B9F86FBA230639F949`.
+The build verifies its detached signature against Tor Browser Developers key
+fingerprint `EF6E286DDA85EA2A4BA7DE684E2C6E8793298290`, then records hashes for
+Tor, lyrebird 0.8.1, Conjure, `pt_config.json`, `geoip`, and `geoip6` in
+`deployment-metadata.json`. The package retains the upstream Tor, lyrebird,
+Conjure, libevent, OpenSSL, and zlib notices.
+
 The i2pd archive is the official Windows x64 MinGW release with SHA-256
 `A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F`.
 It is licensed under BSD-3-Clause. Binaries and certificates are read from the
@@ -55,6 +64,12 @@ Opening a local proxy port is not sufficient to mark a backend connected. Tor
 must pass its browser route check. I2P must carry a randomized self-hosted HTTP
 probe through an actual `.b32.i2p` tunnel. Only then does the state machine mark
 that route verified.
+
+At process startup, WebEngine is assigned either the canonical loopback gateway
+or a deliberately blocked loopback test gateway. Environment and command-line
+Chromium proxy/resolver overrides are removed or rejected before QApplication
+and WebEngine initialization. Offline tests therefore cannot create a direct
+network path merely by disabling managed Tor.
 
 When the active route is lost, the gateway first rejects new requests and
 closes all current proxy sessions. The manager then checks the secondary

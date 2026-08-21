@@ -103,7 +103,7 @@ making a direct fallback request:
 
 For each real environment (no VPN, VPN/TUN, Xray TUN, Xray system proxy, local
 SOCKS5, and local HTTP proxy), start Granger with a fresh profile and apply the
-managed Direct Tor strategy. Record bootstrap progress, route verification,
+managed Tor-without-bridges strategy. Record bootstrap progress, route verification,
 the redacted network diagnosis, and the last Tor error. Repeat with the network
 tool enabled before startup and enabled after startup. A detected VPN alone is
 not a failure; the conflict warning is valid only after Tor actually fails and

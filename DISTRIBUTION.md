@@ -27,8 +27,8 @@ distribution obligations listed below.
 2. Determine the applicable Qt licensing path for the exact modules and runtime
    being shipped, then include the required license texts, notices, source or
    relinking materials, and other obligations.
-3. Stage a verified official Tor Expert Bundle as described in `BUILDING.md` and
-   retain its bundled license documents.
+3. Use the pinned, signature-verified official Tor Expert Bundle described in
+   `BUILDING.md` and retain its bundled license documents.
 4. Use the pinned official PurpleI2P i2pd archive described in `BUILDING.md`,
    verify its checksum, and retain the BSD-3-Clause notice.
 5. Run `scripts/build-release.ps1` from a clean tree. Publish only the canonical

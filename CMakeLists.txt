@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(GrangerBrowser
-    VERSION 0.4.3
+    VERSION 0.4.4
     DESCRIPTION "Granger Browser privacy browser with integrated search"
     LANGUAGES C CXX
 )

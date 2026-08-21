@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-set(GRANGER_INSTALLER_VERSION "0.4.3" CACHE STRING "Granger Setup product version")
+set(GRANGER_INSTALLER_VERSION "0.4.4" CACHE STRING "Granger Setup product version")
 project(GrangerSetup VERSION ${GRANGER_INSTALLER_VERSION} LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
