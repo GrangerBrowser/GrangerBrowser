@@ -82,7 +82,11 @@ gpg --batch --homedir "$gpg_home" --with-colons --fingerprint \
 signature_status="$(gpg --batch --homedir "$gpg_home" --status-fd 1 \
     --verify "$tor_signature" "$tor_archive" 2>&1)" \
     || fail "Tor archive signature validation failed"
-grep -Fq "[GNUPG:] VALIDSIG ${tor_key_fingerprint}" <<<"$signature_status" \
+awk -v expected="$tor_key_fingerprint" '
+    $1 == "[GNUPG:]" && $2 == "VALIDSIG"
+        && ($3 == expected || $12 == expected) { valid = 1 }
+    END { exit valid ? 0 : 1 }
+' <<<"$signature_status" \
     || fail "Tor archive was not signed by the pinned Tor Browser Developers key"
 
 if tar -tzf "$tor_archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
