@@ -113,6 +113,7 @@ download_tool "$linuxdeploy_url" "$linuxdeploy" "$linuxdeploy_sha256"
 download_tool "$qt_plugin_url" "$qt_plugin" "$qt_plugin_sha256"
 
 export PATH="$tools_root:$qt_root/bin:$PATH"
+export LD_LIBRARY_PATH="$qt_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export QMAKE="$qt_root/bin/qmake"
 export VERSION="$version"
 export LDAI_OUTPUT="$artifact"
