@@ -15,7 +15,9 @@ fail() {
 
 skip() {
     jq -n --arg reason "$1" \
-        '{ok:false,status:"UNVERIFIED",reason:$reason,packetLevelAcceptance:"UNVERIFIED"}' \
+        '{ok:false,status:"UNVERIFIED",reason:$reason,
+          blockedStartupPacketAcceptance:"UNVERIFIED",
+          packetLevelAcceptance:"UNVERIFIED"}' \
         >"$report"
     printf 'Linux network namespace acceptance unavailable: %s\n' "$1" >&2
     exit 77
@@ -194,7 +196,9 @@ jq -n \
       nonLoopbackNavigationBlocked:$nonLoopbackBlocked,
       i2pNavigationBlockedWithoutDns:$i2pBlocked,
       noSandboxArgumentExit:$noSandboxExit,noProxyArgumentExit:$noProxyExit,
-      packetLevelAcceptance:(if $ok then "PASS" else "FAIL" end)}' \
+      blockedStartupPacketAcceptance:(if $ok then "PASS" else "FAIL" end),
+      packetLevelAcceptance:(if $ok then "UNVERIFIED" else "FAIL" end),
+      limitation:"Live Tor/I2P backend traffic is not attributed by this blocked-startup capture."}' \
     >"$report"
 
 [[ "$ok" == true ]] || fail "network namespace observed a fail-closed regression"

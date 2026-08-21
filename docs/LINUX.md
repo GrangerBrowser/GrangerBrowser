@@ -140,11 +140,14 @@ sudo scripts/test-linux-network-fail-closed.sh
 GRANGER_LINUX_FULL_LIVE_ACCEPTANCE=1 scripts/test-linux-private-routes.sh
 ```
 
-The namespace test uses a disposable network namespace, veth pair, packet
-capture, and controlled non-loopback listener. It must report zero direct
-browser TCP/UDP/DNS traffic. Exit status 77 means the host could not provide
-the required namespace/capture capabilities and the packet result remains
-`UNVERIFIED`; it is not a pass.
+The namespace test uses a disposable network namespace, veth pair, full
+interface packet capture, and a controlled non-loopback listener. It must
+report zero browser TCP/UDP/DNS traffic during blocked startup and negative
+navigation probes. Live Tor/I2P and route-loss tests separately sample
+browser/renderer-owned sockets. This combined evidence does not claim complete
+packet attribution across the live backend lifecycle; overall packet-level
+acceptance remains `UNVERIFIED` until that coverage is run. Exit status 77 also
+means the blocked-startup capture is `UNVERIFIED`; it is not a pass.
 
 ## Known limitations
 

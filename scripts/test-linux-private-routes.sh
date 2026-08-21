@@ -51,7 +51,7 @@ udp_samples="$report_root/browser-udp-sockets.txt"
 
 sample_sockets() {
     while true; do
-        sudo -n ss -H -tnp state established 2>/dev/null \
+        sudo -n ss -H -tnp 2>/dev/null \
             | grep -E 'GrangerBrowser|QtWebEngineProc' >>"$tcp_samples" || true
         sudo -n ss -H -unp 2>/dev/null \
             | grep -E 'GrangerBrowser|QtWebEngineProc' >>"$udp_samples" || true
@@ -185,7 +185,8 @@ jq -n \
       i2pUnknownNameBlocked:true,torRecoveryTested:$fullFailover,
       i2pRecoveryTested:true,allRoutesLossTested:$fullFailover,
       failoverPassed:$failover,directOwnedTcpSockets:0,directOwnedUdpSockets:0,
-      socketSamplingIntervalMs:200}' \
+      socketSamplingIntervalMs:200,processSocketAcceptance:"PASS",
+      packetLevelAcceptance:"UNVERIFIED"}' \
     >"$report_root/live-private-route-summary.json"
 
 printf 'Linux managed Tor/I2P and fail-closed live acceptance passed.\n'

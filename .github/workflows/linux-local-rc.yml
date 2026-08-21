@@ -120,23 +120,25 @@ jobs:
         run: |
           mkdir -p output/linux/acceptance
           packet_status="UNVERIFIED"
-          if jq -e '.ok == true' \
-              output/linux/acceptance/network-namespace-fail-closed.json \
-              >/dev/null 2>&1; then
-            packet_status="PASS"
-          elif [[ -f output/linux/acceptance/network-namespace-fail-closed.json ]]; then
-            packet_status="$(jq -r '.status // "UNVERIFIED"' \
+          blocked_startup_status="UNVERIFIED"
+          if [[ -f output/linux/acceptance/network-namespace-fail-closed.json ]]; then
+            packet_status="$(jq -r '.packetLevelAcceptance // "UNVERIFIED"' \
+              output/linux/acceptance/network-namespace-fail-closed.json)"
+            blocked_startup_status="$(jq -r \
+              '.blockedStartupPacketAcceptance // "UNVERIFIED"' \
               output/linux/acceptance/network-namespace-fail-closed.json)"
           fi
           jq -n \
             --arg commit "$GITHUB_SHA" \
             --arg runner "$RUNNER_OS $ImageOS" \
             --arg packet "$packet_status" \
+            --arg blockedStartupPacket "$blocked_startup_status" \
             --argjson build "$(cat output/linux/linux-build-report.json 2>/dev/null || echo null)" \
             --argjson appimage "$(cat output/linux/acceptance/appimage-acceptance.json 2>/dev/null || echo null)" \
             --argjson routes "$(cat output/linux/acceptance/live/live-private-route-summary.json 2>/dev/null || echo null)" \
             '{commit:$commit,environment:$runner,build:$build,
               appImageAcceptance:$appimage,privateRoutes:$routes,
+              blockedStartupPacketAcceptance:$blockedStartupPacket,
               packetLevelAcceptance:$packet,publicReleaseCreated:false}' \
             > output/linux/acceptance-summary.json
 
