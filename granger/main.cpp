@@ -2118,24 +2118,29 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
                 granger::SearchManager dispatchSearch;
                 const granger::SearchEngine selectedEngine =
                     dispatchSearch.engine(settings->defaultSearchEngine());
-                const QUrl requestedUrl = tab->lastRequestedUrl();
-                const QUrlQuery requestedQuery(requestedUrl);
-                const bool dispatchAccepted = requestedUrl.isValid()
-                    && !requestedUrl.host().isEmpty()
-                    && requestedUrl.host().compare(
+                const QUrl resolvedUrl(window->currentAddressForDiagnostics());
+                const QUrlQuery resolvedQuery(resolvedUrl);
+                const bool targetResolved = resolvedUrl.isValid()
+                    && !resolvedUrl.host().isEmpty()
+                    && resolvedUrl.host().compare(
                            QUrl(selectedEngine.searchUrl).host(), Qt::CaseInsensitive) == 0
-                    && requestedQuery.allQueryItemValues(
+                    && resolvedQuery.allQueryItemValues(
                            selectedEngine.queryParameter, QUrl::FullyDecoded).size() == 1
-                    && requestedQuery.queryItemValue(
+                    && resolvedQuery.queryItemValue(
                            selectedEngine.queryParameter, QUrl::FullyDecoded) == expectedSearch;
-                result.insert(QStringLiteral("searchNavigationDispatchAccepted"),
-                              dispatchAccepted);
+                const bool navigationFailClosed = tab->lastRequestedUrl().isEmpty()
+                    && tab->hasInternalContent();
+                result.insert(QStringLiteral("searchNavigationTargetResolved"), targetResolved);
+                result.insert(QStringLiteral("searchNavigationFailClosed"), navigationFailClosed);
+                result.insert(QStringLiteral("searchNavigationTarget"),
+                              resolvedUrl.toString(QUrl::FullyEncoded));
                 result.insert(QStringLiteral("searchNavigationProvider"),
                               selectedEngine.id);
 
                 QTimer::singleShot(750, &app,
                                    [&, tab, navigationTimer, connection,
-                                    loadStartedObserved, dispatchAccepted,
+                                    loadStartedObserved, targetResolved,
+                                    navigationFailClosed,
                                     dispatchCallUs] {
                     QObject::disconnect(*connection);
                     delete navigationTimer;
@@ -2194,7 +2199,7 @@ int runPerformanceSmoke(QApplication &app, const QString &outputPath)
                     result.insert(QStringLiteral("profileCreations"), granger::BrowserProfile::creationCount());
                     result.insert(QStringLiteral("searchLoadStartedObserved"),
                                   *loadStartedObserved);
-                    const bool dispatchPassed = dispatchAccepted
+                    const bool dispatchPassed = targetResolved && navigationFailClosed
                         && dispatchCallUs > 0.0 && dispatchCallUs < 100000.0;
                     const bool localBenchmarksPassed = result.value(
                         QStringLiteral("localNavigationBenchmarksPassed")).toBool();
@@ -5739,12 +5744,15 @@ int runNewTabRegressionSmoke(QApplication &app, const QString &outputPath)
             window.openAddressForDiagnostics(QStringLiteral("test query"));
             app.processEvents();
             checkpoint(QStringLiteral("after Google plain-text search events"));
-            const QUrl googleUrl = window.currentTabForDiagnostics()->lastRequestedUrl();
+            granger::BrowserTab *googleTab = window.currentTabForDiagnostics();
+            const QUrl googleUrl(window.currentAddressForDiagnostics());
             record(QStringLiteral("Google plain-text search"),
                    googleUrl.host() == QStringLiteral("www.google.com")
                        && QUrlQuery(googleUrl).queryItemValue(QStringLiteral("q"), QUrl::FullyDecoded)
                            == QStringLiteral("test query")
-                       && externalCount() == beforeGoogleNewTab + 1,
+                       && externalCount() == beforeGoogleNewTab
+                       && googleTab && googleTab->lastRequestedUrl().isEmpty()
+                       && googleTab->hasInternalContent(),
                    googleUrl.toString(QUrl::FullyEncoded));
 
             settings.setDefaultSearchEngine(QStringLiteral("duckduckgo"));
@@ -5761,11 +5769,14 @@ int runNewTabRegressionSmoke(QApplication &app, const QString &outputPath)
             window.openAddressForDiagnostics(russianQuery);
             app.processEvents();
             checkpoint(QStringLiteral("after DuckDuckGo Unicode search events"));
-            const QUrl duckUrl = window.currentTabForDiagnostics()->lastRequestedUrl();
+            granger::BrowserTab *duckTab = window.currentTabForDiagnostics();
+            const QUrl duckUrl(window.currentAddressForDiagnostics());
             record(QStringLiteral("DuckDuckGo Unicode search encoded once"),
                    duckUrl.host() == QStringLiteral("duckduckgo.com")
                        && QUrlQuery(duckUrl).queryItemValue(QStringLiteral("q"), QUrl::FullyDecoded) == russianQuery
-                       && externalCount() == beforeRussianSearch + 1,
+                       && externalCount() == beforeRussianSearch
+                       && duckTab && duckTab->lastRequestedUrl().isEmpty()
+                       && duckTab->hasInternalContent(),
                     duckUrl.toString(QUrl::FullyEncoded), russianQuery);
 
             checkpoint(QStringLiteral("before form-space new tab"));
@@ -5777,14 +5788,16 @@ int runNewTabRegressionSmoke(QApplication &app, const QString &outputPath)
             app.processEvents();
             checkpoint(QStringLiteral("after form-space action events"));
             granger::BrowserTab *formSpaceTab = window.currentTabForDiagnostics();
-            const QUrl formSpaceUrl = formSpaceTab ? formSpaceTab->lastRequestedUrl() : QUrl();
+            const QUrl formSpaceUrl(window.currentAddressForDiagnostics());
             record(QStringLiteral("start-page form decodes spaces before provider encoding"),
                    QUrlQuery(formSpaceUrl).queryItemValue(QStringLiteral("q"), QUrl::FullyDecoded)
                            == QStringLiteral("osint forum")
                        && formSpaceUrl.toString(QUrl::FullyEncoded)
                               .contains(QStringLiteral("q=osint%20forum"))
                        && !formSpaceUrl.toString(QUrl::FullyEncoded)
-                               .contains(QStringLiteral("q=osint%2Bforum"), Qt::CaseInsensitive),
+                               .contains(QStringLiteral("q=osint%2Bforum"), Qt::CaseInsensitive)
+                       && formSpaceTab && formSpaceTab->lastRequestedUrl().isEmpty()
+                       && formSpaceTab->hasInternalContent(),
                     formSpaceUrl.toString(QUrl::FullyEncoded), QStringLiteral("osint forum"));
             if (formSpaceTab) formSpaceTab->stop();
 
@@ -5797,10 +5810,12 @@ int runNewTabRegressionSmoke(QApplication &app, const QString &outputPath)
             app.processEvents();
             checkpoint(QStringLiteral("after literal-plus action events"));
             granger::BrowserTab *formPlusTab = window.currentTabForDiagnostics();
-            const QUrl formPlusUrl = formPlusTab ? formPlusTab->lastRequestedUrl() : QUrl();
+            const QUrl formPlusUrl(window.currentAddressForDiagnostics());
             record(QStringLiteral("start-page form preserves literal plus signs"),
                    QUrlQuery(formPlusUrl).queryItemValue(QStringLiteral("q"), QUrl::FullyDecoded)
-                       == QStringLiteral("C++ forum"),
+                       == QStringLiteral("C++ forum")
+                       && formPlusTab && formPlusTab->lastRequestedUrl().isEmpty()
+                       && formPlusTab->hasInternalContent(),
                     formPlusUrl.toString(QUrl::FullyEncoded), QStringLiteral("C++ forum"));
             if (formPlusTab) formPlusTab->stop();
 
@@ -5814,11 +5829,12 @@ int runNewTabRegressionSmoke(QApplication &app, const QString &outputPath)
             app.processEvents();
             checkpoint(QStringLiteral("after AI Chat action events"));
             granger::BrowserTab *aiTab = window.currentTabForDiagnostics();
-            const QUrl aiUrl = aiTab ? aiTab->lastRequestedUrl() : QUrl();
-            record(QStringLiteral("AI Chat action opens Duck.ai in a new Granger Browser tab"),
+            const QUrl aiUrl(window.currentAddressForDiagnostics());
+            record(QStringLiteral("AI Chat action opens a fail-closed Duck.ai tab without a verified route"),
                    window.tabCountForDiagnostics() == beforeAiTabs + 1
                        && aiUrl == QUrl(QStringLiteral("https://duck.ai/"))
-                       && aiTab && aiTab->privacyProfileKind() == granger::PrivacyProfileKind::Normal,
+                       && aiTab && aiTab->privacyProfileKind() == granger::PrivacyProfileKind::Normal
+                       && aiTab->lastRequestedUrl().isEmpty() && aiTab->hasInternalContent(),
                     aiUrl.toString(QUrl::FullyEncoded), QStringLiteral("https://duck.ai/"));
             if (aiTab) aiTab->stop();
 
@@ -5994,7 +6010,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(granger::Brand::organizationName());
     QCoreApplication::setOrganizationDomain(granger::Brand::organizationDomain());
     QCoreApplication::setApplicationName(granger::Brand::applicationName());
-    QCoreApplication::setApplicationVersion("0.4.3");
+    QCoreApplication::setApplicationVersion("0.4.4");
     granger::Brand::promoteLegacyEnvironment();
     configureSettingsStorageOverride();
     const granger::BrandMigrationResult brandMigration =

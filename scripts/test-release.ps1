@@ -179,8 +179,8 @@ userAgentProfile=default
     Invoke-GrangerBrowser @("--smoke-profile-state", "--smoke-output=$profileResult")
     $profile = Get-Content -Raw -Encoding UTF8 -LiteralPath $profileResult | ConvertFrom-Json
     $chromiumMajor = ([string]$profile.chromiumVersion -split '\.')[0]
-    if (-not $profile.ok -or $profile.qtVersion -ne "6.11.1" -or
-        $profile.qtWebEngineVersion -ne "6.11.1" -or
+    if (-not $profile.ok -or $profile.qtVersion -ne "6.11.2" -or
+        $profile.qtWebEngineVersion -ne "6.11.2" -or
         $profile.chromiumVersion -notmatch '^140\.0\.7339\.' -or
         $profile.javascriptUserAgent -notmatch ("Chrome/" + [regex]::Escape($chromiumMajor) + "\.") -or
         $profile.javascriptUserAgent -match "Firefox/" -or

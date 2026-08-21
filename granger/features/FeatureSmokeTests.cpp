@@ -2196,6 +2196,12 @@ int runFeatureSmokeTests(QApplication &app,
         results.record(QStringLiteral("history visual fixture contains three local date groups"),
                        historyFixtureSeeded && historyFixture.size() == 3);
 
+        StorageFixtureServer normalProfileServer;
+        normalProfileServer.addPage(
+            QStringLiteral("/normal-profile"),
+            QStringLiteral("<!doctype html><meta charset=\"utf-8\"><title>Normal profile fixture</title>"));
+        const bool normalProfileServerListening = normalProfileServer.start();
+
         MainWindow window(settings, theme);
         BrowserTab *normal = window.currentTabForDiagnostics();
         QWebEngineProfile *normalProfile = normal && normal->page()
@@ -2216,7 +2222,10 @@ int runFeatureSmokeTests(QApplication &app,
                        QString::fromUtf8(QJsonDocument(initialContainerDefinitions)
                                              .toJson(QJsonDocument::Compact)));
 
-        window.openAddressForDiagnostics(QStringLiteral("https://normal-profile.invalid/"));
+        if (normalProfileServerListening) {
+            window.openAddressForDiagnostics(
+                normalProfileServer.url(QStringLiteral("/normal-profile")).toString());
+        }
         const bool persistentNormalProfile = waitUntil([&] {
             QWebEngineProfile *profile = normal && normal->page() ? normal->page()->profile() : nullptr;
             return normal && profile && normal->containerId().isEmpty()
@@ -2227,7 +2236,7 @@ int runFeatureSmokeTests(QApplication &app,
         });
         if (normal && normal->isLoading()) normal->stop();
         results.record(QStringLiteral("external navigation switches to the persistent browser profile"),
-                       persistentNormalProfile,
+                       normalProfileServerListening && persistentNormalProfile,
                        QString::fromUtf8(QJsonDocument(window.featureDiagnostics())
                                              .toJson(QJsonDocument::Compact)));
 

@@ -4972,9 +4972,23 @@ bool MainWindow::privateRouteTransitioning() const
 bool MainWindow::destinationAllowedForNavigation(const QUrl &url, QString *reason) const
 {
     if (const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
-        routes && routes->gatewayListening()
-        && qApp->property("granger.usePrivacyGateway").toBool()) {
-        return routes->destinationAllowed(url, reason);
+        routes && routes->gatewayListening()) {
+        if (qApp->property("granger.usePrivacyGateway").toBool()) {
+            return routes->destinationAllowed(url, reason);
+        }
+        if (qApp->property("granger.blockedTestGateway").toBool()) {
+            const QString host = url.host().trimmed();
+            const bool loopbackFixture = host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0
+                || host == QStringLiteral("127.0.0.1")
+                || host == QStringLiteral("::1");
+            if (qApp->property("granger.smokeMode").toBool()
+                && m_settings.torConnectionMode() == QStringLiteral("disabled")
+                && loopbackFixture) {
+                return true;
+            }
+            if (reason) *reason = QStringLiteral("No verified private route");
+            return false;
+        }
     }
     if (m_processProxyActive) return true;
     if (reason) *reason = QStringLiteral("No verified private route");
@@ -9823,7 +9837,8 @@ void MainWindow::showSiteInfoPopup()
     PrivacyRouteStatus routeStatus;
     const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
     const bool failClosedGateway = routes && routes->gatewayListening()
-        && qApp->property("granger.usePrivacyGateway").toBool();
+        && (qApp->property("granger.usePrivacyGateway").toBool()
+            || qApp->property("granger.blockedTestGateway").toBool());
     if (failClosedGateway) {
         routeStatus = routes->status();
     } else if (m_tor.status().routeVerified) {

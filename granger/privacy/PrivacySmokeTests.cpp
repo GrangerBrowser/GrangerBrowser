@@ -2238,6 +2238,69 @@ int runContentFilterUpdateSmoke(QApplication &app, const QString &outputPath)
 {
     Q_UNUSED(app)
     Results results;
+
+    const auto resourceBytes = [](const QString &path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    QHash<QString, QByteArray> validResponses{
+        {QStringLiteral("/easylist.txt"), resourceBytes(QStringLiteral(":/privacy/easylist.txt"))},
+        {QStringLiteral("/easyprivacy.txt"), resourceBytes(QStringLiteral(":/privacy/easyprivacy.txt"))}
+    };
+    QByteArray urlTracking("[Adblock Plus 2.0]\n! Version: smoke-valid-1\n*$removeparam=utm_smoke\n");
+    for (int i = 0; i < 600; ++i) {
+        urlTracking += "||url-tracking-" + QByteArray::number(i) + ".invalid^\n";
+    }
+    QByteArray regional("[Adblock Plus 2.0]\n! Version: smoke-valid-1\n");
+    for (int i = 0; i < 5200; ++i) {
+        regional += "||regional-" + QByteArray::number(i) + ".invalid^\n";
+    }
+    validResponses.insert(QStringLiteral("/adguard-url-tracking.txt"), urlTracking);
+    validResponses.insert(QStringLiteral("/adguard-russian.txt"), regional);
+
+    QTcpServer validServer;
+    QSet<QString> validRequestedPaths;
+    const bool validFixtureReady = !validResponses.value(QStringLiteral("/easylist.txt")).isEmpty()
+        && !validResponses.value(QStringLiteral("/easyprivacy.txt")).isEmpty()
+        && validServer.listen(QHostAddress::LocalHost, 0);
+    QObject::connect(&validServer, &QTcpServer::newConnection, &validServer, [&] {
+        while (QTcpSocket *socket = validServer.nextPendingConnection()) {
+            socket->setParent(&validServer);
+            QObject::connect(socket, &QTcpSocket::readyRead, socket,
+                             [socket, &validResponses, &validRequestedPaths] {
+                QByteArray request = socket->property("granger.request").toByteArray();
+                request += socket->readAll();
+                socket->setProperty("granger.request", request);
+                if (!request.contains("\r\n\r\n")
+                    || socket->property("granger.responded").toBool()) return;
+                socket->setProperty("granger.responded", true);
+                const QByteArray requestLine = request.left(request.indexOf("\r\n"));
+                const QList<QByteArray> parts = requestLine.split(' ');
+                const QString path = parts.size() >= 2
+                    ? QString::fromLatin1(parts.at(1)) : QString();
+                validRequestedPaths.insert(path);
+                const QByteArray body = validResponses.value(path);
+                QByteArray response = body.isEmpty()
+                    ? QByteArrayLiteral("HTTP/1.1 404 Not Found\r\n")
+                    : QByteArrayLiteral("HTTP/1.1 200 OK\r\n");
+                response += QByteArrayLiteral("Content-Type: text/plain; charset=utf-8\r\nContent-Length: ");
+                response += QByteArray::number(body.size());
+                response += QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
+                response += body;
+                socket->write(response);
+                socket->disconnectFromHost();
+            });
+        }
+    });
+    if (!validFixtureReady) {
+        results.record(QStringLiteral("local maintained-filter fixture starts"), false);
+        const bool wrote = results.write(outputPath);
+        return wrote ? 1 : 2;
+    }
+    qputenv("GRANGER_DIAGNOSTIC_MODE", QByteArrayLiteral("1"));
+    qputenv("GRANGER_FILTER_UPDATE_TEST_ROOT",
+            QStringLiteral("http://127.0.0.1:%1/").arg(validServer.serverPort()).toUtf8());
+
     SettingsManager settings;
     PrivacyPolicyManager manager(settings);
     const bool initialRulesReady = waitForContentRules(manager, 15000);
@@ -2267,7 +2330,7 @@ int runContentFilterUpdateSmoke(QApplication &app, const QString &outputPath)
                                      Qt::ISODateWithMs).isValid()
             && item.value(QStringLiteral("lastError")).toString().isEmpty();
     }
-    results.record(QStringLiteral("official maintained filter lists download and validate"),
+    results.record(QStringLiteral("maintained filter lists download and validate through a loopback fixture"),
                    live.finished && live.success && live.rulesReloaded && metadataValid,
                    live.message);
     results.record(QStringLiteral("maintained lists expand supported blocking syntax"),
@@ -2338,6 +2401,8 @@ int runContentFilterUpdateSmoke(QApplication &app, const QString &outputPath)
     details.insert(QStringLiteral("afterMalformed"), afterMalformed);
     details.insert(QStringLiteral("liveMessage"), live.message);
     details.insert(QStringLiteral("rollbackMessage"), malformed.message);
+    details.insert(QStringLiteral("validFixtureRequests"),
+                   QJsonArray::fromStringList(QStringList(validRequestedPaths.values())));
     const bool wrote = results.write(outputPath, details);
     return results.ok && wrote ? 0 : 1;
 }
@@ -2619,7 +2684,7 @@ int runPrivacyDiagnosticsSmoke(QApplication &app, const QString &outputPath)
     results.record(QStringLiteral("ordinary link navigation applies the target origin JavaScript rule"),
                    serversListening && perSiteLinkProtected,
                    targetRequests.join(QStringLiteral(", ")));
-    results.record(QStringLiteral("ordinary link navigation cannot bypass Tor Direct-fallback blocking"),
+    results.record(QStringLiteral("ordinary link navigation cannot bypass an unverified Tor mode"),
                    serversListening && fallbackLinkBlocked,
                    targetRequests.join(QStringLiteral(", ")));
 

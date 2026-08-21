@@ -19,6 +19,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
@@ -90,6 +91,23 @@ struct MaintainedFilterDefinition {
     bool bundled = false;
 };
 
+QUrl diagnosticFilterUpdateRoot()
+{
+    if (qEnvironmentVariableIntValue("GRANGER_DIAGNOSTIC_MODE") != 1) return {};
+    QUrl testRoot(qEnvironmentVariable("GRANGER_FILTER_UPDATE_TEST_ROOT"));
+    QHostAddress testAddress;
+    const bool loopbackHost = testRoot.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0
+        || (testAddress.setAddress(testRoot.host()) && testAddress.isLoopback());
+    if (!testRoot.isValid() || testRoot.scheme() != QStringLiteral("http")
+        || !loopbackHost || testRoot.port() <= 0) {
+        return {};
+    }
+    QString path = testRoot.path();
+    if (!path.endsWith(QLatin1Char('/'))) path += QLatin1Char('/');
+    testRoot.setPath(path);
+    return testRoot;
+}
+
 QVector<MaintainedFilterDefinition> maintainedFilterDefinitions()
 {
     QVector<MaintainedFilterDefinition> definitions{
@@ -116,21 +134,11 @@ QVector<MaintainedFilterDefinition> maintainedFilterDefinitions()
          QStringLiteral("https://github.com/AdguardTeam/AdguardFilters"),
          QStringLiteral("GPL-3.0-only"), CategoryRegional, 5000, false}
     };
-    if (qEnvironmentVariableIntValue("GRANGER_DIAGNOSTIC_MODE") == 1) {
-        const QUrl testRoot(qEnvironmentVariable("GRANGER_FILTER_UPDATE_TEST_ROOT"));
-        QHostAddress testAddress;
-        const bool loopbackHost = testRoot.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0
-            || (testAddress.setAddress(testRoot.host()) && testAddress.isLoopback());
-        if (testRoot.isValid() && testRoot.scheme() == QStringLiteral("http")
-            && loopbackHost && testRoot.port() > 0) {
-            QUrl normalizedRoot = testRoot;
-            QString path = normalizedRoot.path();
-            if (!path.endsWith(QLatin1Char('/'))) path += QLatin1Char('/');
-            normalizedRoot.setPath(path);
-            for (MaintainedFilterDefinition &definition : definitions) {
-                definition.updateUrl = normalizedRoot.resolved(
-                    QUrl(definition.id + QStringLiteral(".txt"))).toString(QUrl::FullyEncoded);
-            }
+    const QUrl testRoot = diagnosticFilterUpdateRoot();
+    if (testRoot.isValid()) {
+        for (MaintainedFilterDefinition &definition : definitions) {
+            definition.updateUrl = testRoot.resolved(
+                QUrl(definition.id + QStringLiteral(".txt"))).toString(QUrl::FullyEncoded);
         }
     }
     return definitions;
@@ -1768,6 +1776,9 @@ public:
     explicit FilterUpdateManager(ContentBlocker *owner)
         : m_owner(owner), m_network(owner)
     {
+        if (diagnosticFilterUpdateRoot().isValid()) {
+            m_network.setProxy(QNetworkProxy::NoProxy);
+        }
         loadMetadata();
     }
 

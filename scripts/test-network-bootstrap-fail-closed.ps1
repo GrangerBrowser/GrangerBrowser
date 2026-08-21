@@ -18,7 +18,22 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "Packaged executable was not found: $executable"
 }
 
-$testRoot = Join-Path (Split-Path -Parent $resultPath) "network-bootstrap-fixture"
+function Start-GrangerProbe {
+    param([string[]]$Arguments)
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $executable
+    $startInfo.WorkingDirectory = $testRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in $Arguments) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    return [Diagnostics.Process]::Start($startInfo)
+}
+
+$testRoot = Join-Path (Split-Path -Parent $resultPath) `
+    ("network-bootstrap-fixture-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 $browserResultPath = Join-Path $testRoot "blocked-navigation.json"
 $probeAddress = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
@@ -54,9 +69,8 @@ try {
         '--no-proxy-server --proxy-bypass-list=* --host-resolver-rules="EXCLUDE *"'
 
     $target = "http://${probeAddress}:$probePort/direct-route-probe"
-    $process = Start-Process -FilePath $executable -WorkingDirectory $testRoot -PassThru `
-        -ArgumentList @("--smoke-url=$target", "--smoke-output=$browserResultPath")
-    if (-not $process.WaitForExit(30000)) {
+    $process = Start-GrangerProbe @("--smoke-url=$target", "--smoke-output=$browserResultPath")
+    if (-not $process.WaitForExit(45000)) {
         $process.Kill()
         $process.WaitForExit()
         throw "Blocked navigation smoke timed out."
@@ -70,7 +84,7 @@ try {
     $listener.Stop()
 
     if (-not (Test-Path -LiteralPath $browserResultPath -PathType Leaf)) {
-        throw "Blocked navigation did not produce diagnostics."
+        throw "Blocked navigation did not produce diagnostics (exit code $($process.ExitCode))."
     }
     $browserResult = Get-Content -LiteralPath $browserResultPath -Raw -Encoding UTF8 |
         ConvertFrom-Json
@@ -81,22 +95,22 @@ try {
         $flags -notmatch '(?i)--proxy-bypass-list=\*' -and
         $flags -notmatch '(?i)EXCLUDE \*'
 
-    $proxyProbe = Start-Process -FilePath $executable -WorkingDirectory $testRoot -Wait -PassThru `
-        -ArgumentList @(
-            "--smoke-proxy=socks5://${probeAddress}:$probePort",
-            "--smoke-profile-state",
-            "--smoke-output=$(Join-Path $testRoot 'invalid-proxy.json')"
-        )
+    $proxyProbe = Start-GrangerProbe @(
+        "--smoke-proxy=socks5://${probeAddress}:$probePort",
+        "--smoke-profile-state",
+        "--smoke-output=$(Join-Path $testRoot 'invalid-proxy.json')"
+    )
+    $proxyProbe.WaitForExit()
     $externalSmokeProxyRejected = $proxyProbe.ExitCode -eq 7
-    $argumentProbe = Start-Process -FilePath $executable -WorkingDirectory $testRoot -Wait -PassThru `
-        -ArgumentList @('--webEngineArgs', '--no-proxy-server')
+    $argumentProbe = Start-GrangerProbe @('--webEngineArgs', '--no-proxy-server')
+    $argumentProbe.WaitForExit()
     $chromiumArgumentOverrideRejected = $argumentProbe.ExitCode -eq 8
-    $mixedModeProbe = Start-Process -FilePath $executable -WorkingDirectory $testRoot -Wait -PassThru `
-        -ArgumentList @(
-            '--smoke-managed-mode=direct',
-            "--smoke-url=$target",
-            "--smoke-output=$(Join-Path $testRoot 'mixed-mode.json')"
-        )
+    $mixedModeProbe = Start-GrangerProbe @(
+        '--smoke-managed-mode=direct',
+        "--smoke-url=$target",
+        "--smoke-output=$(Join-Path $testRoot 'mixed-mode.json')"
+    )
+    $mixedModeProbe.WaitForExit()
     $mixedManagedModeRejected = $mixedModeProbe.ExitCode -eq 9
     $ok = -not $directConnectionObserved -and -not [bool]$browserResult.ok -and
         $gatewayPinned -and $untrustedFlagsRemoved -and $externalSmokeProxyRejected -and

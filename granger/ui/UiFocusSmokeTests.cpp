@@ -848,9 +848,10 @@ int runUiFocusSmoke(QApplication &app,
             return true;
         })())JS")).toBool();
     const bool formNavigationReady = waitFor([&] {
-        return homeTab && homeTab->lastRequestedUrl().host() == QStringLiteral("duckduckgo.com");
+        return QUrl(window->currentAddressForDiagnostics()).host()
+            == QStringLiteral("duckduckgo.com");
     }, 4000);
-    const QUrl submittedUrl = homeTab ? homeTab->lastRequestedUrl() : QUrl();
+    const QUrl submittedUrl(window->currentAddressForDiagnostics());
     results.record(QStringLiteral("real start-page form submission preserves a two-word query"),
                    formSubmitted && formNavigationReady
                        && QUrlQuery(submittedUrl).queryItemValue(QStringLiteral("q"), QUrl::FullyDecoded)
@@ -4010,9 +4011,9 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
         const QJsonObject diagnostics = window->siteInfoPopupDiagnostics();
         sitePopupRealControls = popupOpened
             && diagnostics.value(QStringLiteral("pageKind")).toString() == QStringLiteral("website")
-            && diagnostics.value(QStringLiteral("connectionState")).toString() == QStringLiteral("https-direct")
+            && diagnostics.value(QStringLiteral("connectionState")).toString() == QStringLiteral("route-blocked")
             && popupText.contains(Localization::text(QStringLiteral("site.encryption.https")))
-            && popupText.contains(Localization::text(QStringLiteral("site.route.direct")))
+            && popupText.contains(Localization::text(QStringLiteral("site.route.blocked")))
             && (popupText.contains(Localization::text(QStringLiteral("content_blocking.site_enabled")))
                 || popupText.contains(Localization::text(QStringLiteral("content_blocking.site_disabled"))));
         const QString path = QDir(capturesRoot).filePath(QStringLiteral("10-content-blocker-popup.png"));
