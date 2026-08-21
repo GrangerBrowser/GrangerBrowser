@@ -101,7 +101,7 @@ declare -A tor_file_hashes=(
     ["tor/pluggable_transports/conjure-client"]="10cf795f21f136a38c1989dc93b6b687a9d30a91775873f006524b08634732c0"
     ["tor/pluggable_transports/pt_config.json"]="2f7cf039710e96b70ea7d45473b905f9a6ce9a8b65e9f03e2507135ae8c75407"
     ["data/geoip"]="af9ccd060a712d090ee07d5678b5d45b0038ec1573116fae724a6695a8485703"
-    ["data/geoip6"]="2393124667ba2cc4c806f226a33b2ef7a8188d1ba55831c1a5d3dca2b062514"
+    ["data/geoip6"]="2393124667ba2ccb4c806f226a33b2ef7a8188d1ba55831c1a5d3dca2b062514"
 )
 for relative_path in "${!tor_file_hashes[@]}"; do
     file_path="$tor_extract/$relative_path"
