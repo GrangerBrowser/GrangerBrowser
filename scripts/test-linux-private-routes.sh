@@ -69,6 +69,12 @@ base_env=(
     "XDG_DATA_HOME=$test_root/xdg/data"
     "XDG_CACHE_HOME=$test_root/xdg/cache"
     "XDG_RUNTIME_DIR=$test_root/xdg/runtime"
+    "GRANGER_RUNTIME_ROOT=/nonexistent/runtime"
+    "GRANGER_TOR_PATH=/nonexistent/tor"
+    "GRANGER_LYREBIRD_PATH=/nonexistent/lyrebird"
+    "GRANGER_TRANSPORT_PATH=/nonexistent/transport"
+    "GRANGER_I2P_PATH=/nonexistent/i2pd"
+    "GRANGER_I2P_CERTS=/nonexistent/i2p-certificates"
     "APPIMAGE_EXTRACT_AND_RUN=1"
 )
 

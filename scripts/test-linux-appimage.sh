@@ -65,6 +65,12 @@ base_env=(
     "QTWEBENGINE_LOCALES_PATH=/nonexistent/locales"
     "QTWEBENGINE_DISABLE_SANDBOX=1"
     "QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --no-proxy-server"
+    "GRANGER_RUNTIME_ROOT=/nonexistent/runtime"
+    "GRANGER_TOR_PATH=/nonexistent/tor"
+    "GRANGER_LYREBIRD_PATH=/nonexistent/lyrebird"
+    "GRANGER_TRANSPORT_PATH=/nonexistent/transport"
+    "GRANGER_I2P_PATH=/nonexistent/i2pd"
+    "GRANGER_I2P_CERTS=/nonexistent/i2p-certificates"
 )
 
 run_extracted() {

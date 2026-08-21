@@ -106,6 +106,11 @@ namespace_env=(
     "XDG_RUNTIME_DIR=$test_root/xdg/runtime"
     "QTWEBENGINE_DISABLE_SANDBOX=1"
     "QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --no-proxy-server --proxy-bypass-list=*"
+    "GRANGER_RUNTIME_ROOT=/nonexistent/runtime"
+    "GRANGER_TOR_PATH=/nonexistent/tor"
+    "GRANGER_LYREBIRD_PATH=/nonexistent/lyrebird"
+    "GRANGER_I2P_PATH=/nonexistent/i2pd"
+    "GRANGER_I2P_CERTS=/nonexistent/i2p-certificates"
     "APPIMAGE_EXTRACT_AND_RUN=1"
 )
 
