@@ -2,7 +2,6 @@
 param(
     [Parameter(Mandatory)][string]$PackageArchive,
     [string]$OutputDirectory = "output/distribution",
-    [string]$Repository = "zakhar-git/Granger-Browser",
     [string]$MinimumWindowsVersion = "10.0.17763"
 )
 
@@ -59,11 +58,10 @@ New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $manifestPath = Join-Path $outputRoot 'granger-installer-manifest.json'
 $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     version = $version
     architecture = 'x64'
     minimumWindowsVersion = $MinimumWindowsVersion
-    packageUrl = "https://github.com/$Repository/releases/download/v$version/$expectedArchiveName"
     packageSize = (Get-Item -LiteralPath $archivePath).Length
     sha256 = $archiveHash
 } | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
@@ -75,5 +73,4 @@ $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.T
     Package = $archivePath
     PackageSize = (Get-Item -LiteralPath $archivePath).Length
     PackageSHA256 = $archiveHash.ToUpperInvariant()
-    PackageUrl = "https://github.com/$Repository/releases/download/v$version/$expectedArchiveName"
 }

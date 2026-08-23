@@ -6,7 +6,7 @@
 
 The canonical distribution build embeds `granger-installer-manifest.json` and one complete Windows x64 portable ZIP. The manifest records the archive's exact byte size and SHA-256 digest, so the installer remains self-contained when the release host is unavailable.
 
-The installer never resolves individual Qt, ICU, Visual C++, Tor, I2P, or transport files. The portable ZIP and installed browser use the same canonical packaged runtime. Bundled Tor and i2pd are validated as part of that one package and are never fetched separately by Setup. A build without embedded release resources retains the official HTTPS bootstrap path as a fallback.
+The installer never resolves individual Qt, ICU, Visual C++, Tor, I2P, or transport files. The portable ZIP and installed browser use the same canonical packaged runtime. Bundled Tor and i2pd are validated as part of that one package and are never fetched separately by Setup. CMake rejects installer builds that do not provide both embedded release resources.
 
 ## Installation flow
 
@@ -26,9 +26,15 @@ Running Setup again compares the installed version with the bundled manifest. An
 
 Uninstall removes program files, shortcuts, and the current-user Apps registration. Browsing data is retained unless the user explicitly selects its deletion.
 
-## Integrity and transport
+## Integrity and offline operation
 
-An embedded package is not extracted unless its byte size and SHA-256 digest match the embedded release manifest. For fallback bootstrap builds, production downloads remain restricted to HTTPS and the official `zakhar-git/Granger-Browser` GitHub Release path.
+The package is not extracted unless its byte size and SHA-256 digest match the embedded release manifest. Setup has no production download path, remote manifest URL, or install-time server dependency. The build audit rejects Windows networking imports and remote URL strings in `GrangerSetup.exe`.
+
+The offline acceptance harness launches Setup in a Windows AppContainer with zero network capabilities. It first verifies that a control DNS/HTTPS request is blocked, then installs and validates the embedded runtime. The installed browser is launched separately with its normal Chromium sandbox against a local renderer fixture:
+
+```powershell
+.\scripts\test-installer-offline.ps1
+```
 
 ## Embedded branding
 
@@ -46,10 +52,10 @@ Build the canonical portable package first, then run:
   -Clean
 ```
 
-The script embeds the portable ZIP and manifest, verifies the GIF, configures the native x64 installer target, uses the static MSVC runtime (`/MT`), rejects Qt or dynamic MSVC imports, and runs isolated embedded install/uninstall acceptance before writing these ignored distribution artifacts:
+The script embeds the portable ZIP and manifest, verifies the GIF, configures the native x64 installer target, uses the static MSVC runtime (`/MT`), rejects Qt, dynamic MSVC, or Windows networking imports, scans for remote URL strings, and runs isolated embedded install/uninstall acceptance before writing these ignored distribution artifacts:
 
 - `output/distribution/GrangerSetup.exe`
 - `output/distribution/granger-installer-manifest.json`
 - `output/distribution/SHA256SUMS.txt`
 
-Compiled binaries and release payloads are published through GitHub Releases, not committed to `main` and not stored with Git LFS.
+Compiled binaries and release payloads are distributed separately from `main`; they are not committed to the source branch and are not stored with Git LFS.

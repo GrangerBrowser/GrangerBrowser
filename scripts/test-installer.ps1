@@ -6,14 +6,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class GrangerInstallerTestNative {
-    [DllImport("user32.dll")]
-    public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
-}
-'@
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
 function Resolve-WorkspacePath([string]$Path) {
@@ -104,73 +96,21 @@ Invoke-Setup @('--test-mode', "--ui-smoke=$uiSmoke")
 $ui = Get-Content -LiteralPath $uiSmoke -Raw | ConvertFrom-Json
 if (-not $ui.ok -or $ui.framesAdvanced -lt 1) { throw "Installer GIF animation did not advance." }
 
-$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-$listener.Start()
-$port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
-$listener.Stop()
-$serverRoot = Join-Path $testPath 'server'
-New-Item -ItemType Directory -Path $serverRoot -Force | Out-Null
-$invalidZip = Join-Path $serverRoot 'invalid.zip'
+$fixtureRoot = Join-Path $testPath 'fixtures'
+New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+$invalidZip = Join-Path $fixtureRoot 'invalid.zip'
 [IO.File]::WriteAllText($invalidZip, 'not a zip archive', [Text.Encoding]::ASCII)
 $packageSize = (Get-Item -LiteralPath $packagePath).Length
 $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
-$baseUrl = "http://127.0.0.1:$port"
-$manifestPath = Join-Path $serverRoot 'manifest.json'
+$manifestPath = Join-Path $fixtureRoot 'manifest.json'
 [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     version = $packageVersion
     architecture = 'x64'
     minimumWindowsVersion = '10.0.17763'
-    packageUrl = "$baseUrl/package.zip"
     packageSize = $packageSize
     sha256 = $packageHash
 } | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
-
-$server = Start-Job -ArgumentList $port,$manifestPath,$packagePath,$invalidZip -ScriptBlock {
-    param($Port, $Manifest, $Package, $InvalidZip)
-    $listener = [Net.HttpListener]::new()
-    $listener.Prefixes.Add("http://127.0.0.1:$Port/")
-    $listener.Start()
-    $retryManifestFailed = $false
-    try {
-        while ($listener.IsListening) {
-            $context = $listener.GetContext()
-            $requestPath = $context.Request.Url.AbsolutePath.ToLowerInvariant()
-            if ($requestPath -eq '/retry-manifest.json' -and -not $retryManifestFailed) {
-                $retryManifestFailed = $true
-                $context.Response.Abort()
-                continue
-            }
-            $file = switch ($requestPath) {
-                '/manifest.json' { $Manifest }
-                '/retry-manifest.json' { $Manifest }
-                '/package.zip' { $Package }
-                '/invalid.zip' { $InvalidZip }
-                default { $null }
-            }
-            if (-not $file) {
-                $context.Response.StatusCode = 404
-                $context.Response.Close()
-                continue
-            }
-            $stream = [IO.File]::OpenRead($file)
-            try {
-                $context.Response.StatusCode = 200
-                $context.Response.ContentLength64 = $stream.Length
-                $buffer = New-Object byte[] (1024 * 512)
-                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $context.Response.OutputStream.Write($buffer, 0, $read)
-                }
-            } finally {
-                $stream.Dispose()
-                $context.Response.OutputStream.Close()
-            }
-        }
-    } finally {
-        $listener.Stop()
-    }
-}
-Start-Sleep -Milliseconds 500
 
 $installRoot = Join-Path $testPath 'installed/Granger Browser'
 $profileRoot = Join-Path $testPath 'user profile'
@@ -191,81 +131,25 @@ $i2pOutput = Join-Path $testPath 'managed-i2p.json'
 
 $results = [ordered]@{}
 try {
-    $retryInstallRoot = Join-Path $testPath 'network-retry/Granger Browser'
-    $retryProfileRoot = Join-Path $testPath 'network-retry-profile'
-    $retryResult = Join-Path $testPath 'network-retry-first.json'
-    $retryStart = [Diagnostics.ProcessStartInfo]::new()
-    $retryStart.FileName = $standalone
-    $retryStart.UseShellExecute = $false
-    foreach ($argument in @(
-        '--test-mode', '--no-launch', '--no-desktop-shortcut',
-        "--manifest-url=$baseUrl/retry-manifest.json", "--install-root=$retryInstallRoot",
-        "--profile-root=$retryProfileRoot", '--test-id=network-retry', "--result=$retryResult"
-    )) {
-        [void]$retryStart.ArgumentList.Add($argument)
-    }
-    $retryProcess = [Diagnostics.Process]::Start($retryStart)
-    try {
-        $deadline = (Get-Date).AddSeconds(30)
-        while (-not (Test-Path -LiteralPath $retryResult) -and (Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 100
-        }
-        if (-not (Test-Path -LiteralPath $retryResult)) { throw 'Disconnected manifest did not reach the installer failure state.' }
-        $firstRetryOutcome = Get-Content -LiteralPath $retryResult -Raw | ConvertFrom-Json
-        if ($firstRetryOutcome.ok -or $firstRetryOutcome.reason -notmatch 'download server|reach') {
-            throw 'Disconnected manifest did not produce an understandable network error.'
-        }
-        $retryProcess.Refresh()
-        if ($retryProcess.HasExited -or $retryProcess.MainWindowHandle -eq 0) {
-            throw 'Installer Retry UI was not available after the network error.'
-        }
-        Remove-Item -LiteralPath $retryResult -Force
-        [void][GrangerInstallerTestNative]::PostMessage(
-            $retryProcess.MainWindowHandle, 0x0100, [UIntPtr]0x0D, [IntPtr]::Zero)
-        $deadline = (Get-Date).AddMinutes(2)
-        while (-not (Test-Path -LiteralPath $retryResult) -and (Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 100
-        }
-        if (-not (Test-Path -LiteralPath $retryResult)) { throw 'Installer Retry did not complete.' }
-        $retryOutcome = Get-Content -LiteralPath $retryResult -Raw | ConvertFrom-Json
-        if (-not $retryOutcome.ok -or -not $retryOutcome.packageDownloaded -or -not $retryOutcome.shaVerified `
-            -or -not $retryOutcome.packageValidated -or -not (Test-Path (Join-Path $retryInstallRoot 'GrangerBrowser.exe'))) {
-            throw 'Installer Retry did not recover from the interrupted connection.'
-        }
-        $results.NetworkDisconnectRetry = $true
-    } finally {
-        $retryProcess.Refresh()
-        if (-not $retryProcess.HasExited) {
-            [void][GrangerInstallerTestNative]::PostMessage(
-                $retryProcess.MainWindowHandle, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
-            if (-not $retryProcess.WaitForExit(5000)) {
-                Stop-Process -Id $retryProcess.Id -Force -ErrorAction SilentlyContinue
-            }
-        }
-    }
-    $retryUninstall = Join-Path $testPath 'network-retry-uninstall.json'
-    Invoke-Setup @(
-        '--test-mode', '--unattended', '--uninstall', "--install-root=$retryInstallRoot",
-        "--profile-root=$retryProfileRoot", '--test-id=network-retry', "--result=$retryUninstall"
-    )
-
     Invoke-Setup @(
         '--test-mode', '--unattended',
-        "--manifest-url=$baseUrl/manifest.json",
         "--install-root=$installRoot",
         "--profile-root=$profileRoot",
         "--test-id=$testId",
         "--result=$resultInstall"
     )
     $install = Get-Content -LiteralPath $resultInstall -Raw | ConvertFrom-Json
-    if (-not $install.ok -or -not $install.manifestDownloaded -or -not $install.packageDownloaded `
+    if (-not $install.ok -or -not $install.manifestEmbedded -or -not $install.packageEmbedded `
+        -or $install.manifestDownloaded -or $install.packageDownloaded `
         -or -not $install.shaVerified -or -not $install.extracted -or -not $install.packageValidated `
         -or -not $install.shortcutsCreated -or -not $install.uninstallRegistered -or -not $install.launched) {
         throw "Full installer flow did not report every required stage."
     }
-    $results.Install = $true
-    $results.ManifestDownload = $true
-    $results.RuntimeDownload = $true
+    $results.OfflineInstall = $true
+    $results.ManifestEmbedded = $true
+    $results.RuntimeEmbedded = $true
+    $results.RemoteManifestDownloadDisabled = $true
+    $results.RemotePackageDownloadDisabled = $true
     $results.ProgressReporting = $true
     $results.ShaVerification = $true
     $results.Extraction = $true
@@ -285,19 +169,32 @@ try {
     $rerunResult = Join-Path $testPath 'rerun.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch',
-        "--manifest-url=$baseUrl/manifest.json", "--install-root=$installRoot",
+        "--install-root=$installRoot",
         "--profile-root=$profileRoot", "--test-id=$testId", "--result=$rerunResult"
     )
     $rerun = Get-Content $rerunResult -Raw | ConvertFrom-Json
     if (-not $rerun.ok -or -not $rerun.alreadyInstalled) { throw "Same-version re-run was not detected." }
     $results.Rerun = $true
 
+    $repairResult = Join-Path $testPath 'repair.json'
+    Invoke-Setup @(
+        '--test-mode', '--unattended', '--force', '--no-launch',
+        "--install-root=$installRoot", "--profile-root=$profileRoot",
+        "--test-id=$testId", "--result=$repairResult"
+    )
+    $repair = Get-Content $repairResult -Raw | ConvertFrom-Json
+    if (-not $repair.ok -or -not $repair.manifestEmbedded -or -not $repair.packageEmbedded `
+        -or -not $repair.shaVerified -or -not $repair.packageValidated -or -not (Test-Path $marker)) {
+        throw "Same-version repair failed or changed the user profile."
+    }
+    $results.Repair = $true
+
     $testRegistry = "HKCU:\Software\Granger Browser\InstallerTests\$testId"
     Set-ItemProperty -LiteralPath $testRegistry -Name DisplayVersion -Value '0.4.3'
     $updateResult = Join-Path $testPath 'update.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch',
-        "--manifest-url=$baseUrl/manifest.json", "--install-root=$installRoot",
+        "--install-root=$installRoot",
         "--profile-root=$profileRoot", "--test-id=$testId", "--result=$updateResult"
     )
     $update = Get-Content $updateResult -Raw | ConvertFrom-Json
@@ -319,7 +216,7 @@ try {
         $runningResult = Join-Path $testPath 'running-browser.json'
         Invoke-Setup @(
             '--test-mode', '--unattended', '--force', '--no-launch',
-            "--manifest-url=$baseUrl/manifest.json", "--install-root=$installRoot",
+            "--install-root=$installRoot",
             "--profile-root=$profileRoot", "--test-id=$testId", "--result=$runningResult"
         ) 1
         $running = Get-Content $runningResult -Raw | ConvertFrom-Json
@@ -404,14 +301,15 @@ try {
     $results.I2PHumanReadable = $true
     $results.I2PRecovery = $true
 
-    $wrongManifest = Join-Path $serverRoot 'wrong-sha.json'
+    $wrongManifest = Join-Path $fixtureRoot 'wrong-sha.json'
     $wrongObject = Get-Content $manifestPath -Raw | ConvertFrom-Json
     $wrongObject.sha256 = ('0' * 64)
     $wrongObject | ConvertTo-Json | Set-Content $wrongManifest -Encoding UTF8
     $wrongResult = Join-Path $testPath 'wrong-sha-result.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch', '--force',
-        "--manifest-path=$wrongManifest", "--install-root=$(Join-Path $testPath 'wrong-sha-install')",
+        "--manifest-path=$wrongManifest", "--package-path=$packagePath",
+        "--install-root=$(Join-Path $testPath 'wrong-sha-install')",
         "--profile-root=$(Join-Path $testPath 'wrong-sha-profile')", '--test-id=wrong-sha',
         "--result=$wrongResult"
     ) 1
@@ -421,18 +319,19 @@ try {
     }
     $results.WrongShaRejected = $true
 
-    $invalidManifest = Join-Path $serverRoot 'invalid-zip.json'
+    $invalidManifest = Join-Path $fixtureRoot 'invalid-zip.json'
     $invalidSize = (Get-Item $invalidZip).Length
     [ordered]@{
-        schemaVersion = 1; version = $packageVersion; architecture = 'x64'
-        minimumWindowsVersion = '10.0.17763'; packageUrl = "$baseUrl/invalid.zip"
+        schemaVersion = 2; version = $packageVersion; architecture = 'x64'
+        minimumWindowsVersion = '10.0.17763'
         packageSize = $invalidSize
         sha256 = (Get-FileHash $invalidZip -Algorithm SHA256).Hash.ToLowerInvariant()
     } | ConvertTo-Json | Set-Content $invalidManifest -Encoding UTF8
     $invalidResult = Join-Path $testPath 'invalid-zip-result.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch', '--force',
-        "--manifest-path=$invalidManifest", "--install-root=$(Join-Path $testPath 'invalid-zip-install')",
+        "--manifest-path=$invalidManifest", "--package-path=$invalidZip",
+        "--install-root=$(Join-Path $testPath 'invalid-zip-install')",
         "--profile-root=$(Join-Path $testPath 'invalid-zip-profile')", '--test-id=invalid-zip',
         "--result=$invalidResult"
     ) 1
@@ -440,23 +339,62 @@ try {
     if ($invalid.ok -or $invalid.reason -notmatch 'valid ZIP') { throw "Invalid ZIP was not rejected." }
     $results.InvalidZipRejected = $true
 
-    $missingResult = Join-Path $testPath 'missing-manifest-result.json'
+    $incompleteResult = Join-Path $testPath 'incomplete-local-override-result.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch', '--force',
-        "--manifest-url=$baseUrl/missing.json", "--install-root=$(Join-Path $testPath 'missing-install')",
-        "--profile-root=$(Join-Path $testPath 'missing-profile')", '--test-id=missing',
-        "--result=$missingResult"
+        "--manifest-path=$manifestPath", "--install-root=$(Join-Path $testPath 'incomplete-install')",
+        "--profile-root=$(Join-Path $testPath 'incomplete-profile')", '--test-id=incomplete',
+        "--result=$incompleteResult"
     ) 1
-    $missing = Get-Content $missingResult -Raw | ConvertFrom-Json
-    if ($missing.ok -or $missing.reason -notmatch 'HTTP 404') { throw "Missing manifest was not reported." }
-    $results.MissingManifestRejected = $true
+    $incomplete = Get-Content $incompleteResult -Raw | ConvertFrom-Json
+    if ($incomplete.ok -or $incomplete.reason -notmatch 'provided together') {
+        throw "Incomplete local test release override was not rejected."
+    }
+    $results.IncompleteLocalOverrideRejected = $true
+
+    Add-Type -AssemblyName System.IO.Compression
+    $traversalZip = Join-Path $fixtureRoot 'path-traversal.zip'
+    $zipStream = [IO.File]::Open($traversalZip, [IO.FileMode]::CreateNew)
+    try {
+        $zip = [IO.Compression.ZipArchive]::new($zipStream, [IO.Compression.ZipArchiveMode]::Create, $false)
+        try {
+            $entry = $zip.CreateEntry('../outside.txt')
+            $writer = [IO.StreamWriter]::new($entry.Open())
+            try { $writer.Write('must not escape extraction root') } finally { $writer.Dispose() }
+        } finally {
+            $zip.Dispose()
+        }
+    } finally {
+        $zipStream.Dispose()
+    }
+    $traversalManifest = Join-Path $fixtureRoot 'path-traversal.json'
+    [ordered]@{
+        schemaVersion = 2; version = $packageVersion; architecture = 'x64'
+        minimumWindowsVersion = '10.0.17763'
+        packageSize = (Get-Item $traversalZip).Length
+        sha256 = (Get-FileHash $traversalZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    } | ConvertTo-Json | Set-Content $traversalManifest -Encoding UTF8
+    $traversalResult = Join-Path $testPath 'path-traversal-result.json'
+    Invoke-Setup @(
+        '--test-mode', '--unattended', '--no-launch', '--force',
+        "--manifest-path=$traversalManifest", "--package-path=$traversalZip",
+        "--install-root=$(Join-Path $testPath 'traversal/install')",
+        "--profile-root=$(Join-Path $testPath 'traversal/profile')", '--test-id=traversal',
+        "--result=$traversalResult"
+    ) 1
+    $traversal = Get-Content $traversalResult -Raw | ConvertFrom-Json
+    $escapedFiles = @(Get-ChildItem -LiteralPath $testPath -Filter outside.txt -Recurse -File -ErrorAction SilentlyContinue)
+    if ($traversal.ok -or $traversal.reason -notmatch 'unsafe archive path' -or $escapedFiles.Count -ne 0) {
+        throw "Archive path traversal was not rejected safely."
+    }
+    $results.PathTraversalRejected = $true
 
     $invalidTarget = Join-Path $testPath 'invalid-install-target'
     Set-Content -LiteralPath $invalidTarget -Value 'not a directory' -Encoding ASCII
     $invalidPathResult = Join-Path $testPath 'invalid-path-result.json'
     Invoke-Setup @(
         '--test-mode', '--unattended', '--no-launch', '--force',
-        "--manifest-url=$baseUrl/manifest.json", "--install-root=$invalidTarget",
+        "--install-root=$invalidTarget",
         "--profile-root=$(Join-Path $testPath 'invalid-path-profile')", '--test-id=invalid-path',
         "--result=$invalidPathResult"
     ) 1
@@ -485,16 +423,10 @@ try {
     if (Test-Path -LiteralPath $testRegistry) {
         Remove-Item -LiteralPath $testRegistry -Recurse -Force
     }
-    $retryRegistry = 'HKCU:\Software\Granger Browser\InstallerTests\network-retry'
-    if (Test-Path -LiteralPath $retryRegistry) {
-        Remove-Item -LiteralPath $retryRegistry -Recurse -Force
-    }
     $env:GRANGER_DATA_ROOT = $oldData
     $env:GRANGER_SETTINGS_ROOT = $oldSettings
     $env:GRANGER_CACHE_ROOT = $oldCache
     $env:GRANGER_DOWNLOAD_ROOT = $oldDownloads
-    Stop-Job $server -ErrorAction SilentlyContinue
-    Remove-Job $server -Force -ErrorAction SilentlyContinue
 }
 
 $report = [ordered]@{

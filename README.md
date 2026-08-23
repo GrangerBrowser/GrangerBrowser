@@ -207,7 +207,7 @@ The easiest way to install Granger Browser:
 3. The installer verifies and installs its bundled Windows x64 runtime.
 4. Launch Granger Browser.
 
-GrangerSetup is a native, self-contained per-user installer. It verifies the SHA-256 checksum of its bundled browser runtime and installs it under `%LOCALAPPDATA%\Programs\Granger Browser`.
+GrangerSetup is a native, self-contained per-user installer. It requires no install-time network access, verifies the SHA-256 checksum of its bundled browser runtime, and installs it under `%LOCALAPPDATA%\Programs\Granger Browser`.
 
 No manual Qt, Visual C++, Python, Tor, or additional DLL installation is required.
 

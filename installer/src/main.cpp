@@ -10,7 +10,6 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <tlhelp32.h>
-#include <winhttp.h>
 #include <windowsx.h>
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -47,10 +46,6 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"GrangerSetupWindow";
 constexpr wchar_t kWindowTitle[] = L"Granger Browser Setup";
-constexpr wchar_t kManifestUrl[] =
-    L"https://github.com/zakhar-git/Granger-Browser/releases/latest/download/granger-installer-manifest.json";
-constexpr wchar_t kRepositoryPackagePrefix[] =
-    L"https://github.com/zakhar-git/Granger-Browser/releases/download/";
 constexpr UINT kStateChangedMessage = WM_APP + 1;
 constexpr UINT_PTR kAnimationTimer = 1;
 constexpr UINT_PTR kUiSmokeTimer = 2;
@@ -188,6 +183,21 @@ std::wstring Timestamp()
                time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute,
                time.wSecond, time.wMilliseconds);
     return buffer;
+}
+
+std::wstring RandomToken(size_t byteCount = 16)
+{
+    std::vector<unsigned char> bytes(byteCount);
+    if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+        throw InstallerError("Unable to create a secure temporary path");
+    }
+    std::wostringstream stream;
+    stream << std::hex << std::setfill(L'0');
+    for (const unsigned char byte : bytes) {
+        stream << std::setw(2) << static_cast<unsigned>(byte);
+    }
+    return stream.str();
 }
 
 class Logger {
@@ -334,9 +344,9 @@ struct Options {
     bool uninstall = false;
     bool deleteUserData = false;
     bool desktopShortcut = true;
-    bool useEmbeddedRelease = false;
-    std::wstring manifestUrl = kManifestUrl;
+    bool skipRegistration = false;
     fs::path manifestPath;
+    fs::path packagePath;
     fs::path installRoot;
     fs::path profileRoot;
     fs::path resultPath;
@@ -381,9 +391,9 @@ Options ParseOptions()
     if (const auto value = ArgumentValue(arguments, L"--ui-smoke=")) options.uiSmokePath = *value;
 
     if (options.testMode) {
-        options.useEmbeddedRelease = HasArgument(arguments, L"--use-embedded-release");
-        if (const auto value = ArgumentValue(arguments, L"--manifest-url=")) options.manifestUrl = *value;
+        options.skipRegistration = HasArgument(arguments, L"--skip-registration");
         if (const auto value = ArgumentValue(arguments, L"--manifest-path=")) options.manifestPath = *value;
+        if (const auto value = ArgumentValue(arguments, L"--package-path=")) options.packagePath = *value;
         if (const auto value = ArgumentValue(arguments, L"--install-root=")) options.installRoot = *value;
         if (const auto value = ArgumentValue(arguments, L"--profile-root=")) options.profileRoot = *value;
         if (const auto value = ArgumentValue(arguments, L"--test-id=")) options.testId = *value;
@@ -416,137 +426,11 @@ std::wstring Win32Message(DWORD code)
     return result;
 }
 
-struct InternetCloser {
-    void operator()(void *handle) const { if (handle) WinHttpCloseHandle(handle); }
-};
-using InternetHandle = std::unique_ptr<void, InternetCloser>;
-
-struct WinHttpTarget {
-    std::wstring host;
-    std::wstring path;
-    INTERNET_PORT port = 0;
-    bool secure = false;
-};
-
-WinHttpTarget CrackUrl(const std::wstring &url)
-{
-    URL_COMPONENTS components{};
-    components.dwStructSize = sizeof(components);
-    components.dwHostNameLength = static_cast<DWORD>(-1);
-    components.dwUrlPathLength = static_cast<DWORD>(-1);
-    components.dwExtraInfoLength = static_cast<DWORD>(-1);
-    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &components)) {
-        throw InstallerError("Invalid download URL");
-    }
-    WinHttpTarget target;
-    target.host.assign(components.lpszHostName, components.dwHostNameLength);
-    target.path.assign(components.lpszUrlPath, components.dwUrlPathLength);
-    if (components.dwExtraInfoLength > 0) {
-        target.path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
-    }
-    if (target.path.empty()) target.path = L"/";
-    target.port = components.nPort;
-    target.secure = components.nScheme == INTERNET_SCHEME_HTTPS;
-    return target;
-}
-
-InternetHandle OpenWinHttpSession()
-{
-    HINTERNET raw = WinHttpOpen(L"GrangerSetup/" GRANGER_SETUP_VERSION,
-                                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!raw) {
-        raw = WinHttpOpen(L"GrangerSetup/" GRANGER_SETUP_VERSION,
-                          WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    }
-    if (!raw) throw InstallerError("Unable to initialize the Windows network stack");
-    WinHttpSetTimeouts(raw, 15000, 15000, 30000, 30000);
-    return InternetHandle(raw);
-}
-
-template <typename Sink>
-uint64_t DownloadUrl(const std::wstring &url, bool allowHttp, Model &model,
-                     uint64_t expectedSize, bool reportProgress, Sink sink)
-{
-    const WinHttpTarget target = CrackUrl(url);
-    if (!target.secure && !allowHttp) throw InstallerError("Downloads must use HTTPS");
-    auto session = OpenWinHttpSession();
-    InternetHandle connection(WinHttpConnect(session.get(), target.host.c_str(), target.port, 0));
-    if (!connection) throw InstallerError("Unable to reach the Granger Browser download server");
-    const DWORD flags = target.secure ? WINHTTP_FLAG_SECURE : 0;
-    InternetHandle request(WinHttpOpenRequest(connection.get(), L"GET", target.path.c_str(), nullptr,
-                                              WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
-    if (!request) throw InstallerError("Unable to create the download request");
-
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
-    WinHttpSetOption(request.get(), WINHTTP_OPTION_REDIRECT_POLICY,
-                     &redirectPolicy, sizeof(redirectPolicy));
-    DWORD decompression = WINHTTP_DECOMPRESSION_FLAG_GZIP | WINHTTP_DECOMPRESSION_FLAG_DEFLATE;
-    WinHttpSetOption(request.get(), WINHTTP_OPTION_DECOMPRESSION,
-                     &decompression, sizeof(decompression));
-
-    if (!WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
-        || !WinHttpReceiveResponse(request.get(), nullptr)) {
-        throw InstallerError("Unable to reach the Granger Browser download server");
-    }
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    if (!WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize,
-                             WINHTTP_NO_HEADER_INDEX)
-        || status != HTTP_STATUS_OK) {
-        throw InstallerError("Download server returned HTTP " + std::to_string(status));
-    }
-    DWORD headerLength = 0;
-    DWORD headerLengthSize = sizeof(headerLength);
-    if (WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                            WINHTTP_HEADER_NAME_BY_INDEX, &headerLength, &headerLengthSize,
-                            WINHTTP_NO_HEADER_INDEX)
-        && expectedSize == 0) {
-        expectedSize = headerLength;
-    }
-
-    std::array<std::byte, 1024 * 256> buffer{};
-    uint64_t downloaded = 0;
-    while (true) {
-        if (model.cancelRequested.load()) throw InstallerError("Installation cancelled");
-        DWORD read = 0;
-        if (!WinHttpReadData(request.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &read)) {
-            throw InstallerError("The download was interrupted");
-        }
-        if (read == 0) break;
-        sink(buffer.data(), read);
-        downloaded += read;
-        if (reportProgress && expectedSize > 0) {
-            model.update(Phase::Downloading, L"Downloading Granger Browser",
-                         FormatBytes(downloaded) + L" / " + FormatBytes(expectedSize),
-                         downloaded, expectedSize);
-        }
-    }
-    if (expectedSize > 0 && downloaded != expectedSize) {
-        throw InstallerError("Downloaded package size does not match the release manifest");
-    }
-    return downloaded;
-}
-
-std::string DownloadText(const std::wstring &url, bool allowHttp, Model &model)
-{
-    std::string content;
-    content.reserve(4096);
-    DownloadUrl(url, allowHttp, model, 0, false, [&](const std::byte *data, DWORD size) {
-        if (content.size() + size > 1024 * 1024) throw InstallerError("Release manifest is too large");
-        content.append(reinterpret_cast<const char *>(data), size);
-    });
-    return content;
-}
-
 struct ReleaseManifest {
+    unsigned schemaVersion = 0;
     std::wstring version;
     std::wstring architecture;
     std::wstring minimumWindowsVersion;
-    std::wstring packageUrl;
     uint64_t packageSize = 0;
     std::wstring sha256;
 };
@@ -555,14 +439,16 @@ ReleaseManifest ParseReleaseManifest(const std::string &content)
 {
     const JsonObject object = JsonObject::Parse(winrt::hstring(Utf8ToWide(content)));
     ReleaseManifest manifest;
+    manifest.schemaVersion = static_cast<unsigned>(object.GetNamedNumber(L"schemaVersion"));
     manifest.version = object.GetNamedString(L"version").c_str();
     manifest.architecture = object.GetNamedString(L"architecture").c_str();
     manifest.minimumWindowsVersion = object.GetNamedString(L"minimumWindowsVersion").c_str();
-    manifest.packageUrl = object.GetNamedString(L"packageUrl").c_str();
     manifest.packageSize = static_cast<uint64_t>(object.GetNamedNumber(L"packageSize"));
     manifest.sha256 = Lower(object.GetNamedString(L"sha256").c_str());
-    if (manifest.version.empty() || Lower(manifest.architecture) != L"x64"
-        || manifest.packageSize == 0 || manifest.sha256.size() != 64) {
+    if (manifest.schemaVersion != 2 || manifest.version.empty()
+        || Lower(manifest.architecture) != L"x64" || manifest.packageSize == 0
+        || manifest.sha256.size() != 64
+        || !std::all_of(manifest.sha256.begin(), manifest.sha256.end(), iswxdigit)) {
         throw InstallerError("Release manifest is incomplete or unsupported");
     }
     return manifest;
@@ -645,7 +531,7 @@ std::wstring Sha256File(const fs::path &path)
     }
     try {
         std::ifstream input(path, std::ios::binary);
-        if (!input) throw InstallerError("Unable to open the downloaded package");
+        if (!input) throw InstallerError("Unable to open the browser package");
         std::vector<char> buffer(1024 * 1024);
         while (input) {
             input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -675,12 +561,43 @@ bool IsSafeArchivePath(std::wstring path)
 {
     std::replace(path.begin(), path.end(), L'\\', L'/');
     if (path.empty() || path.front() == L'/' || path.find(L':') != std::wstring::npos) return false;
+    while (!path.empty() && path.back() == L'/') path.pop_back();
+    if (path.empty()) return false;
     std::wstringstream stream(path);
     std::wstring component;
     while (std::getline(stream, component, L'/')) {
-        if (component == L"..") return false;
+        if (component.empty() || component == L"." || component == L".."
+            || component.back() == L'.' || component.back() == L' '
+            || std::any_of(component.begin(), component.end(), [](wchar_t c) { return c < 32; })) {
+            return false;
+        }
+        const std::wstring lower = Lower(component.substr(0, component.find(L'.')));
+        if (lower == L"con" || lower == L"prn" || lower == L"aux" || lower == L"nul"
+            || (lower.size() == 4 && (lower.rfind(L"com", 0) == 0 || lower.rfind(L"lpt", 0) == 0)
+                && lower[3] >= L'1' && lower[3] <= L'9')) {
+            return false;
+        }
     }
     return true;
+}
+
+void RejectReparsePoints(const fs::path &root)
+{
+    for (const auto &entry : fs::recursive_directory_iterator(root)) {
+        std::wstring path = fs::absolute(entry.path()).wstring();
+        if (path.rfind(LR"(\\?\)", 0) != 0) {
+            path = path.rfind(LR"(\\)", 0) == 0
+                ? LR"(\\?\UNC\)" + path.substr(2)
+                : LR"(\\?\)" + path;
+        }
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            throw InstallerError("Unable to inspect an extracted package entry");
+        }
+        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            throw InstallerError("Package contains a reparse point");
+        }
+    }
 }
 
 std::wstring NormalizedArchivePath(std::wstring path)
@@ -750,7 +667,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
 
     const fs::path listingLog = staging / L"archive-list.txt";
     const ProcessResult listing = RunProcessCapture(tar, {L"-tf", archive.wstring()}, staging, listingLog);
-    if (listing.exitCode != 0) throw InstallerError("Downloaded package is not a valid ZIP archive");
+    if (listing.exitCode != 0) throw InstallerError("Browser package is not a valid ZIP archive");
     std::wstringstream lines(Utf8ToWide(listing.output));
     std::wstring line;
     size_t entries = 0;
@@ -760,7 +677,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         if (!IsSafeArchivePath(line)) throw InstallerError("Package contains an unsafe archive path");
         ++entries;
     }
-    if (entries < 20) throw InstallerError("Downloaded package does not contain a complete browser runtime");
+    if (entries < 20) throw InstallerError("Browser package does not contain a complete runtime");
 
     const fs::path extractRoot = staging / L"extracted";
     fs::create_directories(extractRoot);
@@ -768,6 +685,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         tar, {L"-xf", archive.wstring(), L"-C", extractRoot.wstring()}, staging,
         staging / L"archive-extract.txt");
     if (extraction.exitCode != 0) throw InstallerError("Package extraction failed");
+    RejectReparsePoints(extractRoot);
     model.update(Phase::Installing, L"Installing Granger Browser", L"Validating browser runtime...");
 
     fs::path runtimeRoot = extractRoot / L"Granger Browser";
@@ -845,7 +763,8 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
             Lower(record.GetNamedString(L"SHA256").c_str())));
         const fs::path file = runtimeRoot / relative;
         if (!fs::is_regular_file(file) || fs::file_size(file) != static_cast<uint64_t>(record.GetNamedNumber(L"Size"))) {
-            throw InstallerError("Extracted browser runtime does not match release-manifest.json");
+            throw InstallerError("Extracted browser runtime does not match release-manifest.json: "
+                                 + WideToUtf8(relative));
         }
     }
     const std::array criticalHashes = {
@@ -948,7 +867,6 @@ void RegisterUninstall(const Options &options, const ReleaseManifest &manifest,
         SetRegistryString(key, L"DisplayIcon", QuoteArgument(browser.wstring()));
         SetRegistryString(key, L"UninstallString", QuoteArgument(setup.wstring()) + L" --uninstall");
         SetRegistryString(key, L"QuietUninstallString", QuoteArgument(setup.wstring()) + L" --uninstall");
-        SetRegistryString(key, L"URLInfoAbout", L"https://github.com/zakhar-git/Granger-Browser");
         DWORD noModify = 1;
         RegSetValueExW(key, L"NoModify", 0, REG_DWORD,
                        reinterpret_cast<const BYTE *>(&noModify), sizeof(noModify));
@@ -1090,9 +1008,9 @@ void PromoteRuntime(const fs::path &runtimeRoot, const fs::path &installRoot, Lo
 {
     fs::create_directories(installRoot.parent_path());
     const fs::path backup = installRoot.parent_path()
-        / (L".Granger Browser.previous-" + std::to_wstring(GetCurrentProcessId()));
+        / (L".Granger Browser.previous-" + RandomToken());
     std::error_code error;
-    fs::remove_all(backup, error);
+    if (fs::exists(backup)) throw InstallerError("Unable to reserve the update backup path");
     const bool hadExisting = fs::exists(installRoot);
     if (hadExisting) fs::rename(installRoot, backup);
     try {
@@ -1159,35 +1077,27 @@ void RunInstall(Model &model, Options options, Logger &log)
         model.cancelRequested.store(false);
         const auto embeddedManifest = GetEmbeddedResource(IDR_GRANGER_MANIFEST);
         const auto embeddedPackage = GetEmbeddedResource(IDR_GRANGER_PACKAGE);
-        if (embeddedManifest.has_value() != embeddedPackage.has_value()) {
-            throw InstallerError("Embedded release resources are incomplete");
+        if (!embeddedManifest || !embeddedPackage) {
+            throw InstallerError("The offline installer payload is missing");
         }
-        const bool useEmbeddedRelease = embeddedManifest.has_value()
-            && (!options.testMode || options.useEmbeddedRelease);
-        model.update(Phase::Connecting,
-                     useEmbeddedRelease ? L"Preparing Granger Browser" : L"Connecting...",
-                     useEmbeddedRelease ? L"Reading the bundled release"
-                                        : L"Checking the latest stable release");
+        const bool hasTestManifest = options.testMode && !options.manifestPath.empty();
+        const bool hasTestPackage = options.testMode && !options.packagePath.empty();
+        if (hasTestManifest != hasTestPackage) {
+            throw InstallerError("Local test manifest and package must be provided together");
+        }
+        const bool useLocalTestRelease = hasTestManifest && hasTestPackage;
+        model.update(Phase::Connecting, L"Preparing Granger Browser",
+                     useLocalTestRelease ? L"Reading the local test release"
+                                         : L"Reading the bundled offline release");
         log.write(L"Installer " GRANGER_SETUP_VERSION L" x64 started");
 
-        std::string manifestText;
-        if (useEmbeddedRelease) {
-            manifestText = EmbeddedText(*embeddedManifest);
-            outcome.manifestEmbedded = true;
-        } else if (options.testMode && !options.manifestPath.empty()) {
-            manifestText = ReadFileUtf8(options.manifestPath);
-        } else {
-            manifestText = DownloadText(options.manifestUrl, options.testMode, model);
-        }
-        outcome.manifestDownloaded = !useEmbeddedRelease;
+        const std::string manifestText = useLocalTestRelease
+            ? ReadFileUtf8(options.manifestPath)
+            : EmbeddedText(*embeddedManifest);
+        outcome.manifestEmbedded = !useLocalTestRelease;
         const ReleaseManifest manifest = ParseReleaseManifest(manifestText);
         outcome.version = manifest.version;
         ValidateArchitectureAndOs(manifest);
-        if (!options.testMode && !useEmbeddedRelease
-            && (manifest.packageUrl.rfind(kRepositoryPackagePrefix, 0) != 0
-                || !CrackUrl(manifest.packageUrl).secure)) {
-            throw InstallerError("Release manifest points outside the official Granger Browser repository");
-        }
         log.write(L"Manifest resolved Granger Browser " + manifest.version);
 
         if (fs::exists(installRoot) && !fs::is_directory(installRoot)) {
@@ -1212,17 +1122,16 @@ void RunInstall(Model &model, Options options, Logger &log)
         if (IsGrangerRunning()) throw InstallerError("Close Granger Browser, then choose Retry");
 
         staging = installerRoot / L"staging"
-            / (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+            / (std::to_wstring(GetCurrentProcessId()) + L"-" + RandomToken(8));
         fs::create_directories(staging);
         const fs::path archivePart = staging / L"GrangerBrowser.zip.part";
         const fs::path archive = staging / L"GrangerBrowser.zip";
-        model.update(Phase::Downloading,
-                     useEmbeddedRelease ? L"Preparing Granger Browser" : L"Downloading Granger Browser",
+        model.update(Phase::Downloading, L"Preparing Granger Browser",
                      L"0 B / " + FormatBytes(manifest.packageSize), 0, manifest.packageSize);
         {
             std::ofstream output(archivePart, std::ios::binary | std::ios::trunc);
             if (!output) throw InstallerError("Unable to create the temporary package file");
-            if (useEmbeddedRelease) {
+            if (!useLocalTestRelease) {
                 if (embeddedPackage->size != manifest.packageSize) {
                     throw InstallerError("Bundled package size does not match the release manifest");
                 }
@@ -1242,16 +1151,31 @@ void RunInstall(Model &model, Options options, Logger &log)
                 }
                 outcome.packageEmbedded = true;
             } else {
-                DownloadUrl(manifest.packageUrl, options.testMode, model, manifest.packageSize, true,
-                            [&](const std::byte *data, DWORD size) {
-                                output.write(reinterpret_cast<const char *>(data), size);
-                                if (!output) throw InstallerError("Unable to write the downloaded package");
-                            });
-                outcome.packageDownloaded = true;
+                if (!fs::is_regular_file(options.packagePath)
+                    || fs::file_size(options.packagePath) != manifest.packageSize) {
+                    throw InstallerError("Local test package size does not match the release manifest");
+                }
+                std::ifstream input(options.packagePath, std::ios::binary);
+                if (!input) throw InstallerError("Unable to open the local test package");
+                std::vector<char> buffer(1024 * 1024);
+                uint64_t written = 0;
+                while (input) {
+                    if (model.cancelRequested.load()) throw InstallerError("Installation was cancelled");
+                    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                    const std::streamsize count = input.gcount();
+                    if (count <= 0) break;
+                    output.write(buffer.data(), count);
+                    if (!output) throw InstallerError("Unable to write the local test package");
+                    written += static_cast<uint64_t>(count);
+                    model.update(Phase::Downloading, L"Preparing Granger Browser",
+                                 FormatBytes(written) + L" / " + FormatBytes(manifest.packageSize),
+                                 written, manifest.packageSize);
+                }
             }
         }
         fs::rename(archivePart, archive);
-        log.write((useEmbeddedRelease ? L"Bundled runtime prepared: " : L"Runtime download completed: ")
+        log.write(std::wstring(useLocalTestRelease ? L"Local test runtime prepared: "
+                                                   : L"Bundled runtime prepared: ")
                   + std::to_wstring(fs::file_size(archive)) + L" bytes");
 
         model.update(Phase::Verifying, L"Verifying package...", L"Checking SHA-256 integrity");
@@ -1271,8 +1195,10 @@ void RunInstall(Model &model, Options options, Logger &log)
         PromoteRuntime(runtimeRoot, installRoot, log);
         CreateShortcuts(options, installRoot, model.snapshot().desktopShortcut && options.desktopShortcut);
         outcome.shortcutsCreated = true;
-        RegisterUninstall(options, manifest, installRoot);
-        outcome.uninstallRegistered = true;
+        if (!options.skipRegistration) {
+            RegisterUninstall(options, manifest, installRoot);
+            outcome.uninstallRegistered = true;
+        }
         std::error_code cleanupError;
         fs::remove_all(staging, cleanupError);
 
@@ -1469,7 +1395,7 @@ public:
         SetTimer(window_, kAnimationTimer, 16, nullptr);
 
         if (!options_.uiSmokePath.empty()) {
-            model_.update(Phase::Downloading, L"Downloading Granger Browser",
+            model_.update(Phase::Downloading, L"Preparing Granger Browser",
                           L"128.0 MB / 190.0 MB", 128, 190);
             SetTimer(window_, kUiSmokeTimer, 2200, nullptr);
         } else if (options_.uninstall) {
@@ -1892,8 +1818,8 @@ bool RelocateInstalledSetupIfNeeded(const Options &options)
     const fs::path installRoot = ResolveInstallRoot(options);
     if (!PathStartsWith(current, installRoot)) return false;
     const fs::path relocated = fs::temp_directory_path()
-        / (L"GrangerSetup-" + std::to_wstring(GetCurrentProcessId()) + L".exe");
-    fs::copy_file(current, relocated, fs::copy_options::overwrite_existing);
+        / (L"GrangerSetup-" + RandomToken() + L".exe");
+    fs::copy_file(current, relocated);
     std::wstring parameters;
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -1978,6 +1904,7 @@ int RunSelfTest(const Options &options)
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 {
+    if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)) return 2;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const HRESULT apartment = RoInitialize(RO_INIT_SINGLETHREADED);
     if (FAILED(apartment) && apartment != RPC_E_CHANGED_MODE) return 2;

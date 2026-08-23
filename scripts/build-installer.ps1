@@ -77,6 +77,16 @@ if ($headers -notmatch '8664 machine \(x64\)' -or $headers -notmatch 'Windows GU
 if ($dependencies -match '(?im)^\s+(Qt6|MSVCP|VCRUNTIME|CONCRT|VCCORLIB).*\.dll\s*$') {
     throw "GrangerSetup.exe has a non-system runtime dependency."
 }
+if ($dependencies -match '(?im)^\s+(WINHTTP|WININET|WS2_32|DNSAPI)\.dll\s*$') {
+    throw "GrangerSetup.exe unexpectedly depends on a Windows network library."
+}
+$setupBytes = [IO.File]::ReadAllBytes($setup)
+$setupText = [Text.Encoding]::Unicode.GetString($setupBytes)
+$setupAscii = [Text.Encoding]::ASCII.GetString($setupBytes)
+if ($setupText -match 'https?://|github\.com|raw\.githubusercontent\.com' `
+    -or $setupAscii -match 'https?://|github\.com|raw\.githubusercontent\.com') {
+    throw "GrangerSetup.exe contains a remote URL."
+}
 
 $standaloneRoot = Join-Path $projectRoot 'output/installer-standalone-check'
 if (Test-Path -LiteralPath $standaloneRoot) { Remove-Item -LiteralPath $standaloneRoot -Recurse -Force }
@@ -104,7 +114,7 @@ $embeddedInstallRoot = Join-Path $embeddedTestRoot 'installed/Granger Browser'
 $embeddedProfileRoot = Join-Path $embeddedTestRoot 'profile'
 $embeddedInstallResult = Join-Path $embeddedTestRoot 'install-result.json'
 $embeddedArguments = @(
-    '--test-mode', '--unattended', '--use-embedded-release', '--no-launch',
+    '--test-mode', '--unattended', '--no-launch',
     '--no-desktop-shortcut', '--force', '--test-id=embedded-release',
     "--install-root=$embeddedInstallRoot", "--profile-root=$embeddedProfileRoot",
     "--result=$embeddedInstallResult"
