@@ -1,0 +1,8 @@
+.state/
+demo-state/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.key
+*.tmp

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "granger-network-prototype"
+version = "0.1.0"
+description = "Experimental private .granger namespace and encrypted loopback transport"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=44",
+]
+
+[project.scripts]
+granger-host = "granger_network.host:main"
+granger-client = "granger_network.client:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
