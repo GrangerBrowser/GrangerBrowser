@@ -47,6 +47,8 @@ if ($Clean -and (Test-Path -LiteralPath $buildRoot)) {
 & $cmake -S (Join-Path $projectRoot 'installer') -B $buildRoot `
     -G 'Visual Studio 17 2022' -A x64 `
     "-DEMMA_GIF_PATH=$($gif.Replace('\', '/'))" `
+    "-DGRANGER_PACKAGE_ARCHIVE_PATH=$($manifest.Package.Replace('\', '/'))" `
+    "-DGRANGER_INSTALLER_MANIFEST_PATH=$($manifest.Manifest.Replace('\', '/'))" `
     "-DGRANGER_INSTALLER_VERSION=$($manifest.Version)"
 if ($LASTEXITCODE -ne 0) { throw "Installer CMake configure failed." }
 & $cmake --build $buildRoot --config Release --parallel
@@ -86,8 +88,64 @@ $selfTestProcess = Start-Process -FilePath $standaloneSetup `
     -ArgumentList @('--test-mode', "--self-test=$selfTest") -Wait -PassThru
 if ($selfTestProcess.ExitCode -ne 0) { throw "Standalone installer self-test failed." }
 $selfTestResult = Get-Content -LiteralPath $selfTest -Raw | ConvertFrom-Json
-if (-not $selfTestResult.ok -or -not $selfTestResult.gifEmbedded -or $selfTestResult.externalGifRequired) {
-    throw "Embedded installer branding self-test failed."
+if (-not $selfTestResult.ok -or -not $selfTestResult.gifEmbedded -or $selfTestResult.externalGifRequired `
+    -or -not $selfTestResult.releaseManifestEmbedded -or -not $selfTestResult.packageEmbedded `
+    -or -not $selfTestResult.embeddedMetadataValid `
+    -or [uint64]$selfTestResult.embeddedPackageSize -ne [uint64]$manifest.PackageSize) {
+    throw "Embedded installer release self-test failed."
+}
+
+$embeddedTestRoot = Join-Path $projectRoot 'output/installer-embedded-check'
+if (Test-Path -LiteralPath $embeddedTestRoot) {
+    Remove-Item -LiteralPath $embeddedTestRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Path $embeddedTestRoot -Force | Out-Null
+$embeddedInstallRoot = Join-Path $embeddedTestRoot 'installed/Granger Browser'
+$embeddedProfileRoot = Join-Path $embeddedTestRoot 'profile'
+$embeddedInstallResult = Join-Path $embeddedTestRoot 'install-result.json'
+$embeddedArguments = @(
+    '--test-mode', '--unattended', '--use-embedded-release', '--no-launch',
+    '--no-desktop-shortcut', '--force', '--test-id=embedded-release',
+    "--install-root=$embeddedInstallRoot", "--profile-root=$embeddedProfileRoot",
+    "--result=$embeddedInstallResult"
+)
+$embeddedStartInfo = [Diagnostics.ProcessStartInfo]::new()
+$embeddedStartInfo.FileName = $standaloneSetup
+$embeddedStartInfo.UseShellExecute = $false
+foreach ($argument in $embeddedArguments) {
+    [void]$embeddedStartInfo.ArgumentList.Add($argument)
+}
+$embeddedProcess = [Diagnostics.Process]::Start($embeddedStartInfo)
+$embeddedProcess.WaitForExit()
+if ($embeddedProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $embeddedInstallResult)) {
+    throw "Embedded installer acceptance failed."
+}
+$embeddedResult = Get-Content -LiteralPath $embeddedInstallResult -Raw | ConvertFrom-Json
+if (-not $embeddedResult.ok -or -not $embeddedResult.manifestEmbedded `
+    -or -not $embeddedResult.packageEmbedded -or $embeddedResult.manifestDownloaded `
+    -or $embeddedResult.packageDownloaded -or -not $embeddedResult.shaVerified `
+    -or -not $embeddedResult.extracted -or -not $embeddedResult.packageValidated `
+    -or -not (Test-Path -LiteralPath (Join-Path $embeddedInstallRoot 'GrangerBrowser.exe'))) {
+    throw "Embedded installer did not install the verified browser runtime."
+}
+$embeddedUninstallResult = Join-Path $embeddedTestRoot 'uninstall-result.json'
+$uninstallArguments = @(
+    '--test-mode', '--unattended', '--uninstall', '--test-id=embedded-release',
+    "--install-root=$embeddedInstallRoot", "--profile-root=$embeddedProfileRoot",
+    "--result=$embeddedUninstallResult"
+)
+$uninstallStartInfo = [Diagnostics.ProcessStartInfo]::new()
+$uninstallStartInfo.FileName = $standaloneSetup
+$uninstallStartInfo.UseShellExecute = $false
+foreach ($argument in $uninstallArguments) {
+    [void]$uninstallStartInfo.ArgumentList.Add($argument)
+}
+$uninstallProcess = [Diagnostics.Process]::Start($uninstallStartInfo)
+$uninstallProcess.WaitForExit()
+if ($uninstallProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $embeddedUninstallResult) `
+    -or -not (Get-Content -LiteralPath $embeddedUninstallResult -Raw | ConvertFrom-Json).ok `
+    -or (Test-Path -LiteralPath $embeddedInstallRoot)) {
+    throw "Embedded installer uninstall acceptance failed."
 }
 
 $checksums = Join-Path $outputRoot 'SHA256SUMS.txt'
@@ -115,6 +173,10 @@ $checksumLines | Set-Content -LiteralPath $checksums -Encoding ASCII
     GifSHA256 = (Get-FileHash -LiteralPath $gif -Algorithm SHA256).Hash
     GifFrames = [int]$selfTestResult.gifFrames
     Standalone = $true
+    EmbeddedPackage = $true
+    EmbeddedPackageSize = [uint64]$selfTestResult.embeddedPackageSize
+    EmbeddedInstallTest = $embeddedInstallResult
+    EmbeddedUninstallTest = $embeddedUninstallResult
     Architecture = 'x64'
     RuntimeLinkage = 'MSVC /MT'
 }

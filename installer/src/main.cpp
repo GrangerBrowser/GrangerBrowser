@@ -101,6 +101,27 @@ void WriteFileUtf8(const fs::path &path, const std::string &content)
     if (!output) throw InstallerError("Unable to finish writing " + WideToUtf8(path.wstring()));
 }
 
+struct EmbeddedResourceView {
+    const unsigned char *data = nullptr;
+    DWORD size = 0;
+};
+
+std::optional<EmbeddedResourceView> GetEmbeddedResource(int identifier)
+{
+    const HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(identifier), RT_RCDATA);
+    if (!resource) return std::nullopt;
+    const HGLOBAL loaded = LoadResource(nullptr, resource);
+    const DWORD size = SizeofResource(nullptr, resource);
+    const void *data = loaded ? LockResource(loaded) : nullptr;
+    if (!data || size == 0) throw InstallerError("Embedded installer resource is invalid");
+    return EmbeddedResourceView{static_cast<const unsigned char *>(data), size};
+}
+
+std::string EmbeddedText(const EmbeddedResourceView &resource)
+{
+    return std::string(reinterpret_cast<const char *>(resource.data), resource.size);
+}
+
 fs::path KnownFolder(REFKNOWNFOLDERID id)
 {
     PWSTR raw = nullptr;
@@ -212,7 +233,9 @@ bool IsBusy(Phase phase)
 struct Outcome {
     bool ok = false;
     bool manifestDownloaded = false;
+    bool manifestEmbedded = false;
     bool packageDownloaded = false;
+    bool packageEmbedded = false;
     bool shaVerified = false;
     bool extracted = false;
     bool packageValidated = false;
@@ -311,6 +334,7 @@ struct Options {
     bool uninstall = false;
     bool deleteUserData = false;
     bool desktopShortcut = true;
+    bool useEmbeddedRelease = false;
     std::wstring manifestUrl = kManifestUrl;
     fs::path manifestPath;
     fs::path installRoot;
@@ -357,6 +381,7 @@ Options ParseOptions()
     if (const auto value = ArgumentValue(arguments, L"--ui-smoke=")) options.uiSmokePath = *value;
 
     if (options.testMode) {
+        options.useEmbeddedRelease = HasArgument(arguments, L"--use-embedded-release");
         if (const auto value = ArgumentValue(arguments, L"--manifest-url=")) options.manifestUrl = *value;
         if (const auto value = ArgumentValue(arguments, L"--manifest-path=")) options.manifestPath = *value;
         if (const auto value = ArgumentValue(arguments, L"--install-root=")) options.installRoot = *value;
@@ -1028,7 +1053,9 @@ void WriteOutcome(const Options &options, const Outcome &outcome, const fs::path
     object.Insert(L"version", JsonValue::CreateStringValue(outcome.version));
     object.Insert(L"installRoot", JsonValue::CreateStringValue(installRoot.wstring()));
     object.Insert(L"manifestDownloaded", JsonValue::CreateBooleanValue(outcome.manifestDownloaded));
+    object.Insert(L"manifestEmbedded", JsonValue::CreateBooleanValue(outcome.manifestEmbedded));
     object.Insert(L"packageDownloaded", JsonValue::CreateBooleanValue(outcome.packageDownloaded));
+    object.Insert(L"packageEmbedded", JsonValue::CreateBooleanValue(outcome.packageEmbedded));
     object.Insert(L"shaVerified", JsonValue::CreateBooleanValue(outcome.shaVerified));
     object.Insert(L"extracted", JsonValue::CreateBooleanValue(outcome.extracted));
     object.Insert(L"packageValidated", JsonValue::CreateBooleanValue(outcome.packageValidated));
@@ -1130,20 +1157,33 @@ void RunInstall(Model &model, Options options, Logger &log)
             ~ApartmentGuard() { if (owned) RoUninitialize(); }
         } apartmentGuard{apartmentOwned};
         model.cancelRequested.store(false);
-        model.update(Phase::Connecting, L"Connecting...", L"Checking the latest stable release");
+        const auto embeddedManifest = GetEmbeddedResource(IDR_GRANGER_MANIFEST);
+        const auto embeddedPackage = GetEmbeddedResource(IDR_GRANGER_PACKAGE);
+        if (embeddedManifest.has_value() != embeddedPackage.has_value()) {
+            throw InstallerError("Embedded release resources are incomplete");
+        }
+        const bool useEmbeddedRelease = embeddedManifest.has_value()
+            && (!options.testMode || options.useEmbeddedRelease);
+        model.update(Phase::Connecting,
+                     useEmbeddedRelease ? L"Preparing Granger Browser" : L"Connecting...",
+                     useEmbeddedRelease ? L"Reading the bundled release"
+                                        : L"Checking the latest stable release");
         log.write(L"Installer " GRANGER_SETUP_VERSION L" x64 started");
 
         std::string manifestText;
-        if (options.testMode && !options.manifestPath.empty()) {
+        if (useEmbeddedRelease) {
+            manifestText = EmbeddedText(*embeddedManifest);
+            outcome.manifestEmbedded = true;
+        } else if (options.testMode && !options.manifestPath.empty()) {
             manifestText = ReadFileUtf8(options.manifestPath);
         } else {
             manifestText = DownloadText(options.manifestUrl, options.testMode, model);
         }
-        outcome.manifestDownloaded = true;
+        outcome.manifestDownloaded = !useEmbeddedRelease;
         const ReleaseManifest manifest = ParseReleaseManifest(manifestText);
         outcome.version = manifest.version;
         ValidateArchitectureAndOs(manifest);
-        if (!options.testMode
+        if (!options.testMode && !useEmbeddedRelease
             && (manifest.packageUrl.rfind(kRepositoryPackagePrefix, 0) != 0
                 || !CrackUrl(manifest.packageUrl).secure)) {
             throw InstallerError("Release manifest points outside the official Granger Browser repository");
@@ -1176,20 +1216,43 @@ void RunInstall(Model &model, Options options, Logger &log)
         fs::create_directories(staging);
         const fs::path archivePart = staging / L"GrangerBrowser.zip.part";
         const fs::path archive = staging / L"GrangerBrowser.zip";
-        model.update(Phase::Downloading, L"Downloading Granger Browser",
+        model.update(Phase::Downloading,
+                     useEmbeddedRelease ? L"Preparing Granger Browser" : L"Downloading Granger Browser",
                      L"0 B / " + FormatBytes(manifest.packageSize), 0, manifest.packageSize);
         {
             std::ofstream output(archivePart, std::ios::binary | std::ios::trunc);
-            if (!output) throw InstallerError("Unable to create the temporary download file");
-            DownloadUrl(manifest.packageUrl, options.testMode, model, manifest.packageSize, true,
-                        [&](const std::byte *data, DWORD size) {
-                            output.write(reinterpret_cast<const char *>(data), size);
-                            if (!output) throw InstallerError("Unable to write the downloaded package");
-                        });
+            if (!output) throw InstallerError("Unable to create the temporary package file");
+            if (useEmbeddedRelease) {
+                if (embeddedPackage->size != manifest.packageSize) {
+                    throw InstallerError("Bundled package size does not match the release manifest");
+                }
+                constexpr size_t chunkSize = 1024 * 1024;
+                size_t written = 0;
+                while (written < embeddedPackage->size) {
+                    if (model.cancelRequested.load()) throw InstallerError("Installation was cancelled");
+                    const size_t count = std::min(chunkSize,
+                                                  static_cast<size_t>(embeddedPackage->size) - written);
+                    output.write(reinterpret_cast<const char *>(embeddedPackage->data + written),
+                                 static_cast<std::streamsize>(count));
+                    if (!output) throw InstallerError("Unable to write the bundled package");
+                    written += count;
+                    model.update(Phase::Downloading, L"Preparing Granger Browser",
+                                 FormatBytes(written) + L" / " + FormatBytes(manifest.packageSize),
+                                 written, manifest.packageSize);
+                }
+                outcome.packageEmbedded = true;
+            } else {
+                DownloadUrl(manifest.packageUrl, options.testMode, model, manifest.packageSize, true,
+                            [&](const std::byte *data, DWORD size) {
+                                output.write(reinterpret_cast<const char *>(data), size);
+                                if (!output) throw InstallerError("Unable to write the downloaded package");
+                            });
+                outcome.packageDownloaded = true;
+            }
         }
         fs::rename(archivePart, archive);
-        outcome.packageDownloaded = true;
-        log.write(L"Runtime download completed: " + std::to_wstring(fs::file_size(archive)) + L" bytes");
+        log.write((useEmbeddedRelease ? L"Bundled runtime prepared: " : L"Runtime download completed: ")
+                  + std::to_wstring(fs::file_size(archive)) + L" bytes");
 
         model.update(Phase::Verifying, L"Verifying package...", L"Checking SHA-256 integrity");
         if (Sha256File(archive) != Lower(manifest.sha256)) {
@@ -1858,6 +1921,24 @@ int RunSelfTest(const Options &options)
 {
     GifPlayer gif;
     const bool loaded = gif.load();
+    const auto embeddedManifest = GetEmbeddedResource(IDR_GRANGER_MANIFEST);
+    const auto embeddedPackage = GetEmbeddedResource(IDR_GRANGER_PACKAGE);
+    const bool embeddedPairComplete = embeddedManifest.has_value() == embeddedPackage.has_value();
+    bool embeddedMetadataValid = false;
+    if (embeddedManifest && embeddedPackage) {
+        try {
+            const ReleaseManifest manifest = ParseReleaseManifest(EmbeddedText(*embeddedManifest));
+            embeddedMetadataValid = manifest.version == GRANGER_SETUP_VERSION
+                && manifest.packageSize == embeddedPackage->size
+                && embeddedPackage->size >= 4
+                && embeddedPackage->data[0] == 'P'
+                && embeddedPackage->data[1] == 'K'
+                && embeddedPackage->data[2] == 3
+                && embeddedPackage->data[3] == 4;
+        } catch (...) {
+            embeddedMetadataValid = false;
+        }
+    }
     JsonArray dpiChecks;
     bool geometryOk = true;
     for (const int dpi : {96, 120, 144, 168, 192}) {
@@ -1874,15 +1955,23 @@ int RunSelfTest(const Options &options)
     }
     const bool externalGifAbsent = !fs::exists(ExecutablePath().parent_path() / L"Emma.gif")
         && !fs::exists(ExecutablePath().parent_path() / L"Banner_Installer");
+    const bool embeddedResourcesOk = embeddedPairComplete
+        && (!embeddedManifest.has_value() || embeddedMetadataValid);
+    const bool ok = loaded && gif.frameCount() > 1 && geometryOk
+        && externalGifAbsent && embeddedResourcesOk;
     JsonObject result;
-    result.Insert(L"ok", JsonValue::CreateBooleanValue(loaded && gif.frameCount() > 1
-                                                        && geometryOk && externalGifAbsent));
+    result.Insert(L"ok", JsonValue::CreateBooleanValue(ok));
     result.Insert(L"gifEmbedded", JsonValue::CreateBooleanValue(loaded));
     result.Insert(L"gifFrames", JsonValue::CreateNumberValue(gif.frameCount()));
     result.Insert(L"externalGifRequired", JsonValue::CreateBooleanValue(!externalGifAbsent));
+    result.Insert(L"releaseManifestEmbedded", JsonValue::CreateBooleanValue(embeddedManifest.has_value()));
+    result.Insert(L"packageEmbedded", JsonValue::CreateBooleanValue(embeddedPackage.has_value()));
+    result.Insert(L"embeddedPackageSize", JsonValue::CreateNumberValue(
+        embeddedPackage ? static_cast<double>(embeddedPackage->size) : 0.0));
+    result.Insert(L"embeddedMetadataValid", JsonValue::CreateBooleanValue(embeddedMetadataValid));
     result.Insert(L"dpiChecks", dpiChecks);
     WriteFileUtf8(options.selfTestPath, winrt::to_string(result.Stringify()));
-    return loaded && gif.frameCount() > 1 && geometryOk && externalGifAbsent ? 0 : 1;
+    return ok ? 0 : 1;
 }
 
 } // namespace

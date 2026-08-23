@@ -1,17 +1,17 @@
-# Windows Bootstrap Installer
+# Windows Installer
 
-`GrangerSetup.exe` is the native Windows bootstrap installer for Granger Browser. It is a separate Win32 C++20 target and does not link to Qt, WebEngine, Python, or the browser executable.
+`GrangerSetup.exe` is the native Windows installer for Granger Browser. It is a separate Win32 C++20 target and does not link to Qt, WebEngine, Python, or the browser executable.
 
 ## Runtime source
 
-The installer downloads `granger-installer-manifest.json` from the latest stable GitHub Release. The manifest identifies one complete Windows x64 portable ZIP, including its exact byte size and SHA-256 digest.
+The canonical distribution build embeds `granger-installer-manifest.json` and one complete Windows x64 portable ZIP. The manifest records the archive's exact byte size and SHA-256 digest, so the installer remains self-contained when the release host is unavailable.
 
-The installer never downloads individual Qt, ICU, Visual C++, Tor, I2P, or transport files. The portable ZIP and installed browser use the same canonical packaged runtime. Bundled Tor and i2pd are validated as part of that one package and are never fetched separately by Setup.
+The installer never resolves individual Qt, ICU, Visual C++, Tor, I2P, or transport files. The portable ZIP and installed browser use the same canonical packaged runtime. Bundled Tor and i2pd are validated as part of that one package and are never fetched separately by Setup. A build without embedded release resources retains the official HTTPS bootstrap path as a fallback.
 
 ## Installation flow
 
-1. Resolve the latest release manifest over HTTPS using WinHTTP.
-2. Download the complete portable ZIP to a per-user staging directory.
+1. Read the embedded release manifest and portable ZIP.
+2. Copy the bundled ZIP to a per-user staging directory.
 3. Verify the expected size and SHA-256 digest with Windows CNG.
 4. Reject unsafe ZIP paths and extract the verified package with the Windows archive tool.
 5. Validate critical files, Tor signature/source metadata, runtime versions, and `release-manifest.json`.
@@ -22,13 +22,13 @@ The browser profile and mutable Tor/I2P state remain outside the installation di
 
 ## Updates and uninstall
 
-Running Setup again compares the installed version with the current stable manifest. An older installation is updated in place. The same version offers Launch, Repair, and Uninstall actions. Setup refuses to replace runtime files while `GrangerBrowser.exe` is running.
+Running Setup again compares the installed version with the bundled manifest. An older installation is updated in place. The same version offers Launch, Repair, and Uninstall actions. Setup refuses to replace runtime files while `GrangerBrowser.exe` is running.
 
 Uninstall removes program files, shortcuts, and the current-user Apps registration. Browsing data is retained unless the user explicitly selects its deletion.
 
 ## Integrity and transport
 
-Production downloads are restricted to HTTPS and the official `zakhar-git/Granger-Browser` GitHub Release path. A package is not extracted unless its byte size and SHA-256 digest match the release manifest. The manifest and checksums are published as release assets.
+An embedded package is not extracted unless its byte size and SHA-256 digest match the embedded release manifest. For fallback bootstrap builds, production downloads remain restricted to HTTPS and the official `zakhar-git/Granger-Browser` GitHub Release path.
 
 ## Embedded branding
 
@@ -46,7 +46,7 @@ Build the canonical portable package first, then run:
   -Clean
 ```
 
-The script verifies the GIF, configures the native x64 installer target, uses the static MSVC runtime (`/MT`), rejects Qt or dynamic MSVC imports, runs the embedded-resource self-test, and writes these ignored distribution artifacts:
+The script embeds the portable ZIP and manifest, verifies the GIF, configures the native x64 installer target, uses the static MSVC runtime (`/MT`), rejects Qt or dynamic MSVC imports, and runs isolated embedded install/uninstall acceptance before writing these ignored distribution artifacts:
 
 - `output/distribution/GrangerSetup.exe`
 - `output/distribution/granger-installer-manifest.json`

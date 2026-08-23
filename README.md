@@ -204,10 +204,10 @@ The easiest way to install Granger Browser:
 
 1. Download `GrangerSetup.exe`.
 2. Run it.
-3. The installer downloads and verifies the current Windows x64 runtime.
+3. The installer verifies and installs its bundled Windows x64 runtime.
 4. Launch Granger Browser.
 
-GrangerSetup is a native per-user bootstrap installer. It downloads the complete browser runtime from the official Granger Browser GitHub Release, verifies its SHA-256 checksum, and installs it under `%LOCALAPPDATA%\Programs\Granger Browser`.
+GrangerSetup is a native, self-contained per-user installer. It verifies the SHA-256 checksum of its bundled browser runtime and installs it under `%LOCALAPPDATA%\Programs\Granger Browser`.
 
 No manual Qt, Visual C++, Python, Tor, or additional DLL installation is required.
 

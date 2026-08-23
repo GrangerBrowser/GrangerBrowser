@@ -92,8 +92,11 @@ function Stop-IsolatedBrowser([string]$Root) {
 
 Invoke-Setup @('--test-mode', "--self-test=$selfTest")
 $self = Get-Content -LiteralPath $selfTest -Raw | ConvertFrom-Json
-if (-not $self.ok -or -not $self.gifEmbedded -or $self.gifFrames -lt 2 -or $self.externalGifRequired) {
-    throw "Standalone embedded GIF self-test failed."
+if (-not $self.ok -or -not $self.gifEmbedded -or $self.gifFrames -lt 2 `
+    -or $self.externalGifRequired -or -not $self.releaseManifestEmbedded `
+    -or -not $self.packageEmbedded -or -not $self.embeddedMetadataValid `
+    -or [uint64]$self.embeddedPackageSize -ne [uint64](Get-Item -LiteralPath $packagePath).Length) {
+    throw "Standalone embedded release self-test failed."
 }
 
 $uiSmoke = Join-Path $testPath 'standalone/ui-smoke.json'
