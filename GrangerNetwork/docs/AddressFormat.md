@@ -15,8 +15,12 @@ The 32-byte digest is encoded as unpadded lower-case Base32. The result is a
 <52 lower-case base32 characters>.granger
 ```
 
-The full digest is retained; v0.1 does not use shortened identifiers such as
+The full digest is retained; Granger Network does not use shortened identifiers such as
 `a81f92d73.granger`. A full canonical label uses only `a-z` and `2-7`.
+
+Version 0.2 retains the v0.1 domain-separation prefix so existing identities keep
+the same canonical address. This is address-format compatibility, not a wire
+protocol downgrade.
 
 The domain-separation prefix prevents the same raw hash input convention from
 being silently reused by an unrelated protocol. A client recomputes the label
@@ -41,7 +45,7 @@ authenticated channel.
 
 ## Rejected forms
 
-Version 0.1 rejects:
+Version 0.2 rejects:
 
 - names outside `.granger`;
 - subdomains or multiple labels such as `www.test.granger`;

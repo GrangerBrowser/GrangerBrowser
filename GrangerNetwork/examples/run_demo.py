@@ -41,7 +41,7 @@ def _available_port() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the Granger Network v0.1 demo")
+    parser = argparse.ArgumentParser(description="Run the Granger Network local compatibility demo")
     parser.add_argument("--http-port", type=int, default=8080)
     parser.add_argument("--network-port", type=int, default=0)
     options = parser.parse_args()

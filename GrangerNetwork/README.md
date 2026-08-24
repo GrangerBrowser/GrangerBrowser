@@ -1,30 +1,36 @@
-# Granger Network v0.1
+# Granger Network v0.2
 
-Granger Network is an experimental private namespace and protocol prototype. It
-maps cryptographic service identities to `.granger` names, authenticates a
-service with Ed25519, and carries application messages over an encrypted
-X25519/ChaCha20-Poly1305 channel.
+Granger Network is a standalone experimental private namespace and overlay
+protocol prototype. A canonical `.granger` address is derived from an Ed25519
+service identity. Version 0.2 adds an end-to-end encrypted rendezvous transport:
+the client and service host each connect out to a relay and never connect to one
+another directly.
 
-Version 0.1 is deliberately local. Its only transport is numeric loopback TCP,
-and its service bridge can reach only numeric loopback HTTP endpoints. It is not
-integrated into Granger Browser, does not provide anonymity, and is not a public
-network or a replacement for DNS.
+The prototype is not integrated into Granger Browser, is not a public network,
+and does not provide anonymity. A rendezvous can observe both peers' network
+addresses and traffic metadata even though it cannot read authenticated
+application messages.
 
 ## Components
 
-- `granger-host`: creates a service identity and exposes a local HTTP service.
-- `granger-client`: imports signed descriptors and fetches a `.granger` page.
-- `LocalResolver`: resolves canonical identity addresses and local aliases
-  without DNS or a network fallback.
-- `ClientTransport`: the transport boundary used by the loopback prototype and
-  intended for future private transport adapters.
+- `granger-host`: creates a service identity and exposes a numeric-loopback HTTP
+  application through either the legacy local transport or a rendezvous.
+- `granger-client`: verifies a signed descriptor and fetches a `.granger` page.
+- `granger-rendezvous`: pairs an outbound host connection with an outbound
+  client connection and forwards opaque bytes.
+- `DiscoveryProvider`: separates identity discovery from transport bootstrap.
+- `GrangerTransport`: connects by cryptographic destination ID; a returned
+  session provides `send`, `receive`, and `close` operations.
+- `LocalResolver`: a file-backed experimental discovery provider that never
+  delegates `.granger` names to DNS.
 
-The implementation uses the Python `cryptography` package. It does not
-implement cryptographic primitives itself.
+The implementation uses Ed25519, X25519, HKDF-SHA256, and ChaCha20-Poly1305 from
+the Python `cryptography` package. It does not implement cryptographic
+primitives itself.
 
 ## Setup
 
-Python 3.11 or newer is required for this standalone prototype.
+Python 3.11 or newer is required.
 
 ```powershell
 cd C:\path\to\GrangerBrowser\GrangerNetwork
@@ -35,42 +41,41 @@ python -m pip install -e .
 
 On Linux or macOS, activate the environment with `source .venv/bin/activate`.
 
-## One-command demo
+## Remote prototype
 
-The demo starts an HTTP page on `127.0.0.1:8080`, creates `test.granger`, starts
-the encrypted service host, fetches the page, and shuts everything down:
+The following local three-terminal example uses separate processes. The relay
+address is transport bootstrap data, not a service address. `test.granger` is a
+local alias for the generated identity-bound canonical address.
+
+Start the relay:
 
 ```powershell
-python examples/run_demo.py
+granger-rendezvous --listen-host 127.0.0.1 --listen-port 7788
 ```
 
-## Manual example
+Create a remote descriptor and install it in the test client registry:
 
-Start the sample website:
+```powershell
+granger-host init-remote `
+  --state-dir demo-state/service `
+  --rendezvous-id demo-relay `
+  --rendezvous-host 127.0.0.1 `
+  --rendezvous-port 7788 `
+  --registry demo-state/client `
+  --alias test.granger `
+  --title "Example service"
+```
+
+Start the local application and service host:
 
 ```powershell
 python -m http.server 8080 --bind 127.0.0.1 --directory examples/site
-```
-
-Create an identity-bound service and install the local `test.granger` alias:
-
-```powershell
-granger-host init `
-  --state-dir demo-state/service `
-  --listen-port 7777 `
-  --registry demo-state/client `
-  --alias test.granger
-```
-
-Start the service host:
-
-```powershell
 granger-host serve `
   --state-dir demo-state/service `
   --upstream http://127.0.0.1:8080
 ```
 
-Fetch through Granger Network from another terminal:
+Fetch through the rendezvous from the client terminal:
 
 ```powershell
 granger-client fetch test.granger `
@@ -78,9 +83,19 @@ granger-client fetch test.granger `
   --output fetched.html
 ```
 
-The `init` command prints the canonical identity address. `test.granger` is a
-local convenience alias; the canonical 52-character address is derived from
-the Ed25519 public key.
+For experiments on separate machines, configure the same numeric rendezvous
+endpoint on host and client and transfer the signed descriptor through an
+authenticated out-of-band channel. v0.2 has no distributed discovery service.
+The service host still exposes no HTTP listener and requires no direct client
+route or port forwarding.
+
+## Local compatibility demo
+
+The v0.1 numeric-loopback profile remains available for regression testing:
+
+```powershell
+python examples/run_demo.py
+```
 
 ## Tests
 
@@ -91,9 +106,13 @@ $env:PYTHONPATH=(Resolve-Path src)
 py -3 -m unittest discover -s tests -v
 ```
 
-The suite checks descriptor signatures, identity mismatch rejection, encrypted
-wire frames, fail-closed resolution, loopback-only policy, and an end-to-end
-`test.granger` fetch while system hostname-resolution APIs are blocked.
+The suite includes a real three-process host/relay/client case, descriptor
+tampering and expiry checks, host identity substitution, registration and
+encrypted-frame replay rejection, DNS API blocking, recorded socket
+destinations, and a relay-wire plaintext marker check.
+
+These checks are useful regression evidence, not a packet-level proof on every
+operating system.
 
 ## Documents
 
@@ -104,12 +123,14 @@ wire frames, fail-closed resolution, loopback-only policy, and an end-to-end
 
 ## Prototype limits
 
-- Localhost transport only; no peer discovery or remote overlay routing.
-- No browser integration, HTML security model, or navigation interception.
-- No client authentication, authorization policy, persistence service, or key
-  rotation protocol.
-- No traffic-analysis resistance, padding, cover traffic, or availability
-  protection.
-- Local aliases depend on the integrity of the user's local registry.
-- Tests block common DNS APIs and record socket destinations; they are not a
-  packet-capture proof for every operating system.
+- The discovery registry and rendezvous bootstrap are configured locally.
+- The relay learns client and host network addresses, service and session IDs,
+  connection timing, duration, and byte counts.
+- There is one relay hop, no onion routing, relay federation, path selection,
+  padding, cover traffic, or traffic-correlation resistance.
+- Relay authentication, client authentication, authorization, key rotation,
+  revocation, persistence, multiplexing, and denial-of-service controls are not
+  complete.
+- There is no browser integration or browser content-security model.
+- Local aliases rely on local registry integrity; canonical addresses remain
+  self-authenticating.
