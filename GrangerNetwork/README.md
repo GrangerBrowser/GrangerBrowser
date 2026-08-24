@@ -2,9 +2,10 @@
 
 Granger Network is a standalone experimental private namespace and overlay
 protocol prototype. A canonical `.granger` address is derived from an Ed25519
-service identity. Version 0.2 adds an end-to-end encrypted rendezvous transport:
-the client and service host each connect out to a relay and never connect to one
-another directly.
+service identity. The client and service host each connect out to a rendezvous
+and never connect to one another directly. New remote descriptors use wire 3,
+which hardens the authenticated handshake, key lifecycle, and encrypted frame
+format without changing discovery or routing behavior.
 
 The current source tree includes a local development integration with Granger
 Browser. It is not included in a public installer or release, is not a public
@@ -28,9 +29,12 @@ application messages.
   bounded `.granger` GET/HEAD requests and invokes the existing resolver and
   client. It has no listening socket or general-purpose proxy interface.
 
-The implementation uses Ed25519, X25519, HKDF-SHA256, and ChaCha20-Poly1305 from
-the Python `cryptography` package. It does not implement cryptographic
-primitives itself.
+Wire 3 uses Ed25519 service authentication, hybrid ephemeral X25519 plus
+ML-KEM-768 key exchange, HKDF-SHA256, HMAC-SHA256 key confirmation, and
+ChaCha20-Poly1305 from the Python `cryptography` package. The implementation
+does not implement cryptographic primitives itself. Ed25519 is not
+post-quantum, so this hybrid key exchange must not be described as complete
+post-quantum authentication.
 
 ## Setup
 
@@ -111,9 +115,11 @@ py -3 -m unittest discover -s tests -v
 ```
 
 The suite includes a real three-process host/relay/client case, descriptor
-tampering and expiry checks, host identity substitution, registration and
-encrypted-frame replay rejection, DNS API blocking, recorded socket
-destinations, and a relay-wire plaintext marker check.
+tampering and expiry checks, authenticated-suite downgrade attempts, handshake
+tampering, identity substitution, key separation and rekeying, stale-session,
+replay, out-of-order, oversized, modified-frame, and nonce-exhaustion checks,
+DNS API blocking, recorded socket destinations, and a relay-wire plaintext
+marker check.
 
 These checks are useful regression evidence, not a packet-level proof on every
 operating system.
@@ -132,6 +138,21 @@ python GrangerNetwork/tests/browser_acceptance_harness.py `
 The harness creates two identity-bound services behind a rendezvous and opens
 them through the real browser. It does not represent an independent WAN test.
 
+## Cryptographic benchmark
+
+Run the same-process comparison between compatibility wire 2 and hybrid wire 3
+with:
+
+```powershell
+$env:PYTHONPATH=(Resolve-Path src)
+python benchmarks/crypto_benchmark.py
+```
+
+The benchmark reports handshake latency, Python allocation peak, and encrypted
+frame throughput. It is a local engineering comparison, not a cross-platform
+performance guarantee. See [Cryptographic benchmark](docs/CryptographicBenchmark.md)
+for the recorded environment, method, and interpretation.
+
 ## Documents
 
 - [Architecture](docs/Architecture.md)
@@ -139,6 +160,7 @@ them through the real browser. It does not represent an independent WAN test.
 - [Threat model](docs/ThreatModel.md)
 - [Address format](docs/AddressFormat.md)
 - [Browser integration](docs/BrowserIntegration.md)
+- [Cryptographic benchmark](docs/CryptographicBenchmark.md)
 
 ## Prototype limits
 
@@ -147,9 +169,9 @@ them through the real browser. It does not represent an independent WAN test.
   connection timing, duration, and byte counts.
 - There is one relay hop, no onion routing, relay federation, path selection,
   padding, cover traffic, or traffic-correlation resistance.
-- Relay authentication, client authentication, authorization, key rotation,
-  revocation, persistence, multiplexing, and denial-of-service controls are not
-  complete.
+- Traffic keys rotate within wire 3 sessions, but relay authentication, client
+  authentication, authorization, long-term identity rotation and revocation,
+  persistence, multiplexing, and denial-of-service controls are not complete.
 - Browser integration is source-only development functionality and has not been
   added to a public installer, AppImage, or release archive.
 - Qt WebEngine 6.11.2 exposes separate localStorage and IndexedDB origins and

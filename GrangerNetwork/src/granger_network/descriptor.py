@@ -13,6 +13,7 @@ from .address import NAMESPACE, service_id_from_public_key
 from .discovery import validate_rendezvous_id
 from .errors import DescriptorError, DiscoveryError, TransportPolicyError
 from .identity import ServiceIdentity
+from .protocol import VERSION_2, VERSION_3
 from .transport import LoopbackEndpoint
 
 
@@ -134,8 +135,8 @@ class ServiceDescriptor:
         else:
             if self.endpoint is not None:
                 raise DescriptorError("remote descriptor must not disclose a service endpoint")
-            if self.protocol_version != 2:
-                raise DescriptorError("remote descriptor requires protocol version 2")
+            if self.protocol_version not in {VERSION_2, VERSION_3}:
+                raise DescriptorError("remote descriptor has an unsupported protocol version")
             if self.transports != ("rendezvous-v1",):
                 raise DescriptorError("remote descriptor has unsupported transports")
             try:
@@ -204,6 +205,7 @@ class ServiceDescriptor:
         metadata: dict[str, str] | None = None,
         issued_at: int | None = None,
         lifetime: int = 24 * 60 * 60,
+        protocol_version: int = VERSION_3,
     ) -> "ServiceDescriptor":
         if isinstance(lifetime, bool) or not isinstance(lifetime, int) or not 1 <= lifetime <= MAX_DESCRIPTOR_LIFETIME:
             raise DescriptorError("descriptor lifetime is outside the v0.2 limit")
@@ -218,7 +220,7 @@ class ServiceDescriptor:
             endpoint=None,
             signature=b"\x00" * 64,
             version=2,
-            protocol_version=2,
+            protocol_version=protocol_version,
             transports=("rendezvous-v1",),
             rendezvous_id=validate_rendezvous_id(rendezvous_id),
             issued_at=timestamp,

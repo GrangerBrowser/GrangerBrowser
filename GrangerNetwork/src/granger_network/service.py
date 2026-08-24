@@ -8,7 +8,7 @@ from .descriptor import ServiceDescriptor
 from .errors import DescriptorError, GrangerNetworkError, ProtocolError
 from .http_bridge import LoopbackHttpBridge
 from .identity import ServiceIdentity
-from .protocol import SecureChannel, server_handshake
+from .protocol import VERSION_3, SecureChannel, server_handshake
 from .transport import (
     GrangerHostTransport,
     LoopbackTcpServerTransport,
@@ -43,15 +43,27 @@ def _serve_application_request(
         ):
             raise ProtocolError("request headers must be a string map")
         result = bridge.fetch(request["method"], request["path"], request["headers"])
-        channel.send_json(
-            {
-                "body": base64.b64encode(result.body).decode("ascii"),
-                "headers": result.headers,
-                "reason": result.reason,
-                "status": result.status,
-                "type": "response",
-            }
-        )
+        if protocol_version == VERSION_3:
+            channel.send_json(
+                {
+                    "bodyLength": len(result.body),
+                    "headers": result.headers,
+                    "reason": result.reason,
+                    "status": result.status,
+                    "type": "response",
+                }
+            )
+            channel.send_bytes(result.body)
+        else:
+            channel.send_json(
+                {
+                    "body": base64.b64encode(result.body).decode("ascii"),
+                    "headers": result.headers,
+                    "reason": result.reason,
+                    "status": result.status,
+                    "type": "response",
+                }
+            )
         return None
     except (GrangerNetworkError, OSError, TypeError, ValueError) as error:
         if channel is not None:
@@ -60,6 +72,9 @@ def _serve_application_request(
             except (GrangerNetworkError, OSError):
                 pass
         return type(error).__name__
+    finally:
+        if channel is not None:
+            channel.destroy()
 
 
 class GrangerServiceHost:
@@ -234,7 +249,7 @@ class RendezvousServiceHost:
                     session.connection,
                     self.identity,
                     self.bridge,
-                    protocol_version=2,
+                    protocol_version=self.descriptor.protocol_version,
                     session_id=session.session_id,
                 )
                 if error_name is not None:

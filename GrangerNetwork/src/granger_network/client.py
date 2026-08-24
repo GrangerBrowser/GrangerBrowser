@@ -11,7 +11,7 @@ from typing import Callable, Mapping
 from .descriptor import ServiceDescriptor
 from .discovery import DiscoveryProvider
 from .errors import GrangerNetworkError, ProtocolError
-from .protocol import client_handshake
+from .protocol import VERSION_3, SecureChannel, client_handshake
 from .resolver import LocalResolver
 from .transport import (
     ClientTransport,
@@ -70,6 +70,7 @@ class GrangerClient:
     ) -> GrangerResponse:
         descriptor.verify()
         session = None
+        channel: SecureChannel | None = None
         if descriptor.version == 1:
             if descriptor.endpoint is None:
                 raise ProtocolError("local descriptor has no transport endpoint")
@@ -106,7 +107,12 @@ class GrangerClient:
             response = channel.receive_json()
             if response.get("type") == "error":
                 raise ProtocolError(f"service rejected the request: {response.get('code', 'UNKNOWN')}")
-            if set(response) != {"body", "headers", "reason", "status", "type"}:
+            expected_fields = (
+                {"bodyLength", "headers", "reason", "status", "type"}
+                if protocol_version == VERSION_3
+                else {"body", "headers", "reason", "status", "type"}
+            )
+            if set(response) != expected_fields:
                 raise ProtocolError("service returned an unexpected response object")
             if response["type"] != "response" or not isinstance(response["headers"], dict):
                 raise ProtocolError("service returned an invalid response")
@@ -116,17 +122,31 @@ class GrangerClient:
                 or not 100 <= response["status"] <= 599
             ):
                 raise ProtocolError("service returned an invalid HTTP status")
-            if not isinstance(response["reason"], str) or not isinstance(response["body"], str):
+            if not isinstance(response["reason"], str):
                 raise ProtocolError("service returned invalid response text")
             if not all(
                 isinstance(name, str) and isinstance(value, str)
                 for name, value in response["headers"].items()
             ):
                 raise ProtocolError("service returned invalid response headers")
-            try:
-                body = base64.b64decode(response["body"], validate=True)
-            except (binascii.Error, TypeError, ValueError) as error:
-                raise ProtocolError("service returned an invalid response body") from error
+            if protocol_version == VERSION_3:
+                body_length = response["bodyLength"]
+                if (
+                    isinstance(body_length, bool)
+                    or not isinstance(body_length, int)
+                    or not 0 <= body_length <= channel.max_message_size
+                ):
+                    raise ProtocolError("service returned an invalid response body length")
+                body = channel.receive_bytes()
+                if len(body) != body_length:
+                    raise ProtocolError("service response body length does not match its metadata")
+            else:
+                if not isinstance(response["body"], str):
+                    raise ProtocolError("service returned invalid response text")
+                try:
+                    body = base64.b64decode(response["body"], validate=True)
+                except (binascii.Error, TypeError, ValueError) as error:
+                    raise ProtocolError("service returned an invalid response body") from error
             return GrangerResponse(
                 status=response["status"],
                 reason=response["reason"],
@@ -135,6 +155,8 @@ class GrangerClient:
                 canonical_service=descriptor.canonical_name,
             )
         finally:
+            if channel is not None:
+                channel.destroy()
             if session is not None:
                 session.close()
             else:

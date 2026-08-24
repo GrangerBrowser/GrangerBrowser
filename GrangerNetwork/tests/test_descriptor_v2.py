@@ -27,8 +27,25 @@ class RemoteDescriptorTests(unittest.TestCase):
         self.assertNotIn("endpoint", document)
         self.assertNotIn("127.0.0.1", self.descriptor.to_json())
         self.assertEqual(document["transports"], ["rendezvous-v1"])
-        self.assertEqual(document["protocolVersion"], 2)
+        self.assertEqual(document["protocolVersion"], 3)
         self.assertIsNone(self.descriptor.endpoint)
+
+    def test_signed_protocol_version_prevents_downgrade(self) -> None:
+        document = json.loads(self.descriptor.to_json())
+        document["protocolVersion"] = 2
+        with self.assertRaises(DescriptorError):
+            ServiceDescriptor.from_json(json.dumps(document), now=1_000_001)
+
+    def test_legacy_wire_v2_descriptor_remains_readable(self) -> None:
+        descriptor = ServiceDescriptor.create_remote(
+            self.identity,
+            "test-relay",
+            issued_at=1_000_000,
+            lifetime=3600,
+            protocol_version=2,
+        )
+        parsed = ServiceDescriptor.from_json(descriptor.to_json(), now=1_000_001)
+        self.assertEqual(parsed.protocol_version, 2)
 
     def test_modified_descriptor_is_rejected(self) -> None:
         document = json.loads(self.descriptor.to_json())
