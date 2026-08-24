@@ -6,9 +6,10 @@ service identity. Version 0.2 adds an end-to-end encrypted rendezvous transport:
 the client and service host each connect out to a relay and never connect to one
 another directly.
 
-The prototype is not integrated into Granger Browser, is not a public network,
-and does not provide anonymity. A rendezvous can observe both peers' network
-addresses and traffic metadata even though it cannot read authenticated
+The current source tree includes a local development integration with Granger
+Browser. It is not included in a public installer or release, is not a public
+network, and does not provide anonymity. A rendezvous can observe both peers'
+network addresses and traffic metadata even though it cannot read authenticated
 application messages.
 
 ## Components
@@ -23,6 +24,9 @@ application messages.
   session provides `send`, `receive`, and `close` operations.
 - `LocalResolver`: a file-backed experimental discovery provider that never
   delegates `.granger` names to DNS.
+- `granger-browser-gateway`: a browser-owned stdio adapter that accepts only
+  bounded `.granger` GET/HEAD requests and invokes the existing resolver and
+  client. It has no listening socket or general-purpose proxy interface.
 
 The implementation uses Ed25519, X25519, HKDF-SHA256, and ChaCha20-Poly1305 from
 the Python `cryptography` package. It does not implement cryptographic
@@ -114,12 +118,27 @@ destinations, and a relay-wire plaintext marker check.
 These checks are useful regression evidence, not a packet-level proof on every
 operating system.
 
+Build the browser development target and run the real Qt WebEngine integration
+acceptance with:
+
+```powershell
+$env:PYTHONPATH=(Resolve-Path GrangerNetwork/src)
+python GrangerNetwork/tests/browser_acceptance_harness.py `
+  --browser build/desktop/Release/GrangerBrowser.exe `
+  --qt-bin C:/Qt/6.11.2/msvc2022_64/bin `
+  --output output/granger-network-browser-acceptance.json
+```
+
+The harness creates two identity-bound services behind a rendezvous and opens
+them through the real browser. It does not represent an independent WAN test.
+
 ## Documents
 
 - [Architecture](docs/Architecture.md)
 - [Protocol](docs/Protocol.md)
 - [Threat model](docs/ThreatModel.md)
 - [Address format](docs/AddressFormat.md)
+- [Browser integration](docs/BrowserIntegration.md)
 
 ## Prototype limits
 
@@ -131,6 +150,10 @@ operating system.
 - Relay authentication, client authentication, authorization, key rotation,
   revocation, persistence, multiplexing, and denial-of-service controls are not
   complete.
-- There is no browser integration or browser content-security model.
+- Browser integration is source-only development functionality and has not been
+  added to a public installer, AppImage, or release archive.
+- Qt WebEngine 6.11.2 exposes separate localStorage and IndexedDB origins and
+  supports service workers for the registered scheme. Its cookie and Cache APIs
+  are unavailable for this custom scheme in the tested Windows build.
 - Local aliases rely on local registry integrity; canonical addresses remain
   self-authenticating.

@@ -2,9 +2,10 @@
 
 ## Scope
 
-Granger Network v0.2 is a standalone prototype. It does not depend on or modify
-Granger Browser, Qt WebEngine, Tor, I2P, browser routing, or browser fail-closed
-behavior.
+Granger Network v0.2 remains a transport-independent experimental module. The
+current source tree also contains a local Granger Browser adapter. The adapter
+does not modify Tor, I2P, the private-route gateway, or their fail-closed
+behavior; `.granger` is selected before those routes are considered.
 
 The remote-capable path is:
 
@@ -133,6 +134,14 @@ service or decrypt application frames without the service private key.
 
 The local discovery store knows descriptors, aliases, and relay bootstrap data
 installed by that user. It performs no network query.
+
+## Browser adapter
+
+Qt WebEngine receives each service as a host-based custom URL origin. A
+browser-owned child process connects the C++ scheme handler to `LocalResolver`
+and `GrangerClient` over anonymous stdin/stdout pipes. It opens no IPC listener,
+accepts no arbitrary URL or host, and is terminated with the browser. See
+`BrowserIntegration.md` for URL, origin, and cross-network policy details.
 
 ## Failure behavior
 

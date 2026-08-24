@@ -90,8 +90,11 @@ repeated, skipped, reordered, modified, and cross-session frames.
 ### Malicious service
 
 A correctly identified service controls its content. Identity authentication
-does not make HTML safe. The standalone client writes bytes; v0.2 provides no
-browser sandbox, origin model, or content sanitizer.
+does not make HTML safe. In the development browser integration, Qt WebEngine
+renders that content in its Chromium renderer sandbox and assigns one origin per
+`.granger` host. A request interceptor blocks embedded cross-service and
+cross-network requests. This does not make service content trustworthy or
+remove vulnerabilities in the browser engine.
 
 ### Network observer
 

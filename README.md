@@ -45,6 +45,11 @@ Granger does **not** claim to provide perfect anonymity, make a device untraceab
 
 It is an actively developed browser and should currently be treated as **beta software**.
 
+The source tree also contains an experimental, local-development Granger
+Network integration for identity-bound `.granger` services. It is not part of
+the current public installer or release assets. Its single-rendezvous design
+does not hide peer IP addresses or traffic metadata from that rendezvous.
+
 ---
 
 ## Highlights
