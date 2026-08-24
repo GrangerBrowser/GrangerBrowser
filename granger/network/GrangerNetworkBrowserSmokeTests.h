@@ -11,5 +11,6 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
                                   const QString &aliasAddress,
                                   const QString &canonicalAddress,
                                   const QString &secondAddress);
+int runGrangerNetworkLocalDemoSmoke(QApplication &app, const QString &outputPath);
 
 }

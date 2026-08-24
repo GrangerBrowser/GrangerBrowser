@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([string]$PackageDirectory = "release/Granger Browser")
+param(
+    [string]$PackageDirectory = "release/Granger Browser",
+    [switch]$AllowLocalGrangerRuntime
+)
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -95,9 +98,23 @@ $pythonRuntimeArtifacts = @(Get-ChildItem -LiteralPath $copiedPackage -Recurse -
     $_.Name.ToLowerInvariant() -in @('python.exe', 'pythonw.exe') -or
     $_.Name -like 'python*.dll'
 })
-if ($forbiddenFullPampDirectories.Count -ne 0 -or $pythonRuntimeArtifacts.Count -ne 0) {
+if ($forbiddenFullPampDirectories.Count -ne 0 -or
+    ($pythonRuntimeArtifacts.Count -ne 0 -and -not $AllowLocalGrangerRuntime)) {
     $unexpectedPampRuntime = @($forbiddenFullPampDirectories.FullName) + @($pythonRuntimeArtifacts.FullName)
     throw "Acceptance package contains an unreviewed full Pamp/Python runtime: $($unexpectedPampRuntime -join ', ')"
+}
+if ($AllowLocalGrangerRuntime) {
+    foreach ($relativePath in @(
+        "runtime/python/python.exe",
+        "runtime/python/python3.dll",
+        "runtime/python/Lib/site-packages/cryptography/__init__.py",
+        "runtime/python/Lib/site-packages/granger_network/browser_gateway.py",
+        "local-runtime-metadata.json"
+    )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $copiedPackage $relativePath) -PathType Leaf)) {
+            throw "Local Granger Network runtime is incomplete: $relativePath"
+        }
+    }
 }
 
 function Invoke-GrangerBrowser {

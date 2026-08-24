@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-The current repository integrates Granger Network v0.2 into the local Granger
-Browser development build. It is not present in a public installer, AppImage,
-release ZIP, tag, or GitHub release.
+The current repository integrates Granger Network v0.2 into the browser and the
+canonical local Windows build. It is not present in a public installer,
+AppImage, release ZIP, tag, or GitHub release.
 
 This layer does not route ordinary, `.onion`, or `.i2p` browsing. It only owns
 the `.granger` namespace and fails closed when its runtime, registry,
@@ -51,6 +51,19 @@ general proxy API. The helper removes proxy environment variables, disables
 Python hostname-resolution APIs, and uses the existing numeric-endpoint Granger
 transport. Browser shutdown closes the pipe and terminates the helper; the
 acceptance harness also checks its PID after browser exit.
+
+The canonical local package carries the required Python and `cryptography`
+runtime under `runtime/python`. The browser prefers that signed app-local
+runtime, starts it with isolated path handling, and removes Python environment
+overrides. Source-tree discovery and explicit runtime arguments remain available
+only for development and tests when the app-local runtime is absent.
+
+For double-click verification, the app-local runtime exposes `test.granger` as
+an ephemeral demonstration service only when no explicit registry was supplied.
+It runs through the existing identity descriptor, encrypted handshake, and
+numeric-loopback service transport. The alias never enters DNS and its generated
+identity is intentionally not stable across helper restarts. Explicit registries
+used by real services and acceptance tests are never replaced by the demo.
 
 ## Origin and storage model
 

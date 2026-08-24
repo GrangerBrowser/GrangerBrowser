@@ -386,6 +386,66 @@ foreach ($relativePath in @("Qt6Core.dll", "Qt6WebEngineCore.dll", "QtWebEngineP
     }
 }
 
+$localRuntimeMetadataPath = Join-Path $packageRoot "local-runtime-metadata.json"
+$localRuntimeMetadata = $null
+if (Test-Path -LiteralPath $localRuntimeMetadataPath -PathType Leaf) {
+    $localRuntimeMetadata = Get-Content -LiteralPath $localRuntimeMetadataPath -Raw -Encoding UTF8 |
+        ConvertFrom-Json
+    if ([int]$localRuntimeMetadata.SchemaVersion -ne 1 -or
+        [string]$localRuntimeMetadata.SourceHead -notmatch '^[0-9a-f]{40}$' -or
+        [string]$localRuntimeMetadata.PythonArchitecture -ne "x64" -or
+        [version]$localRuntimeMetadata.PythonVersion -lt [version]"3.11" -or
+        [version]$localRuntimeMetadata.CryptographyVersion -lt [version]"44.0" -or
+        [version]$localRuntimeMetadata.CffiVersion -lt [version]"1.0" -or
+        [version]$localRuntimeMetadata.PycparserVersion -lt [version]"2.0" -or
+        [string]$localRuntimeMetadata.GrangerNetworkVersion -ne "0.2.0" -or
+        -not [bool]$localRuntimeMetadata.IsolatedRuntime) {
+        throw "Local Granger Network runtime metadata is invalid."
+    }
+    $browserHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot "GrangerBrowser.exe") `
+        -Algorithm SHA256).Hash
+    if (-not $browserHash.Equals(
+            [string]$localRuntimeMetadata.BrowserExecutableSHA256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Local runtime metadata does not match GrangerBrowser.exe."
+    }
+    foreach ($entry in $localRuntimeMetadata.RuntimeFiles) {
+        $relativePath = ([string]$entry.Path).Replace('/', '\')
+        if (-not $relativePath.StartsWith("runtime\python\", [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::IsPathRooted($relativePath) -or
+            @($relativePath.Split('\') | Where-Object { $_ -eq '..' }).Count -ne 0) {
+            throw "Local runtime metadata escaped runtime/python: $relativePath"
+        }
+        $candidate = Join-Path $packageRoot $relativePath
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Local runtime metadata file is missing: $relativePath"
+        }
+        $item = Get-Item -LiteralPath $candidate
+        if ($item.Length -ne [long]$entry.Size -or
+            -not (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.Equals(
+                [string]$entry.SHA256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Local runtime metadata mismatch: $relativePath"
+        }
+    }
+    $pythonExecutable = Join-Path $packageRoot "runtime/python/python.exe"
+    $pythonDlls = @(Get-ChildItem -LiteralPath (Join-Path $packageRoot "runtime/python") `
+        -File -Filter "python*.dll")
+    $pythonPathFiles = @(Get-ChildItem -LiteralPath (Join-Path $packageRoot "runtime/python") `
+        -File -Filter "python*._pth")
+    if (-not (Test-Path -LiteralPath $pythonExecutable -PathType Leaf) -or
+        $pythonDlls.Count -lt 2 -or $pythonPathFiles.Count -ne 1) {
+        throw "App-local Python runtime layout is incomplete."
+    }
+    foreach ($signedFile in @($pythonExecutable) + $pythonDlls.FullName) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $signedFile
+        if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+            -not $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -notmatch "Python Software Foundation") {
+            throw "App-local Python signature validation failed: $signedFile"
+        }
+    }
+}
+
 $signedRuntimeFiles = @(
     @{ Path = "Qt6Core.dll"; Publisher = "The Qt Company" },
     @{ Path = "Qt6WebEngineCore.dll"; Publisher = "The Qt Company" },
@@ -492,11 +552,19 @@ foreach ($pe in $peResults) {
     foreach ($dependency in $pe.Imports) {
         $sameDirectory = Join-Path (Split-Path -Parent $pe.Path) $dependency
         $packageDirectory = Join-Path $packageRoot $dependency
+        $pythonRuntimeDirectory = Join-Path $packageRoot "runtime\python"
+        $pythonRuntimeDependency = Join-Path $pythonRuntimeDirectory $dependency
+        $isPythonRuntimeFile = $pe.Path.StartsWith(
+            $pythonRuntimeDirectory.TrimEnd('\') + '\',
+            [StringComparison]::OrdinalIgnoreCase)
         $systemDirectory = Join-Path $env:SystemRoot "System32\$dependency"
         $resolution = if (Test-Path -LiteralPath $sameDirectory -PathType Leaf) {
             "same-directory"
         } elseif (Test-Path -LiteralPath $packageDirectory -PathType Leaf) {
             "package-root"
+        } elseif ($isPythonRuntimeFile -and
+                  (Test-Path -LiteralPath $pythonRuntimeDependency -PathType Leaf)) {
+            "python-runtime-root"
         } elseif ($dependency.StartsWith("api-ms-win-", [StringComparison]::OrdinalIgnoreCase) -or
                   $dependency.StartsWith("ext-ms-", [StringComparison]::OrdinalIgnoreCase)) {
             "Windows API set"
@@ -565,6 +633,7 @@ if (-not ([string]$deploymentMetadata.ProductVersion).Equals(
     QmlDebugFiles = $qmlDebugFiles.Count
     QtConfPaths = $qtPaths
     DeploymentMetadata = $deploymentMetadataPath
+    LocalRuntimeMetadata = if ($localRuntimeMetadata) { $localRuntimeMetadataPath } else { "" }
     SignedRuntimeFiles = $signedRuntimeFiles.Count
     LoadLibraryChecks = $loadLibraryResults
     ManifestEntries = $manifest.Count

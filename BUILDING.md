@@ -2,8 +2,10 @@
 
 Granger Browser is a native C++20/Qt 6 application. Windows is the public
 release target. A native Linux x86_64 AppImage target is available as a local
-RC build and does not use Wine. Neither packaged target invokes Python at
-runtime.
+RC build and does not use Wine. Public Windows and Linux packages do not invoke
+Python at runtime. The canonical local Windows build additionally carries an
+isolated app-local Python runtime for the experimental Granger Network browser
+integration; no system Python or developer environment is used at runtime.
 
 ## Windows requirements
 
@@ -44,7 +46,36 @@ before extracting `i2pd.exe` and its certificate bundle. End users do not need
 Java or a separate I2P installation. Source metadata and BSD-3-Clause terms are
 tracked under `third_party/i2pd/`.
 
-## Canonical Release
+## Canonical local release
+
+Browser changes are complete only after this workflow succeeds:
+
+```powershell
+.\scripts\build-local-release.ps1 `
+  -QtRoot "$env:USERPROFILE\Qt\6.11.2\msvc2022_64" `
+  -BuildDirectory build\desktop
+```
+
+The orchestrator requires a clean tracked HEAD, compiles Release, deploys the
+base browser into `release\.local-staging`, adds the signed x64 Python runtime
+and the licensed `cryptography`, `cffi`, and `pycparser` modules used by Granger
+Network, validates the complete manifest,
+runs copied-package and `.granger` acceptance, and atomically promotes only a
+passing directory. The previous canonical directory remains untouched if
+staging fails. User data is outside the package and is not moved or removed.
+
+Canonical local executable:
+
+```text
+release\Granger Browser\GrangerBrowser.exe
+```
+
+The generated `local-runtime-metadata.json` records the source HEAD, browser
+hash, Python and `cryptography` versions, licenses, and critical runtime hashes.
+The embedded `python314._pth` and `-I` launch mode prevent `PYTHONPATH`, user
+site-packages, and the system Python installation from influencing the helper.
+
+## Public Windows release
 
 ```powershell
 .\scripts\build-release.ps1 `
@@ -52,7 +83,11 @@ tracked under `third_party/i2pd/`.
   -BuildDirectory build\desktop
 ```
 
-This one command removes the previous temporary compiler output, builds Release, packages all dependencies into staging, runs the complete copied-package acceptance suite with Python absent from `PATH`, and atomically replaces the canonical release only after validation succeeds.
+This explicit public packaging command removes the previous temporary compiler
+output, builds Release, packages reviewed public dependencies, runs the complete
+copied-package acceptance suite with Python absent from `PATH`, atomically
+replaces the canonical release, and creates the public portable ZIP. Do not use
+it as the routine local development completion step.
 
 Canonical output:
 
@@ -79,11 +114,11 @@ assets, and shortcut creation, validates required files, and writes
 `deployment-metadata.json` plus `release-manifest.json` with SHA-256 hashes.
 
 `package-release.ps1` is staging-only and rejects the canonical
-`release\Granger Browser` path. It accepts only `release\.staging`, used by the
-orchestrator, or `release\.ui-stage`, used for focused visual checks. Only
-`build-release.ps1` may promote an accepted package to the canonical release;
-it removes stale staging directories after confirming that no process is
-running from them.
+`release\Granger Browser` path. It accepts `release\.staging` for public
+packaging, `release\.ui-stage` for focused visual checks, and
+`release\.local-staging` for the local orchestrator. Only an orchestrator may
+promote an accepted package to the canonical release; each removes its own
+staging directories after confirming that no process is running from them.
 
 The optional NMEA positioning plugin is removed because it requires Qt SerialPort, which Granger Browser does not ship or use. The WinRT and polling positioning plugins remain.
 
@@ -119,6 +154,8 @@ release\Granger Browser\
   runtime\i2p\i2pd.exe
   runtime\i2p\certificates\
   runtime\i2p\LICENSE.txt
+  runtime\python\                 # canonical local build only
+  local-runtime-metadata.json     # canonical local build only
   licenses\
   Create-Shortcuts.ps1
   deployment-metadata.json
@@ -131,7 +168,7 @@ release\Granger Browser\
 .\scripts\test-release.ps1 -PackageDirectory "release\Granger Browser"
 ```
 
-The harness copies the release to a path containing spaces, launches it from an
+The public harness copies the release to a path containing spaces, launches it from an
 unrelated current directory, removes Python and the Qt SDK from `PATH`, poisons
 external `QTWEBENGINE_*` paths to prove that the package-local helper wins, and
 checks the persistent WebEngine profile and User-Agent. It runs
@@ -140,6 +177,19 @@ renderer-fixture, private-route, network-bootstrap, I2P lifecycle, Tor strategy,
 download, and shutdown tests. Offline smoke modes remain pinned to a blocked
 loopback gateway; tests that need an external destination must first obtain a
 verified private route.
+
+`build-local-release.ps1` enables the narrowly scoped local-runtime acceptance
+mode and additionally runs the real Qt WebEngine `.granger` harness without
+passing `--granger-network-python`, `--granger-network-source`, Qt SDK paths, or
+`PYTHONPATH` to the browser. It verifies alias and canonical navigation, zero
+helper DNS calls, zero direct escape-probe connections, encrypted relay traffic,
+and zero orphan helper processes before and after promotion.
+
+When the app-local runtime is present and no explicit test/development registry
+is supplied, `test.granger` is an ephemeral local demonstration service. It uses
+the existing identity-bound encrypted Granger transport on numeric loopback and
+does not register with DNS or expose a clearnet listener. Its identity is new for
+each helper process; it is a local runtime check, not a stable published service.
 
 The acceptance gate establishes technical behavior; it does not grant a project
 license or resolve third-party redistribution rights. Review

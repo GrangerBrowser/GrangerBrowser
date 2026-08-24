@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from granger_network.browser_gateway import PROTOCOL_VERSION, handle_request, parse_request
-from granger_network.client import GrangerResponse
+from granger_network.browser_gateway import _LocalDemo, PROTOCOL_VERSION, handle_request, parse_request
+from granger_network.client import GrangerClient, GrangerResponse
 from granger_network.errors import (
     DescriptorError,
     IdentityVerificationError,
@@ -34,6 +34,19 @@ def request_document(**changes: object) -> bytes:
 
 
 class BrowserGatewayTests(unittest.TestCase):
+    def test_local_demo_uses_identity_bound_encrypted_service_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            demo = _LocalDemo(Path(temporary) / "registry")
+            demo.start()
+            try:
+                alias = GrangerClient(demo.resolver).fetch("test.granger")
+                canonical = GrangerClient(demo.resolver).fetch(demo.descriptor.canonical_name)
+            finally:
+                demo.stop()
+        self.assertEqual(alias.canonical_service, demo.descriptor.canonical_name)
+        self.assertEqual(canonical.canonical_service, demo.descriptor.canonical_name)
+        self.assertIn(b"test.granger works", alias.body)
+
     def test_request_parser_accepts_only_bounded_granger_fetches(self) -> None:
         request = parse_request(request_document())
         self.assertEqual(request["name"], "test.granger")

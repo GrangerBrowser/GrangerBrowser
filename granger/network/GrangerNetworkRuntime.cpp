@@ -275,12 +275,12 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
         m_process = nullptr;
     }
     const QString python = configuredPython();
-    const QString sourceRoot = configuredSourceRoot();
+    const QString moduleRoot = configuredModuleRoot();
     const QString registryRoot = configuredRegistryRoot();
-    const QString modulePath = QDir(sourceRoot).filePath(
-        QStringLiteral("src/granger_network/browser_gateway.py"));
+    const QString modulePath = QDir(moduleRoot).filePath(
+        QStringLiteral("granger_network/browser_gateway.py"));
     if (python.isEmpty() || !QFileInfo::exists(modulePath)) {
-        if (error) *error = QStringLiteral("Granger Network development runtime is unavailable");
+        if (error) *error = QStringLiteral("Granger Network runtime is unavailable");
         return false;
     }
     if (!QDir().mkpath(registryRoot)) {
@@ -292,13 +292,26 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     configureManagedProcess(process);
     process->setProcessChannelMode(QProcess::SeparateChannels);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-    const QString moduleRoot = QDir(sourceRoot).filePath(QStringLiteral("src"));
-    const QString existingPythonPath = environment.value(QStringLiteral("PYTHONPATH"));
-    environment.insert(QStringLiteral("PYTHONPATH"),
-                       existingPythonPath.isEmpty()
-                           ? moduleRoot
-                           : moduleRoot + QDir::listSeparator() + existingPythonPath);
+    const QString appLocalPython = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python/python.exe"));
+    const QString appLocalModuleRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python/Lib/site-packages"));
+    const bool appLocalRuntime = QFileInfo(python).absoluteFilePath().compare(
+                                     QFileInfo(appLocalPython).absoluteFilePath(),
+                                     Qt::CaseInsensitive) == 0
+        && QDir(moduleRoot).absolutePath().compare(QDir(appLocalModuleRoot).absolutePath(),
+                                                   Qt::CaseInsensitive) == 0;
+    for (const QString &name : {QStringLiteral("PYTHONHOME"),
+                                QStringLiteral("PYTHONPATH"),
+                                QStringLiteral("PYTHONSTARTUP"),
+                                QStringLiteral("PYTHONUSERBASE"),
+                                QStringLiteral("PYTHONINSPECT")}) {
+        environment.remove(name);
+    }
+    if (!appLocalRuntime) environment.insert(QStringLiteral("PYTHONPATH"), moduleRoot);
     environment.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
+    environment.insert(QStringLiteral("PYTHONNOUSERSITE"), QStringLiteral("1"));
     for (const QString &name : {QStringLiteral("HTTP_PROXY"), QStringLiteral("HTTPS_PROXY"),
                                 QStringLiteral("ALL_PROXY"), QStringLiteral("NO_PROXY"),
                                 QStringLiteral("http_proxy"), QStringLiteral("https_proxy"),
@@ -307,9 +320,16 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     }
     process->setProcessEnvironment(environment);
     process->setProgram(python);
-    process->setArguments({QStringLiteral("-m"), QStringLiteral("granger_network.browser_gateway"),
-                           QStringLiteral("--registry"), registryRoot,
-                           QStringLiteral("--timeout"), QStringLiteral("10")});
+    QStringList arguments;
+    if (appLocalRuntime) arguments.append(QStringLiteral("-I"));
+    arguments.append({QStringLiteral("-m"), QStringLiteral("granger_network.browser_gateway"),
+                      QStringLiteral("--registry"), registryRoot,
+                      QStringLiteral("--timeout"), QStringLiteral("10")});
+    if (appLocalRuntime && qApp
+        && !qApp->property("granger.networkRegistryExplicit").toBool()) {
+        arguments.append(QStringLiteral("--local-demo"));
+    }
+    process->setArguments(arguments);
     connect(process, &QProcess::readyReadStandardOutput,
             this, &GrangerNetworkRuntime::processStdout);
     connect(process, &QProcess::readyReadStandardError, this, [this, process] {
@@ -323,9 +343,16 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
             this, [this](int, QProcess::ExitStatus) {
         m_ready = false;
         m_workerPid = 0;
+        m_localDemoActive = false;
+        m_localDemoCanonical.clear();
         if (!m_stopping) failAll(QStringLiteral("NETWORK_UNAVAILABLE"));
     });
     m_process = process;
+    m_runtimePython = QFileInfo(python).absoluteFilePath();
+    m_runtimeModuleRoot = QDir(moduleRoot).absolutePath();
+    m_appLocalRuntime = appLocalRuntime;
+    m_localDemoActive = false;
+    m_localDemoCanonical.clear();
     m_ready = false;
     m_stdoutBuffer.clear();
     ++m_workerStartCount;
@@ -380,6 +407,8 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
     const int version = document.value(QStringLiteral("version")).toInt(-1);
     if (type == QStringLiteral("ready") && version == kProtocolVersion) {
         m_workerPid = qint64(document.value(QStringLiteral("pid")).toDouble());
+        m_localDemoActive = document.value(QStringLiteral("localDemo")).toBool(false);
+        m_localDemoCanonical = document.value(QStringLiteral("localDemoCanonical")).toString();
         m_ready = true;
         flushPendingRequests();
         return;
@@ -458,6 +487,8 @@ void GrangerNetworkRuntime::stop()
     m_process = nullptr;
     m_ready = false;
     m_workerPid = 0;
+    m_localDemoActive = false;
+    m_localDemoCanonical.clear();
     m_stdoutBuffer.clear();
     if (process) {
         QObject::disconnect(process, nullptr, this, nullptr);
@@ -475,19 +506,32 @@ void GrangerNetworkRuntime::stop()
     m_stopping = false;
 }
 
-QString GrangerNetworkRuntime::configuredSourceRoot() const
+QString GrangerNetworkRuntime::configuredModuleRoot() const
 {
     QString configured = qApp
         ? qApp->property("granger.networkSourceRoot").toString().trimmed() : QString();
     if (configured.isEmpty()) configured = qEnvironmentVariable("GRANGER_NETWORK_SOURCE_ROOT").trimmed();
-    if (!configured.isEmpty()) return QDir(configured).absolutePath();
+    if (!configured.isEmpty()) {
+        const QString moduleRoot = QDir(configured).filePath(QStringLiteral("src"));
+        if (QFileInfo::exists(QDir(moduleRoot).filePath(
+                QStringLiteral("granger_network/browser_gateway.py")))) {
+            return QDir(moduleRoot).absolutePath();
+        }
+    }
+
+    const QString appLocalModuleRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python/Lib/site-packages"));
+    if (QFileInfo::exists(QDir(appLocalModuleRoot).filePath(
+            QStringLiteral("granger_network/browser_gateway.py")))) {
+        return QDir(appLocalModuleRoot).absolutePath();
+    }
 
     QDir cursor(QCoreApplication::applicationDirPath());
     for (int depth = 0; depth < 8; ++depth) {
         const QString candidate = cursor.filePath(QStringLiteral("GrangerNetwork"));
         if (QFileInfo::exists(QDir(candidate).filePath(
                 QStringLiteral("src/granger_network/browser_gateway.py")))) {
-            return QDir(candidate).absolutePath();
+            return QDir(candidate).filePath(QStringLiteral("src"));
         }
         if (!cursor.cdUp()) break;
     }
@@ -506,6 +550,10 @@ QString GrangerNetworkRuntime::configuredRegistryRoot() const
 
 QString GrangerNetworkRuntime::configuredPython() const
 {
+    const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python/python.exe"));
+    if (QFileInfo::exists(appLocal)) return QFileInfo(appLocal).absoluteFilePath();
+
     QString configured = qApp
         ? qApp->property("granger.networkPython").toString().trimmed() : QString();
     if (configured.isEmpty()) configured = qEnvironmentVariable("GRANGER_NETWORK_PYTHON").trimmed();
@@ -529,6 +577,11 @@ QJsonObject GrangerNetworkRuntime::diagnostics() const
         {QStringLiteral("workerRunning"), m_process && m_process->state() != QProcess::NotRunning},
         {QStringLiteral("workerPid"), m_workerPid},
         {QStringLiteral("dnsRequests"), m_dnsRequestCount},
+        {QStringLiteral("runtimePython"), m_runtimePython},
+        {QStringLiteral("runtimeModuleRoot"), m_runtimeModuleRoot},
+        {QStringLiteral("appLocalRuntime"), m_appLocalRuntime},
+        {QStringLiteral("localDemoActive"), m_localDemoActive},
+        {QStringLiteral("localDemoCanonical"), m_localDemoCanonical},
         {QStringLiteral("ready"), m_ready},
         {QStringLiteral("lastWorkerError"), m_lastWorkerError}
     };

@@ -6247,8 +6247,10 @@ int main(int argc, char *argv[])
     const QStringList arguments = QCoreApplication::arguments();
     app.setProperty("granger.networkSourceRoot",
                     argumentValue(arguments, QStringLiteral("--granger-network-source=")));
-    app.setProperty("granger.networkRegistryRoot",
-                    argumentValue(arguments, QStringLiteral("--granger-network-registry=")));
+    const QString networkRegistryArgument = argumentValue(
+        arguments, QStringLiteral("--granger-network-registry="));
+    app.setProperty("granger.networkRegistryRoot", networkRegistryArgument);
+    app.setProperty("granger.networkRegistryExplicit", !networkRegistryArgument.isEmpty());
     app.setProperty("granger.networkPython",
                     argumentValue(arguments, QStringLiteral("--granger-network-python=")));
     if (arguments.contains(QStringLiteral("--smoke-brand-migration"))) {
@@ -6278,6 +6280,13 @@ int main(int argc, char *argv[])
             argumentValue(arguments, QStringLiteral("--granger-network-alias=")),
             argumentValue(arguments, QStringLiteral("--granger-network-canonical=")),
             argumentValue(arguments, QStringLiteral("--granger-network-second=")));
+    }
+    if (arguments.contains(QStringLiteral("--smoke-granger-network-local-demo"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runGrangerNetworkLocalDemoSmoke(
+            app,
+            smokeOutput.isEmpty()
+                ? QStringLiteral("output/granger-network-local-demo-smoke.json") : smokeOutput);
     }
     if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

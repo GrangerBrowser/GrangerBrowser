@@ -100,7 +100,7 @@ credentials.json
 *.pfx
 *.p12
 
-# Python tooling caches; Python is not a browser runtime dependency
+# Python tooling caches; the generated canonical local runtime stays under ignored release/
 __pycache__/
 *.py[cod]
 *$py.class

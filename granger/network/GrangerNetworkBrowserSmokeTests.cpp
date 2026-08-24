@@ -361,4 +361,70 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
     return passed ? 0 : 1;
 }
 
+int runGrangerNetworkLocalDemoSmoke(QApplication &app, const QString &outputPath)
+{
+    Q_UNUSED(app)
+    QJsonObject result;
+    bool passed = false;
+    {
+        SettingsManager settings;
+        settings.setTorConnectionMode(QStringLiteral("disabled"));
+        ThemeManager theme;
+        theme.apply(*qApp);
+        MainWindow window(settings, theme);
+        window.show();
+        BrowserTab *tab = window.currentTabForDiagnostics();
+
+        const LoadResult aliasLoad = waitForLoad(tab, [&] {
+            window.openAddressForDiagnostics(QStringLiteral("test.granger"));
+        });
+        const QString heading = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral("document.querySelector('h1')?.textContent || ''")).toString();
+        const QString pageCanonical = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral("document.querySelector('#canonical')?.textContent || ''")).toString();
+        const QJsonObject runtime = window.grangerNetworkDiagnosticsForDiagnostics();
+        const QString runtimeCanonical = runtime.value(
+            QStringLiteral("localDemoCanonical")).toString();
+        const bool aliasOk = aliasLoad.loaded
+            && aliasLoad.address == QStringLiteral("test.granger")
+            && heading == QStringLiteral("test.granger works");
+        const bool identityBound = GrangerNetworkUrl::isCanonicalHost(pageCanonical)
+            && pageCanonical == runtimeCanonical;
+
+        LoadResult canonicalLoad;
+        QString canonicalHeading;
+        if (identityBound) {
+            canonicalLoad = waitForLoad(tab, [&] {
+                window.openAddressForDiagnostics(pageCanonical);
+            });
+            canonicalHeading = evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.querySelector('h1')?.textContent || ''")).toString();
+        }
+        const bool canonicalOk = canonicalLoad.loaded
+            && canonicalLoad.address == pageCanonical
+            && canonicalHeading == QStringLiteral("test.granger works");
+        const bool runtimeOk = runtime.value(QStringLiteral("appLocalRuntime")).toBool(false)
+            && runtime.value(QStringLiteral("localDemoActive")).toBool(false)
+            && runtime.value(QStringLiteral("ready")).toBool(false);
+        const bool noDns = runtime.value(QStringLiteral("dnsRequests")).toInt(-1) == 0;
+        passed = aliasOk && identityBound && canonicalOk && runtimeOk && noDns;
+        result = {
+            {QStringLiteral("ok"), passed},
+            {QStringLiteral("aliasNavigation"), aliasOk},
+            {QStringLiteral("canonicalNavigation"), canonicalOk},
+            {QStringLiteral("identityBound"), identityBound},
+            {QStringLiteral("appLocalRuntime"), runtimeOk},
+            {QStringLiteral("dnsRequests"), runtime.value(QStringLiteral("dnsRequests"))},
+            {QStringLiteral("canonicalAddress"), pageCanonical},
+            {QStringLiteral("runtime"), runtime}
+        };
+        window.close();
+    }
+    if (!writeResult(outputPath, result)) return 2;
+    return passed ? 0 : 1;
+}
+
 }

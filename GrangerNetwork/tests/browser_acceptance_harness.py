@@ -277,7 +277,12 @@ def process_is_running(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
-def run(browser: Path, output: Path, qt_bin: Path) -> int:
+def run(
+    browser: Path,
+    output: Path,
+    qt_bin: Path | None,
+    expect_packaged_runtime: bool,
+) -> int:
     repository = Path(__file__).resolve().parents[2]
     network_root = repository / "GrangerNetwork"
     wire = bytearray()
@@ -337,23 +342,42 @@ def run(browser: Path, output: Path, qt_bin: Path) -> int:
         second_host.start_background()
         time.sleep(0.2)
         environment = os.environ.copy()
-        environment["PATH"] = str(qt_bin) + os.pathsep + environment.get("PATH", "")
+        if expect_packaged_runtime:
+            system_root = Path(environment.get("SystemRoot", r"C:\Windows"))
+            environment["PATH"] = os.pathsep.join((str(system_root / "System32"), str(system_root)))
+            for name in (
+                "PYTHONHOME",
+                "PYTHONPATH",
+                "PYTHONUSERBASE",
+                "QTDIR",
+                "CMAKE_PREFIX_PATH",
+                "QT_PLUGIN_PATH",
+                "QT_QPA_PLATFORM_PLUGIN_PATH",
+            ):
+                environment.pop(name, None)
+        elif qt_bin is not None:
+            environment["PATH"] = str(qt_bin) + os.pathsep + environment.get("PATH", "")
         environment["GRANGER_DATA_ROOT"] = str(root / "browser-data")
         environment["GRANGER_CACHE_ROOT"] = str(root / "browser-cache")
         arguments = [
             str(browser),
             "--smoke-granger-network-browser",
             f"--smoke-output={output}",
-            f"--granger-network-source={network_root}",
             f"--granger-network-registry={registry}",
-            f"--granger-network-python={sys.executable}",
             "--granger-network-alias=test.granger",
             f"--granger-network-canonical={first_descriptor.canonical_name}",
             "--granger-network-second=second.granger",
         ]
+        if not expect_packaged_runtime:
+            arguments.extend(
+                (
+                    f"--granger-network-source={network_root}",
+                    f"--granger-network-python={sys.executable}",
+                )
+            )
         completed = subprocess.run(
             arguments,
-            cwd=repository,
+            cwd=root,
             env=environment,
             capture_output=True,
             text=True,
@@ -388,10 +412,19 @@ def run(browser: Path, output: Path, qt_bin: Path) -> int:
             "secondHostErrors": second_host.connection_errors,
             "stderr": completed.stderr[-4000:],
             "stdout": completed.stdout[-4000:],
+            "packagedRuntimeRequested": expect_packaged_runtime,
         }
         result["harness"] = harness
+        runtime = result.get("runtime", {})
+        packaged_runtime_ok = not expect_packaged_runtime or (
+            runtime.get("appLocalRuntime") is True
+            and Path(str(runtime.get("runtimePython", ""))).resolve()
+            == (browser.parent / "runtime" / "python" / "python.exe").resolve()
+        )
+        harness["packagedRuntimeConfirmed"] = packaged_runtime_ok
         result["ok"] = bool(result.get("ok")) and completed.returncode == 0 \
-            and probe.connection_count == 0 and orphan_count == 0 and not plaintext_observed
+            and probe.connection_count == 0 and orphan_count == 0 and not plaintext_observed \
+            and packaged_runtime_ok
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -411,9 +444,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run Granger Network in the real Qt WebEngine browser")
     parser.add_argument("--browser", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--qt-bin", type=Path, required=True)
+    parser.add_argument("--qt-bin", type=Path)
+    parser.add_argument("--expect-packaged-runtime", action="store_true")
     options = parser.parse_args()
-    return run(options.browser.resolve(), options.output.resolve(), options.qt_bin.resolve())
+    qt_bin = options.qt_bin.resolve() if options.qt_bin is not None else None
+    if not options.expect_packaged_runtime and qt_bin is None:
+        parser.error("--qt-bin is required unless --expect-packaged-runtime is used")
+    return run(
+        options.browser.resolve(),
+        options.output.resolve(),
+        qt_bin,
+        options.expect_packaged_runtime,
+    )
 
 
 if __name__ == "__main__":

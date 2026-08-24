@@ -56,7 +56,7 @@ private:
     void processDocument(const QJsonObject &document);
     void complete(const QString &requestId, const GrangerNetworkReply &reply);
     void failAll(const QString &errorCode);
-    QString configuredSourceRoot() const;
+    QString configuredModuleRoot() const;
     QString configuredRegistryRoot() const;
     QString configuredPython() const;
 
@@ -65,6 +65,9 @@ private:
     QHash<QString, PendingRequest> m_pending;
     QHash<QWebEngineProfile *, QPointer<QWebEngineUrlSchemeHandler>> m_handlers;
     QString m_lastWorkerError;
+    QString m_runtimePython;
+    QString m_runtimeModuleRoot;
+    QString m_localDemoCanonical;
     int m_requestCount = 0;
     int m_responseCount = 0;
     int m_failureCount = 0;
@@ -72,6 +75,8 @@ private:
     int m_workerStopCount = 0;
     int m_dnsRequestCount = 0;
     qint64 m_workerPid = 0;
+    bool m_appLocalRuntime = false;
+    bool m_localDemoActive = false;
     bool m_ready = false;
     bool m_stopping = false;
 };
