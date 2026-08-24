@@ -321,7 +321,10 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     process->setProcessEnvironment(environment);
     process->setProgram(python);
     QStringList arguments;
-    if (appLocalRuntime) arguments.append(QStringLiteral("-I"));
+    if (appLocalRuntime) {
+        arguments.append(QStringLiteral("-I"));
+        arguments.append(QStringLiteral("-B"));
+    }
     arguments.append({QStringLiteral("-m"), QStringLiteral("granger_network.browser_gateway"),
                       QStringLiteral("--registry"), registryRoot,
                       QStringLiteral("--timeout"), QStringLiteral("10")});

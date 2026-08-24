@@ -56,6 +56,18 @@ function Remove-TemporaryDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
+function Assert-NoGeneratedPythonBytecode {
+    param([Parameter(Mandatory)][string]$PackageDirectory)
+
+    $runtimeRoot = Join-Path $PackageDirectory "runtime/python"
+    if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) { return }
+    $bytecode = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Filter "*.pyc")
+    $cacheDirectories = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -Directory -Filter "__pycache__")
+    if ($bytecode.Count -ne 0 -or $cacheDirectories.Count -ne 0) {
+        throw "App-local Granger Network runtime generated unmanifested Python bytecode."
+    }
+}
+
 function Move-DirectoryAtomically {
     param(
         [Parameter(Mandatory)][string]$Source,
@@ -175,6 +187,7 @@ try {
     if (-not $runtime.OK -or $runtime.SourceHead -ne $sourceHead) {
         throw "App-local Granger Network runtime packaging failed."
     }
+    Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
 
     $portability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `
         -PackageDirectory "release/.local-staging"
@@ -197,6 +210,7 @@ try {
     & (Join-Path $PSScriptRoot "test-release.ps1") `
         -PackageDirectory "release/.local-staging" -AllowLocalGrangerRuntime
     if ($LASTEXITCODE -ne 0) { throw "Complete staged release acceptance failed." }
+    Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
 
     $runningCanonical = @(Get-PackageProcesses -PackageDirectory $canonical)
     if ($runningCanonical.Count -ne 0) {
@@ -277,6 +291,7 @@ try {
         [bool]$i2p.outproxyConfigured) {
         throw "Canonical bundled I2P smoke failed."
     }
+    Assert-NoGeneratedPythonBytecode -PackageDirectory $canonical
 
     Start-Sleep -Milliseconds 500
     $orphanProcesses = @(Get-PackageProcesses -PackageDirectory $canonical)
