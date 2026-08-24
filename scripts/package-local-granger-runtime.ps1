@@ -224,10 +224,12 @@ $pythonStem = [IO.Path]::GetFileNameWithoutExtension([string]$runtimeInfo.python
 $oldPythonHome = $env:PYTHONHOME
 $oldPythonPath = $env:PYTHONPATH
 $oldPythonUserBase = $env:PYTHONUSERBASE
+$oldDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
 try {
     $env:PYTHONHOME = $null
     $env:PYTHONPATH = $null
     $env:PYTHONUSERBASE = $null
+    $env:PYTHONDONTWRITEBYTECODE = "1"
     $packagedPython = Join-Path $runtimeRoot "python.exe"
     $validationCode = @'
 import json
@@ -264,7 +266,7 @@ print(json.dumps({
     "pycparser": pycparser.__version__,
 }))
 '@
-    $validationText = & $packagedPython -I -c $validationCode
+    $validationText = & $packagedPython -I -B -c $validationCode
     if ($LASTEXITCODE -ne 0) { throw "Packaged Granger Network Python runtime failed validation." }
     $runtimeValidation = $validationText | ConvertFrom-Json
     if (-not [bool]$runtimeValidation.app_local -or [int]$runtimeValidation.bits -ne 64 -or
@@ -275,6 +277,16 @@ print(json.dumps({
     $env:PYTHONHOME = $oldPythonHome
     $env:PYTHONPATH = $oldPythonPath
     $env:PYTHONUSERBASE = $oldPythonUserBase
+    $env:PYTHONDONTWRITEBYTECODE = $oldDontWriteBytecode
+}
+Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force |
+    Where-Object { $_.Name -eq "__pycache__" } |
+    Sort-Object FullName -Descending |
+    Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Filter "*.pyc" | Remove-Item -Force
+if (@(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File -Filter "*.pyc").Count -ne 0 -or
+    @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -Directory -Filter "__pycache__").Count -ne 0) {
+    throw "App-local runtime contains generated Python bytecode."
 }
 
 $sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim()
