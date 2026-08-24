@@ -15,6 +15,7 @@ dependencies = [
 granger-host = "granger_network.host:main"
 granger-client = "granger_network.client:main"
 granger-rendezvous = "granger_network.rendezvous:main"
+granger-browser-gateway = "granger_network.browser_gateway:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

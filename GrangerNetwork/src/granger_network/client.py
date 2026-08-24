@@ -6,7 +6,7 @@ import binascii
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .descriptor import ServiceDescriptor
 from .discovery import DiscoveryProvider
@@ -44,11 +44,30 @@ class GrangerClient:
         self.timeout = timeout
         self.remote_transport_factory = remote_transport_factory or RendezvousClientTransport
 
-    def fetch(self, name: str, path: str = "/") -> GrangerResponse:
+    def fetch(
+        self,
+        name: str,
+        path: str = "/",
+        *,
+        method: str = "GET",
+        headers: Mapping[str, str] | None = None,
+    ) -> GrangerResponse:
         descriptor = self.resolver.resolve(name)
-        return self.fetch_descriptor(descriptor, path)
+        return self.fetch_descriptor(
+            descriptor,
+            path,
+            method=method,
+            headers=headers,
+        )
 
-    def fetch_descriptor(self, descriptor: ServiceDescriptor, path: str = "/") -> GrangerResponse:
+    def fetch_descriptor(
+        self,
+        descriptor: ServiceDescriptor,
+        path: str = "/",
+        *,
+        method: str = "GET",
+        headers: Mapping[str, str] | None = None,
+    ) -> GrangerResponse:
         descriptor.verify()
         session = None
         if descriptor.version == 1:
@@ -78,8 +97,8 @@ class GrangerClient:
             )
             channel.send_json(
                 {
-                    "headers": {"accept": "text/html,application/xhtml+xml"},
-                    "method": "GET",
+                    "headers": dict(headers or {"accept": "text/html,application/xhtml+xml"}),
+                    "method": method,
                     "path": path,
                     "type": "request",
                 }
