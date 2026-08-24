@@ -52,7 +52,7 @@ class LoopbackHttpTarget:
         try:
             parsed = urlsplit(url)
             if parsed.scheme != "http" or parsed.username or parsed.password:
-                raise UpstreamPolicyError("v0.1 service upstream must use plain HTTP on loopback")
+                raise UpstreamPolicyError("service upstream must use plain HTTP on loopback")
             if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
                 raise UpstreamPolicyError("upstream URL must not contain a path, query, or fragment")
             if parsed.hostname is None:
@@ -96,7 +96,7 @@ class LoopbackHttpBridge:
             raise UpstreamPolicyError("request method must be text")
         normalized_method = method.upper()
         if normalized_method not in {"GET", "HEAD"}:
-            raise UpstreamPolicyError("v0.1 bridge permits only GET and HEAD")
+            raise UpstreamPolicyError("service bridge permits only GET and HEAD")
         if (
             not isinstance(path, str)
             or not path.startswith("/")
@@ -146,7 +146,7 @@ class LoopbackHttpBridge:
             response.begin()
             body = response.read(MAX_HTTP_BODY + 1)
             if len(body) > MAX_HTTP_BODY:
-                raise UpstreamPolicyError("upstream response exceeds the v0.1 body limit")
+                raise UpstreamPolicyError("upstream response exceeds the protocol body limit")
             response_headers = {
                 name.lower(): value
                 for name, value in response.getheaders()

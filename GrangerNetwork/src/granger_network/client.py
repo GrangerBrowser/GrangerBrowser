@@ -6,12 +6,20 @@ import binascii
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .descriptor import ServiceDescriptor
+from .discovery import DiscoveryProvider
 from .errors import GrangerNetworkError, ProtocolError
 from .protocol import client_handshake
 from .resolver import LocalResolver
-from .transport import ClientTransport, LoopbackTcpTransport
+from .transport import (
+    ClientTransport,
+    GrangerTransport,
+    LoopbackTcpTransport,
+    RendezvousClientTransport,
+    RendezvousEndpoint,
+)
 
 
 @dataclass(frozen=True)
@@ -26,13 +34,15 @@ class GrangerResponse:
 class GrangerClient:
     def __init__(
         self,
-        resolver: LocalResolver,
+        resolver: DiscoveryProvider,
         transport: ClientTransport | None = None,
         timeout: float = 10.0,
+        remote_transport_factory: Callable[[RendezvousEndpoint], GrangerTransport] | None = None,
     ) -> None:
         self.resolver = resolver
         self.transport = transport or LoopbackTcpTransport()
         self.timeout = timeout
+        self.remote_transport_factory = remote_transport_factory or RendezvousClientTransport
 
     def fetch(self, name: str, path: str = "/") -> GrangerResponse:
         descriptor = self.resolver.resolve(name)
@@ -40,10 +50,32 @@ class GrangerClient:
 
     def fetch_descriptor(self, descriptor: ServiceDescriptor, path: str = "/") -> GrangerResponse:
         descriptor.verify()
-        connection = self.transport.connect(descriptor.endpoint, self.timeout)
+        session = None
+        if descriptor.version == 1:
+            if descriptor.endpoint is None:
+                raise ProtocolError("local descriptor has no transport endpoint")
+            connection = self.transport.connect(descriptor.endpoint, self.timeout)
+            session_id = None
+            protocol_version = 1
+        elif descriptor.version == 2:
+            if descriptor.rendezvous_id is None:
+                raise ProtocolError("remote descriptor has no rendezvous identifier")
+            endpoint = self.resolver.resolve_rendezvous(descriptor.rendezvous_id)
+            remote_transport = self.remote_transport_factory(endpoint)
+            session = remote_transport.connect(descriptor.service_id, self.timeout)
+            connection = session.connection
+            session_id = session.session_id
+            protocol_version = descriptor.protocol_version
+        else:
+            raise ProtocolError("unsupported service descriptor version")
         try:
             connection.settimeout(self.timeout)
-            channel = client_handshake(connection, descriptor.identity_public_key)
+            channel = client_handshake(
+                connection,
+                descriptor.identity_public_key,
+                session_id=session_id,
+                protocol_version=protocol_version,
+            )
             channel.send_json(
                 {
                     "headers": {"accept": "text/html,application/xhtml+xml"},
@@ -84,11 +116,14 @@ class GrangerClient:
                 canonical_service=descriptor.canonical_name,
             )
         finally:
-            connection.close()
+            if session is not None:
+                session.close()
+            else:
+                connection.close()
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Granger Network v0.1 client")
+    parser = argparse.ArgumentParser(description="Granger Network v0.2 client")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     register = subcommands.add_parser("register", help="import a signed service descriptor")
@@ -96,7 +131,7 @@ def _build_parser() -> argparse.ArgumentParser:
     register.add_argument("--descriptor", type=Path, required=True)
     register.add_argument("--alias")
 
-    fetch = subcommands.add_parser("fetch", help="fetch a page from the local .granger namespace")
+    fetch = subcommands.add_parser("fetch", help="fetch a page from the private .granger namespace")
     fetch.add_argument("name")
     fetch.add_argument("--registry", type=Path, required=True)
     fetch.add_argument("--path", default="/")

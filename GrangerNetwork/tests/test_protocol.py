@@ -5,9 +5,9 @@ import socket
 import threading
 import unittest
 
-from granger_network.errors import IdentityVerificationError, ProtocolError
+from granger_network.errors import IdentityVerificationError, ProtocolError, ReplayError
 from granger_network.identity import ServiceIdentity
-from granger_network.protocol import SecureChannel, client_handshake, server_handshake
+from granger_network.protocol import VERSION_2, SecureChannel, client_handshake, server_handshake
 
 
 class RecordingSocket:
@@ -15,6 +15,7 @@ class RecordingSocket:
         self._wrapped = wrapped
         self._wire = wire
         self.mutate_next_send = False
+        self.sent_chunks: list[bytes] = []
 
     def sendall(self, data: bytes) -> None:
         transmitted = data
@@ -23,8 +24,13 @@ class RecordingSocket:
             modified = bytearray(data)
             modified[-1] ^= 0x01
             transmitted = bytes(modified)
+        self.sent_chunks.append(transmitted)
         self._wire.extend(transmitted)
         self._wrapped.sendall(transmitted)
+
+    def replay(self, data: bytes) -> None:
+        self._wire.extend(data)
+        self._wrapped.sendall(data)
 
     def __getattr__(self, name: str):
         return getattr(self._wrapped, name)
@@ -108,6 +114,92 @@ class ProtocolTests(unittest.TestCase):
         finally:
             sockets[0].close()
             sockets[1].close()
+
+    def test_v2_session_is_bound_and_replayed_frame_is_rejected(self) -> None:
+        identity = ServiceIdentity.generate()
+        session_id = b"v0.2-session-id!"
+        left, right = socket.socketpair()
+        wire = bytearray()
+        client_socket = RecordingSocket(left, wire)
+        server_socket = RecordingSocket(right, wire)
+        result: queue.Queue[SecureChannel | BaseException] = queue.Queue()
+
+        def accept_handshake() -> None:
+            try:
+                result.put(
+                    server_handshake(
+                        server_socket,
+                        identity,
+                        expected_session_id=session_id,
+                        protocol_version=VERSION_2,
+                    )
+                )
+            except BaseException as error:
+                result.put(error)
+
+        thread = threading.Thread(target=accept_handshake, daemon=True)
+        thread.start()
+        client = client_handshake(
+            client_socket,
+            identity.public_key_bytes,
+            session_id=session_id,
+            protocol_version=VERSION_2,
+        )
+        thread.join(timeout=2.0)
+        server = result.get_nowait()
+        if isinstance(server, BaseException):
+            raise server
+        try:
+            self.assertEqual(client.session_id, session_id)
+            self.assertEqual(server.session_id, session_id)
+            client_socket.sent_chunks.clear()
+            client.send_bytes(b"single-use encrypted frame")
+            encrypted_frame = client_socket.sent_chunks[-1]
+            self.assertEqual(server.receive_bytes(), b"single-use encrypted frame")
+            client_socket.replay(encrypted_frame)
+            with self.assertRaises(ReplayError):
+                server.receive_bytes()
+        finally:
+            client_socket.close()
+            server_socket.close()
+
+    def test_v2_stale_handshake_is_rejected(self) -> None:
+        identity = ServiceIdentity.generate()
+        session_id = b"stale-session-id"
+        left, right = socket.socketpair()
+        result: queue.Queue[BaseException | None] = queue.Queue()
+
+        def accept_handshake() -> None:
+            try:
+                server_handshake(
+                    right,
+                    identity,
+                    expected_session_id=session_id,
+                    protocol_version=VERSION_2,
+                    now=1_000,
+                )
+                result.put(None)
+            except BaseException as error:
+                result.put(error)
+            finally:
+                right.close()
+
+        thread = threading.Thread(target=accept_handshake, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaises(ProtocolError):
+                client_handshake(
+                    left,
+                    identity.public_key_bytes,
+                    session_id=session_id,
+                    protocol_version=VERSION_2,
+                    now=800,
+                )
+        finally:
+            left.close()
+        thread.join(timeout=2.0)
+        server_result = result.get_nowait()
+        self.assertIsInstance(server_result, ReplayError)
 
 
 if __name__ == "__main__":

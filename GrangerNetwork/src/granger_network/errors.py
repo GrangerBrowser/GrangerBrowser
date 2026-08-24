@@ -14,6 +14,10 @@ class ResolutionError(GrangerNetworkError):
     """Raised when a local .granger mapping cannot be resolved."""
 
 
+class DiscoveryError(ResolutionError):
+    """Raised when discovery data is missing, malformed, or unsupported."""
+
+
 class TransportPolicyError(GrangerNetworkError):
     """Raised before a transport can escape the allowed private boundary."""
 
@@ -24,6 +28,14 @@ class ProtocolError(GrangerNetworkError):
 
 class IdentityVerificationError(ProtocolError):
     """Raised when the connected service does not own the expected identity."""
+
+
+class ReplayError(ProtocolError):
+    """Raised when a session, registration, or encrypted frame is replayed."""
+
+
+class RendezvousError(GrangerNetworkError):
+    """Raised when a rendezvous session cannot be established safely."""
 
 
 class UpstreamPolicyError(GrangerNetworkError):
