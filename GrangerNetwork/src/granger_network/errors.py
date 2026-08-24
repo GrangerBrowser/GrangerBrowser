@@ -38,5 +38,13 @@ class RendezvousError(GrangerNetworkError):
     """Raised when a rendezvous session cannot be established safely."""
 
 
+class OverlayRoutingError(GrangerNetworkError):
+    """Raised when a distributed overlay route cannot be built safely."""
+
+
+class ResourceLimitError(OverlayRoutingError):
+    """Raised when an opt-in node's configured relay limit is exhausted."""
+
+
 class UpstreamPolicyError(GrangerNetworkError):
     """Raised when a service host upstream is not a numeric loopback endpoint."""

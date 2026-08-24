@@ -2,12 +2,12 @@
 
 ## Status
 
-This document describes experimental service descriptor version 2,
-rendezvous control version 1, and Granger wire protocol version 3. These are
-not stable public standards and have not received an independent security
-review. Implementations reject unknown versions, extra descriptor fields,
-duplicate JSON keys, invalid encodings, unsupported suites, and invalid
-negotiated parameters.
+This document describes experimental service descriptor version 2, node,
+alias, and introduction record version 1, rendezvous control version 1, and
+Granger wire protocol version 3. These are not stable public standards and have
+not received an independent security review. Implementations reject unknown
+versions, extra fields, duplicate JSON keys, invalid encodings, unsupported
+suites, and invalid negotiated parameters.
 
 All multi-byte wire integers are unsigned and use network byte order. JSON
 signatures cover canonical UTF-8 JSON with sorted keys and no insignificant
@@ -54,6 +54,134 @@ compatibility with descriptors created by the previous prototype.
 
 Descriptor version 1 remains available for the numeric-loopback compatibility
 transport and uses its original signature domain and schema.
+
+The distributed prototype reuses this exact descriptor and does not reinterpret
+it as an IP address. Its legacy rendezvous fields are ignored by
+`DistributedResolver`; a separately signed introduction record selects
+overlay reachability. No wire or lower-version fallback follows a failed
+distributed route.
+
+## Node descriptor v1
+
+A Granger node has a separate Ed25519 identity and a public-key-derived node ID.
+Its strict signed record is:
+
+```json
+{
+  "capabilities": ["discovery", "middle"],
+  "endpoint": {"host": "203.0.113.20", "port": 24020, "type": "tcp"},
+  "expiresAt": 1700003600,
+  "identityKey": "base64url Ed25519 public key",
+  "issuedAt": 1700000000,
+  "nodeId": "52-character lower-case Base32 identifier",
+  "relayPolicy": {
+    "enabled": true,
+    "maxBandwidthKiBPerSecond": 1024,
+    "maxBytesPerCircuit": 67108864,
+    "maxCircuits": 32
+  },
+  "signature": "base64url Ed25519 signature",
+  "version": 1
+}
+```
+
+The signature domain is:
+
+```text
+granger-network-v0.3/node-descriptor NUL
+```
+
+The lifetime is at most 24 hours. Capabilities are sorted, unique, and limited
+to `discovery`, `entry`, `middle`, `introduction`, and `service-relay`.
+Forwarding capabilities are invalid unless `relayPolicy.enabled` is true. The
+numeric endpoint identifies the volunteer node, never a service host.
+
+## Alias record v1
+
+An alias record maps a normalized non-canonical `.granger` label to a service
+identity:
+
+```json
+{
+  "alias": "forum.granger",
+  "expiresAt": 1700003600,
+  "identityKey": "base64url service Ed25519 public key",
+  "issuedAt": 1700000000,
+  "sequence": 7,
+  "serviceId": "canonical service identifier",
+  "signature": "base64url Ed25519 signature",
+  "version": 1
+}
+```
+
+The signature domain is:
+
+```text
+granger-network-v0.3/alias-record NUL
+```
+
+The maximum lifetime is 24 hours. Because any identity can self-sign a claim
+for an uncoordinated human-readable label, resolution additionally requires a
+local alias-to-service ID pin. The signed record must match that pin exactly.
+
+## Introduction descriptor v1
+
+The service identity signs a descriptor containing the digest of the exact
+service descriptor and one or more introduction points:
+
+```json
+{
+  "expiresAt": 1700000900,
+  "identityKey": "base64url service Ed25519 public key",
+  "issuedAt": 1700000000,
+  "points": [
+    {
+      "nodeId": "52-character introduction node identifier",
+      "token": "base64url 32-byte random token"
+    }
+  ],
+  "sequence": 7,
+  "serviceDescriptorDigest": "base64url SHA-256 digest",
+  "serviceId": "canonical service identifier",
+  "signature": "base64url Ed25519 signature",
+  "version": 1
+}
+```
+
+The signature domain is:
+
+```text
+granger-network-v0.3/introduction-descriptor NUL
+```
+
+At most eight distinct introduction points are accepted and the record lifetime
+is at most 30 minutes. The service ID, public key, descriptor digest, node ID,
+token, sequence, and validity window are signed. An introduction request also
+uses a fresh 16-byte nonce; a node rejects reuse under the current descriptor.
+
+## Distributed record store
+
+The DHT-like layer supports four record kinds: `node`, `service`,
+`introduction`, and `alias`. A local record envelope carries:
+
+```text
+kind | storage key | sequence | expiry | canonical signed JSON payload
+```
+
+The maximum payload is 64 KiB. Node and service descriptor issue times act as
+their record sequence; alias and introduction records carry explicit unsigned
+64-bit sequences. The storage key must match the identity-bound key parsed from
+the payload.
+
+A domain-separated SHA-256 digest of `kind || NUL || key` is the routing key.
+Records are placed at signed discovery node IDs nearest by XOR distance. The
+prototype defaults to three replicas and requires at least two valid peers for
+publication. Lookup verifies each candidate independently, selects the highest
+valid sequence, rejects same-sequence equivocation, and keeps a local
+high-water mark to detect rollback.
+
+This specifies local record semantics only. No peer RPC, iterative Kademlia
+lookup, bucket protocol, or bootstrap wire format exists in v0.3.
 
 ## Rendezvous control
 
@@ -319,20 +447,44 @@ by a global transparency log or monotonic version store; short descriptor
 lifetimes and service-side version agreement limit, but do not eliminate, that
 rollback class.
 
-## Multi-hop compatibility
+## Multi-hop composition
 
-Wire 3 provides a session abstraction suitable for one authenticated channel
-per future hop. A future multi-hop route must run an independent handshake for
-every adjacent peer with a unique session ID, fresh X25519 and ML-KEM material,
-separate transcript, and separate traffic keys. Keys, nonces, counters, ratchet
-state, Finished values, and exporter material must never be copied across hops.
+The v0.3 source prototype composes existing wire 3 sessions; it does not define
+wire 4 or modify wire 3 cryptography. Route construction requires five distinct
+signed nodes with entry, middle, introduction, middle, and service-relay roles.
+The introduction must be named in the current service-signed introduction
+descriptor.
 
-No multi-hop routing, onion encryption, relay identity system, or route
-construction protocol is implemented by this change.
+Each physical adjacent stream first runs a wire 3 handshake authenticated to
+the receiving node identity. Inner wire 3 handshakes telescope through those
+streams to the next selected node. The client and host paths are joined only at
+the introduction. A final wire 3 handshake authenticates the service identity
+end to end.
+
+The modeled route creates eleven independent bindings:
+
+- six authenticated physical-link sessions;
+- four telescoped sessions extending the two paths;
+- one end-to-end service session.
+
+Every binding has a unique random session ID, fresh X25519 and ML-KEM material,
+separate transcript, directional keys, Finished values, counters, nonce spaces,
+ratchets, and lifetime. Keys and exporter material are never copied between
+hops.
+
+Forwarding nodes account bytes against a signed per-circuit and aggregate
+one-second bandwidth quota. Circuit counts are reserved before any application
+data and released on close or failed construction. A missing node, exceeded
+quota, failed handshake, closed stream, or invalid introduction terminates the
+route. There is no attempt to use the legacy rendezvous, DNS, direct TCP to the
+service, or a lower protocol version.
+
+The implementation currently uses in-process socket pairs. It has no WAN relay
+cell format, multiplexing, congestion control, listener, or peer RPC.
 
 ## Metadata and security limits
 
-Encryption does not hide:
+The compatibility rendezvous path does not hide:
 
 - transport endpoints and connection timing;
 - the fixed, recognizable wire 3 handshake sizes;
@@ -340,11 +492,24 @@ Encryption does not hide:
 - frame kind, ciphertext length, sequence, epoch, direction, count, and timing;
 - total session duration and failure patterns.
 
+The distributed path separates endpoint knowledge, but it still exposes each
+adjacent connection, timing, sizes, duration, failure behavior, and recognizable
+wire 3 handshakes. The entry sees the client address, the service relay sees the
+host address, and the introduction sees both middle nodes and the end-to-end
+service handshake. Colluding positions and a global observer can correlate the
+two paths.
+
 Wire 3 deliberately does not enable padding, uniform frame sizes, timing
-normalization, cover traffic, or artificial latency. Those mechanisms require
-separate traffic-analysis design and performance testing. The protocol does not
-authenticate clients or relays, hide the service identity from the relay,
-support resumption or multiplexing, or provide a formal security proof.
+normalization, batching, cover traffic, or artificial latency. A local
+20-circuit benchmark averaged about 25.7 ms to establish eleven sessions and
+transferred a 1 MiB test payload at about 25.5 MiB/s. These in-process numbers
+are only a baseline: padding and cover traffic remain disabled until their WAN
+latency, CPU, memory, bandwidth, distinguishability, and denial-of-service costs
+are measured.
+
+The protocol does not authenticate clients, solve Sybil-resistant bootstrap,
+hide metadata from colluding relays, support resumption or multiplexing, or
+provide a formal security proof.
 
 ## Standards references
 
@@ -359,3 +524,9 @@ support resumption or multiplexing, or provide a formal security proof.
 - [RFC 10024](https://datatracker.ietf.org/doc/html/rfc10024), X25519MLKEM768
   key agreement for TLS 1.3.
 - [Python cryptography ML-KEM API](https://cryptography.io/en/latest/hazmat/primitives/asymmetric/mlkem/).
+- [Tor Onion Service protocol overview](https://spec.torproject.org/rend-spec/protocol-overview.html),
+  architectural reference for introduction and rendezvous separation.
+- [I2P network database](https://i2p.net/en/docs/overview/network-database/),
+  architectural reference for signed, expiring distributed records.
+- [Kademlia paper](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia.pdf),
+  architectural reference for XOR-distance placement.

@@ -1,17 +1,16 @@
-# Granger Network v0.2
+# Granger Network v0.3
 
-Granger Network is a standalone experimental private namespace and overlay
-protocol prototype. A canonical `.granger` address is derived from an Ed25519
-service identity. The client and service host each connect out to a rendezvous
-and never connect to one another directly. New remote descriptors use wire 3,
-which hardens the authenticated handshake, key lifecycle, and encrypted frame
-format without changing discovery or routing behavior.
+Granger Network is a standalone experimental private namespace and privacy-
+overlay prototype. A canonical `.granger` address is derived from an Ed25519
+service identity. v0.3 adds signed peer identities, replicated DHT-like record
+discovery, service introduction points, and a local multi-hop transport
+simulation. The earlier rendezvous path remains for browser compatibility.
 
 The current source tree includes a local development integration with Granger
 Browser. It is not included in a public installer or release, is not a public
-network, and does not provide anonymity. A rendezvous can observe both peers'
-network addresses and traffic metadata even though it cannot read authenticated
-application messages.
+network, and does not provide anonymity. The distributed path is not yet wired
+to the browser. Its source tests establish endpoint-separation and fail-closed
+invariants over local socket pairs, not WAN anonymity.
 
 ## Components
 
@@ -25,6 +24,14 @@ application messages.
   session provides `send`, `receive`, and `close` operations.
 - `LocalResolver`: a file-backed experimental discovery provider that never
   delegates `.granger` names to DNS.
+- `GrangerNode`: an explicitly enabled, signed, resource-limited peer runtime.
+- `DistributedDiscoveryNetwork`: a bounded replicated signed-record store
+  using XOR-distance placement.
+- `DistributedResolver`: resolves canonical identities, pinned aliases, node
+  descriptors, and service introduction points without DNS.
+- `OverlayRoutePlanner` and `MultiHopCircuit`: build distinct entry, middle,
+  introduction, host-middle, and service-relay paths from independent wire 3
+  sessions.
 - `granger-browser-gateway`: a browser-owned stdio adapter that accepts only
   bounded `.granger` GET/HEAD requests and invokes the existing resolver and
   client. It has no listening socket or general-purpose proxy interface.
@@ -49,7 +56,7 @@ python -m pip install -e .
 
 On Linux or macOS, activate the environment with `source .venv/bin/activate`.
 
-## Remote prototype
+## Rendezvous compatibility prototype
 
 The following local three-terminal example uses separate processes. The relay
 address is transport bootstrap data, not a service address. `test.granger` is a
@@ -93,9 +100,9 @@ granger-client fetch test.granger `
 
 For experiments on separate machines, configure the same numeric rendezvous
 endpoint on host and client and transfer the signed descriptor through an
-authenticated out-of-band channel. v0.2 has no distributed discovery service.
-The service host still exposes no HTTP listener and requires no direct client
-route or port forwarding.
+authenticated out-of-band channel. The service host still exposes no HTTP
+listener and requires no direct client route or port forwarding. This CLI path
+does not exercise the v0.3 distributed transport.
 
 ## Local compatibility demo
 
@@ -114,7 +121,9 @@ $env:PYTHONPATH=(Resolve-Path src)
 py -3 -m unittest discover -s tests -v
 ```
 
-The suite includes a real three-process host/relay/client case, descriptor
+The suite includes a real three-process host/relay/client compatibility case,
+distributed signed-record replication, pinned aliases, introduction points,
+multi-hop construction, relay resource limits, descriptor
 tampering and expiry checks, authenticated-suite downgrade attempts, handshake
 tampering, identity substitution, key separation and rekeying, stale-session,
 replay, out-of-order, oversized, modified-frame, and nonce-exhaustion checks,
@@ -137,6 +146,8 @@ python GrangerNetwork/tests/browser_acceptance_harness.py `
 
 The harness creates two identity-bound services behind a rendezvous and opens
 them through the real browser. It does not represent an independent WAN test.
+It verifies compatibility only; the distributed transport is not integrated
+with Qt WebEngine in v0.3.
 
 ## Cryptographic benchmark
 
@@ -153,6 +164,20 @@ frame throughput. It is a local engineering comparison, not a cross-platform
 performance guarantee. See [Cryptographic benchmark](docs/CryptographicBenchmark.md)
 for the recorded environment, method, and interpretation.
 
+## Distributed overlay benchmark
+
+Run the local multi-hop setup and throughput baseline with:
+
+```powershell
+$env:PYTHONPATH=(Resolve-Path src)
+python benchmarks/overlay_benchmark.py
+```
+
+The benchmark reports eleven independent wire 3 bindings, circuit setup
+latency, payload throughput, and the relay plaintext-marker check. It also
+records that padding, uniform frames, batching, and cover traffic are disabled.
+See [Distributed overlay benchmark](docs/DistributedOverlayBenchmark.md).
+
 ## Documents
 
 - [Architecture](docs/Architecture.md)
@@ -161,21 +186,25 @@ for the recorded environment, method, and interpretation.
 - [Address format](docs/AddressFormat.md)
 - [Browser integration](docs/BrowserIntegration.md)
 - [Cryptographic benchmark](docs/CryptographicBenchmark.md)
+- [Distributed overlay benchmark](docs/DistributedOverlayBenchmark.md)
 
 ## Prototype limits
 
-- The discovery registry and rendezvous bootstrap are configured locally.
-- The relay learns client and host network addresses, service and session IDs,
-  connection timing, duration, and byte counts.
-- There is one relay hop, no onion routing, relay federation, path selection,
-  padding, cover traffic, or traffic-correlation resistance.
-- Traffic keys rotate within wire 3 sessions, but relay authentication, client
-  authentication, authorization, long-term identity rotation and revocation,
-  persistence, multiplexing, and denial-of-service controls are not complete.
+- Distributed discovery and multi-hop routing are in-process simulations with
+  no WAN peer RPC, persistence, authenticated bootstrap, or listener.
+- Distinct relay identities are enforced, but operator and network diversity,
+  Sybil resistance, churn, revocation, and availability are unsolved.
+- A single modeled relay does not see both endpoint addresses or application
+  plaintext. Colluding relays and global observers can correlate timing and
+  sizes.
+- There is no padding, cover traffic, batching, congestion control,
+  multiplexing, or traffic-correlation resistance.
+- Relay authentication, client authentication, authorization, long-term
+  identity rotation, and denial-of-service controls are incomplete.
 - Browser integration is source-only development functionality and has not been
   added to a public installer, AppImage, or release archive.
 - Qt WebEngine 6.11.2 exposes separate localStorage and IndexedDB origins and
   supports service workers for the registered scheme. Its cookie and Cache APIs
   are unavailable for this custom scheme in the tested Windows build.
-- Local aliases rely on local registry integrity; canonical addresses remain
+- Distributed aliases require a local identity pin; canonical addresses remain
   self-authenticating.

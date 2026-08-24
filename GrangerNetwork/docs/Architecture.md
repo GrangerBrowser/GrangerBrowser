@@ -2,217 +2,245 @@
 
 ## Scope
 
-Granger Network is a transport-independent experimental private namespace and
-overlay module. The current source tree also contains a local Granger Browser
-adapter. This cryptographic update changes only Granger Network. It does not
-modify Qt WebEngine, Tor, I2P, browser routing, or their fail-closed behavior.
+Granger Network v0.3 is a transport-independent experimental private namespace
+and privacy-overlay prototype. This iteration adds distributed discovery,
+service introduction points, signed peer identities, and a local multi-hop
+transport simulation. It changes only `GrangerNetwork`; Qt WebEngine, browser
+routing, Tor, I2P, installers, and public packages are unchanged.
 
-The current remote path is:
+The existing single-rendezvous implementation remains as a compatibility path
+for the browser adapter and earlier tests. The new experimental path is:
 
 ```text
-numeric-loopback HTTP application
-              |
-      granger-host (service identity)
-              |
-       outbound TCP connection
-              |
-        rendezvous relay
-              |
-       outbound TCP connection
-              |
-        granger-client
+client
+  |
+entry node
+  |
+client middle
+  |
+introduction / rendezvous
+  |
+host middle
+  |
+service relay
+  |
+service host -> numeric-loopback application
 ```
 
-The relay forwards an end-to-end Granger wire stream. It does not terminate the
-authenticated secure channel between the client and service host.
+The client and host construct their sides independently. No route contains a
+direct client-to-host edge, and the service address never contains an IP
+address. This source implementation is an in-process protocol simulation over
+socket pairs, not a deployed WAN, production DHT, or anonymity claim.
 
 ## Layers
 
-The implementation keeps six responsibilities separate:
+The implementation keeps these responsibilities separate:
 
-1. identity and canonical address derivation;
-2. signed service descriptors and local alias resolution;
-3. rendezvous bootstrap and pairing;
-4. transport sessions that expose an opaque byte stream;
-5. authenticated wire handshakes and encrypted frames;
-6. the bounded application bridge and browser adapter.
+1. Ed25519 service and node identities;
+2. canonical `.granger` address derivation;
+3. signed service, peer, alias, and introduction records;
+4. bounded XOR-nearest record replication and lookup;
+5. route planning from independently advertised capabilities;
+6. telescoped, independently authenticated wire 3 sessions;
+7. an end-to-end service-authenticated wire 3 channel;
+8. the bounded HTTP application bridge;
+9. the unchanged browser compatibility adapter.
 
-Cryptographic channels do not discover destinations, resolve DNS names, choose
-alternate transports, or create direct client-to-host connections.
+Discovery cannot resolve through DNS. Route construction cannot ask the
+compatibility resolver for a single rendezvous and cannot create a direct host
+connection after an overlay failure.
 
-## Identity and address
+## Service identity and names
 
 `ServiceIdentity` owns an Ed25519 private key. The canonical service identifier
-is a domain-separated SHA-256 digest of the raw public key, encoded as lower-case
-Base32. IP addresses are not service identities.
+is a domain-separated SHA-256 digest of its public key, encoded as 52 lower-case
+Base32 characters. The canonical name is therefore self-authenticating:
 
-A local alias such as `test.granger` maps to a canonical identity address. It is
-a convenience label, not a globally registered or self-authenticating name.
+```text
+<service-id>.granger
+```
 
-## Descriptor v2
+A human alias such as `forum.granger` is a signed mapping to the same service
+identity, but a self-signature alone cannot establish global ownership of a
+human-readable label. `DistributedResolver` therefore also requires a local
+alias-to-service identity pin. A valid signature cannot override that pin.
 
-A v2 `ServiceDescriptor` contains:
+## Service descriptor compatibility
 
-- descriptor and exact Granger wire versions;
-- canonical service ID and Ed25519 public key;
-- supported transport identifiers;
-- a logical rendezvous ID;
-- issue and expiry times;
-- bounded display metadata;
-- an Ed25519 signature over the canonical document.
+The distributed prototype reuses the exact signed v2 remote
+`ServiceDescriptor` and wire 3 identity contract. It adds no service endpoint.
+The legacy `rendezvousId` and `transports` fields remain in that descriptor for
+schema and browser compatibility, but `DistributedResolver` does not consume
+them and deliberately rejects `resolve_rendezvous()`. A matching signed
+`IntroductionDescriptor` is authoritative for overlay reachability.
 
-It deliberately contains no host address, host port, relay address, HTTP URL,
-or operator metadata. Verification checks key/address binding, signature, exact
-schema, supported versions and transports, clock bounds, expiry, lifetime, and
-metadata limits.
+An explicit distributed transport field will require a reviewed descriptor
+revision before a real network deployment. Treating legacy rendezvous bootstrap
+as an overlay fallback is forbidden.
 
-New remote descriptors select wire 3. Signed wire 2 descriptors remain readable
-for explicit compatibility; there is no automatic version fallback. Descriptor
-version 1 remains restricted to the numeric-loopback compatibility profile.
+## Peer model
 
-## Discovery layer
+Each `GrangerNode` has an independent Ed25519 identity. Its signed, short-lived
+`NodeDescriptor` contains:
 
-`DiscoveryProvider` has two independent responsibilities:
+- a public-key-derived node ID;
+- a numeric node endpoint used only as a routing hint;
+- sorted capabilities: discovery, entry, middle, introduction, or service relay;
+- an explicit relay opt-in flag;
+- maximum concurrent circuits, bytes per circuit, and aggregate KiB/s;
+- issue and expiry times.
 
-1. resolve a `.granger` name to a signed descriptor;
-2. resolve a descriptor's logical rendezvous ID to transport bootstrap data.
+Advertising any forwarding role requires explicit opt-in. The runtime enforces
+the circuit, byte, and one-second bandwidth quotas under a lock. Exhaustion
+fails the affected circuit. Merely running Granger Browser does not enable relay
+participation, and this iteration does not connect the peer model to browser
+settings.
 
-`LocalResolver` stores descriptors, local aliases, and rendezvous bootstrap
-entries in separate files. It accepts only `.granger` names, never invokes DNS,
-and has no alternate network lookup.
+## Distributed discovery
 
-Separating discovery interfaces permits a future discovery mechanism without
-changing identity verification or the encrypted protocol. No distributed
-discovery system is implemented now.
+`DistributedDiscoveryNetwork` is a bounded DHT-like record layer for local
+experiments. It computes a domain-separated SHA-256 routing key and stores each
+record at the nearest signed discovery node IDs by XOR distance. The default
+policy writes three replicas and requires at least two valid peers.
 
-## Transport and rendezvous
+Only these records are accepted:
 
-`GrangerTransport.connect(destination_id)` accepts only a canonical
-cryptographic service ID. It returns a `TransportSession` with a 128-bit session
-ID and `send`, `receive`, and `close` operations.
+- signed node descriptors and numeric node routing hints;
+- signed service identity descriptors with no service endpoint;
+- signed short-lived introduction descriptors;
+- signed alias records.
 
-`RendezvousClientTransport` connects only to a separately configured numeric
-relay endpoint. `RendezvousHostTransport` also creates an outbound relay
-connection. No remote descriptor carries a service endpoint, and no client code
-has a destination from which it could construct a direct host connection.
+Records are limited to 64 KiB and peer stores to 4,096 entries. Strict schemas,
+signatures, expiry, identity binding, storage keys, sequence high-water marks,
+and same-sequence equivocation are checked at publication and lookup. A corrupt
+replica is ignored; it cannot forge another identity's valid record.
 
-The service registers its identity with a fresh signed nonce. The client sends
-the canonical destination and a fresh session ID. The relay verifies
-registration identity and replay state, pairs waiting connections, then forwards
-bytes without parsing the end-to-end protocol. Both peers expose their network
-addresses to the relay but not to one another.
+This is not a complete Kademlia implementation. Peer RPC, iterative lookup,
+bucket maintenance, churn, persistence, authenticated bootstrap, Sybil
+resistance, diversity constraints, and WAN replication are not implemented.
+Consequently the prototype demonstrates record semantics and trust boundaries,
+not distributed availability on the Internet.
+
+## Introduction points
+
+The host publishes a signed `IntroductionDescriptor` bound to the exact service
+descriptor digest. It contains one or more introduction node IDs, random
+32-byte authorization tokens, a monotonic sequence, and a maximum 30-minute
+lifetime. It contains no service endpoint or host IP.
+
+An introduction node accepts a request only when the service identity,
+introduction node ID, token, descriptor binding, and fresh 16-byte request nonce
+match installed state. Replayed request nonces, stale sequences, same-sequence
+equivocation, mismatched service identities, and expired records fail closed.
+
+The token is currently present in the discoverable signed record. It limits
+accidental or stale introductions but is not client authorization and does not
+prevent a reader from attempting denial of service. Private introduction
+credentials and rate-limited admission remain future work.
+
+## Multi-hop transport
+
+`OverlayRoutePlanner` selects five distinct, currently valid node identities:
+
+- client entry;
+- client middle;
+- service-authorized introduction;
+- host middle;
+- service relay.
+
+Each role must be advertised in a verified node descriptor. Missing roles,
+duplicate node identities, invalid introduction state, or unavailable runtimes
+terminate route construction without trying another transport.
+
+`MultiHopCircuit` models telescoping. Physical adjacent links first establish
+wire 3 sessions. Inner wire 3 handshakes are then carried through those secure
+streams to the next node. The client and host sides meet at the introduction
+node, where a final service-authenticated wire 3 session is established end to
+end. The current topology creates eleven unique channel bindings: ten hop or
+telescoping sessions plus one end-to-end service session.
+
+Every session has a fresh session ID, X25519 and ML-KEM-768 exchange, transcript,
+nonces, directional keys, counters, ratchets, and lifetime. No key, exporter,
+nonce space, or ratchet is copied between hops. Relays forward the ciphertext
+of deeper layers and never receive the application channel keys.
+
+This implementation validates the composition over local socket pairs. It does
+not yet define relay cells, congestion control, stream multiplexing, network
+listeners, NAT traversal, peer RPC, or production path selection.
 
 ## Wire 3 secure channel
 
-Wire 3 authenticates a full transcript containing:
+Wire 3 itself is unchanged. It authenticates a transcript containing the exact
+protocol and suite selection, session ID, freshness timestamp, ephemeral
+X25519 and ML-KEM-768 material, service or node Ed25519 identity, random nonces,
+frame limit, rekey interval, and session lifetime.
 
-- protocol version and suite offer;
-- rendezvous session ID and freshness timestamp;
-- ephemeral X25519 and ML-KEM-768 material;
-- service Ed25519 identity;
-- client and server random nonces;
-- selected frame limit, rekey interval, and session lifetime.
+Hybrid shared secrets feed transcript-bound HKDF-SHA256. HMAC-SHA256 Finished
+messages confirm key possession. ChaCha20-Poly1305 protects independently
+derived control and data keys in each direction. Sequence, kind, epoch, size,
+direction, suite, session, and channel binding are authenticated. Traffic keys
+ratchet and the session expires after its negotiated lifetime.
 
-The service signs the transcript with the descriptor identity. Hybrid
-ML-KEM-768 and X25519 shared secrets feed a transcript-bound HKDF-SHA256 key
-schedule. Client and server HMAC Finished messages confirm that both sides
-derived the same secrets before application data is sent.
+## Visibility by role
 
-The schedule derives independent secrets for:
+- The client knows the service identity, signed records, selected entry, its
+  request and response, and local timing. It has no host endpoint.
+- The host knows the service identity, selected service relay, application
+  plaintext, and local timing. It has no client endpoint.
+- The entry sees the client network address and the next relay. Deeper route and
+  application bytes are encrypted.
+- A middle sees only its adjacent overlay nodes and encrypted bytes.
+- The service relay sees the host network address and host middle, not the
+  client.
+- The introduction sees the two adjacent middle nodes, introduction token use,
+  end-to-end service handshake metadata, sizes, and timing. It does not see
+  either endpoint address in the modeled topology.
+- Discovery replicas see signed public records and lookup timing. They do not
+  receive a service or client IP from those records.
 
-- client-to-service data;
-- service-to-client data;
-- client-to-service control;
-- service-to-client control;
-- client and server Finished confirmation;
-- a reserved exporter.
+A single modeled relay does not see both endpoint addresses and relay captures
+do not contain test application markers. Colluding relays, an ISP observing
+both ends, or a global passive observer may still correlate timing and sizes.
 
-ChaCha20-Poly1305 frames authenticate the suite, session, channel binding,
-direction, kind, flags, key epoch, ciphertext size, and exact sequence number.
-Control and data use separate ratchets while sharing one strict sequence space
-per direction.
+## Metadata protection and performance
 
-## Key lifecycle
+No padding, uniform frame sizing, batching, cover traffic, traffic shaping, or
+artificial delay is enabled. These features can consume substantial bandwidth,
+increase latency, create recognizable schedules, and amplify denial of service.
 
-Every wire 3 connection generates fresh X25519 and ML-KEM material and fresh
-nonces. Long-term Ed25519 identity keys authenticate but do not enter the shared
-secret. Compromise of an identity key alone therefore does not reconstruct old
-session keys.
+The local benchmark performs eleven hybrid wire 3 sessions per route. On the
+recorded Windows development environment, 20 route setups averaged about
+25.7 ms and a 1 MiB, 64-frame transfer reached about 25.5 MiB/s. This is an
+in-process best case, not a WAN estimate. The result supports keeping metadata
+defenses disabled until packet distributions, route latency, CPU, memory, and
+bandwidth overhead are measured on independent nodes.
 
-Traffic keys rotate after the negotiated number of frames, `2^20` by default.
-Each purpose and direction has a one-way HKDF ratchet. The implementation drops
-the previous ratchet state on a best-effort basis. Sessions expire after 15
-minutes by default and at most one hour, forcing a new authenticated handshake.
+## Browser compatibility
 
-This lifecycle provides forward-secret session establishment and backward
-protection for ratchet epochs subject to endpoint memory handling. It does not
-provide post-compromise security: compromise of live endpoint state can expose
-the current epoch and allow derivation of later epochs until a new handshake.
-
-## Multi-hop readiness
-
-The channel abstraction can be instantiated independently for adjacent peers in
-a future route:
-
-```text
-client <=> relay A <=> relay B <=> host
-```
-
-Each arrow must have a unique session ID, fresh hybrid handshake, independent
-identity decision, counters, nonces, keys, ratchets, and lifetime. A single
-end-to-end or hop key must never be copied along the chain. The reserved
-exporter is not a substitute for independent hop handshakes.
-
-This is structural readiness only. Multi-hop route construction, onion
-encryption, relay identities, path selection, and route failure handling are
-not implemented.
-
-## Service bridge
-
-The service host is the only process that can reach the local application. Its
-`LoopbackHttpBridge` permits only numeric-loopback HTTP, GET/HEAD, safe
-origin-form paths, bounded bodies, and selected headers. It never opens a public
-HTTP listener.
-
-Wire 3 sends response metadata in a control frame and the exact response body
-in a data frame. This avoids Base64 expansion and enforces the control/data key
-boundary.
-
-## Data visibility
-
-The client knows the signed descriptor, service identity, configured relay,
-request, response, and its own timing. It sees the relay as its network peer,
-not the service host.
-
-The host knows its identity, relay, decrypted request, and local application
-response. It sees the relay as its network peer, not the client.
-
-The relay knows both peers' source network addresses, service ID, host public
-key, registration nonce, session ID, timestamps, connection timing and
-duration, handshake version, frame kinds, frame sizes, sequence and epoch
-values, direction, and failure patterns. It cannot decrypt valid application
-frames or authenticate as the service under the current assumptions.
-
-The local discovery store knows descriptors, aliases, and relay bootstrap data
-installed by that user. It performs no network query.
-
-No padding, uniform frame sizing, timing normalization, cover traffic, or
-artificial delay is enabled. Those are future traffic-analysis work, not
-properties of the current cryptographic channel.
-
-## Browser adapter
-
-Qt WebEngine receives each service as a host-based custom URL origin. A
-browser-owned child process connects the C++ scheme handler to `LocalResolver`
-and `GrangerClient` over anonymous stdin/stdout pipes. It opens no IPC listener,
-accepts no arbitrary URL or host, and is terminated with the browser. See
-`BrowserIntegration.md` for URL, origin, and cross-network policy details.
+The existing Qt WebEngine adapter still uses `LocalResolver` and the established
+rendezvous transport. It is intentionally not wired to the distributed
+prototype. Browser acceptance therefore checks that HTML, CSS, JavaScript,
+resources, origin isolation, and cross-network blocking did not regress; it
+does not claim that the browser is already using the distributed route.
 
 ## Failure behavior
 
-Malformed names, unknown descriptors, invalid signatures, expired descriptors,
-missing relay bootstrap, unsupported transports or suites, failed pairing,
-mismatched identities, stale or modified handshakes, failed key confirmation,
-expired sessions, and invalid or replayed frames terminate the request and
-poison the affected secure channel. There is no DNS, direct-host, clearnet HTTP,
-lower-version retry, or alternate transport fallback.
+Malformed names, missing identity pins, invalid or expired records, insufficient
+replicas, descriptor rollback or equivocation, unavailable or repeated route
+nodes, failed introduction authorization, resource exhaustion, failed hop
+handshakes, mismatched identities, failed Finished confirmation, invalid frames,
+and closed relay streams terminate the request and release node quotas.
+
+There is no DNS, direct client-host, clearnet HTTP, single-rendezvous, lower-wire
+version, or alternate-transport fallback from the distributed overlay.
+
+## Architectural references
+
+The design uses concepts, not source code, from:
+
+- [Tor Onion Service protocol overview](https://spec.torproject.org/rend-spec/protocol-overview.html):
+  separate introduction and rendezvous roles and independently built paths;
+- [I2P network database](https://i2p.net/en/docs/overview/network-database/):
+  signed, expiring descriptors replicated near cryptographic keys;
+- [Kademlia paper](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia.pdf):
+  XOR-distance record placement.

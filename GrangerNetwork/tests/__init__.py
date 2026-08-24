@@ -1,1 +1,1 @@
-"""Granger Network v0.2 tests."""
+"""Granger Network v0.3 tests."""

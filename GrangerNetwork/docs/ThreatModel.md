@@ -1,234 +1,280 @@
 # Threat Model
 
+## Scope
+
+This model covers the Granger Network v0.3 distributed-discovery and multi-hop
+source prototype, plus the unchanged wire 3 secure channel. The multi-hop
+implementation runs over local socket pairs and synthetic documentation
+addresses. Its tests establish software invariants; they do not prove anonymity
+on a real WAN or resistance to a global passive adversary.
+
 ## Security goals
 
-- Bind a canonical `.granger` address to an Ed25519 service identity.
-- Detect modified, expired, substituted, or incorrectly signed descriptors.
-- Keep service network locations out of addresses and descriptors.
-- Prevent direct client-to-host, DNS, clearnet, and alternate-route fallback.
-- Authenticate the host and handshake parameters before application traffic.
-- Encrypt and authenticate control and data independently across the relay.
-- Combine ephemeral X25519 and ML-KEM-768 for wire 3 session establishment.
-- Reject downgrade attempts, stale handshakes, replayed rendezvous tokens,
-  replayed frames, malformed frames, nonce exhaustion, and expired sessions.
-- Rotate traffic keys without retaining usable old-epoch state.
+- Bind canonical `.granger` addresses to Ed25519 service identities.
+- Bind node IDs, capabilities, endpoints, expiry, and limits to signed Ed25519
+  node identities.
+- Keep the service host IP out of service, alias, and introduction records.
+- Require a local identity pin before accepting a human-readable alias.
+- Detect modified, expired, substituted, replayed, rolled-back, or equivocal
+  signed records.
+- Prevent one modeled relay from seeing both client and host endpoint addresses.
+- Prevent relays from reading authenticated application plaintext.
+- Give every hop and telescoped layer independent wire 3 session material.
+- Prevent DNS, direct client-host, clearnet, legacy-rendezvous, alternate-route,
+  and lower-version fallback after a distributed-route failure.
+- Enforce voluntary relay participation and bounded circuit, byte, and
+  bandwidth use.
 
-These are identity, confidentiality, integrity, and routing-architecture goals.
-They are not anonymity or unlinkability claims.
+These are identity, confidentiality, integrity, endpoint-separation, and
+fail-closed goals. They are not anonymity, unlinkability, availability, or
+traffic-correlation guarantees.
 
-## Assumptions
+## Cryptographic assumptions
 
 The design relies on the security and correct use of Ed25519, X25519,
-ML-KEM-768, HKDF-SHA256, HMAC-SHA256, ChaCha20-Poly1305, the operating system
-random source, and the Python `cryptography` implementation. It also assumes
-the client obtains the intended signed descriptor through an authenticated
-local or out-of-band process.
+ML-KEM-768, HKDF-SHA256, HMAC-SHA256, ChaCha20-Poly1305, the operating-system
+random source, and Python `cryptography`. Wire 3 has not changed in this
+iteration.
 
-The protocol has not received an independent cryptographic audit or formal
-proof. The hybrid composition is domain-separated and transcript-bound, but is
-not claimed to inherit the complete proof of a different protocol such as TLS.
+The protocol has no independent audit or formal proof. The hybrid composition
+is domain-separated and transcript-bound but is not claimed to inherit the
+complete proof of TLS, Tor, or I2P.
 
-## Trust boundaries
+## Endpoint assumptions
+
+The model assumes uncompromised client and host operating systems, private-key
+storage, and local application boundaries. Administrator, kernel, debugger,
+browser renderer, process dump, or live endpoint compromise can expose
+plaintext, addresses, keys, and route state.
+
+Node endpoints are public routing hints in signed node descriptors. Service and
+client endpoints are not published. The prototype has no authenticated WAN
+bootstrap, routing-table maintenance, autonomous peer RPC, or network listener.
+
+## Visibility by role
 
 ### Client
 
-The client trusts its local descriptor and relay-bootstrap files, cryptographic
-implementation, browser adapter, and operating system. It learns the service
-identity, descriptor metadata, relay endpoint, decrypted response, and traffic
-timing. It does not learn the host peer address from Granger Network.
+The client learns signed service and introduction records, public node
+descriptors, its selected entry, its request and response, and local timing. It
+has no service-host address or direct-host dialing API.
 
 ### Service host
 
-The host trusts private-key storage, its local application, cryptographic
-implementation, and operating system. It learns the relay endpoint, decrypted
-request, selected headers, and local response. It does not learn the client peer
-address from Granger Network.
+The host learns its selected service relay, its own service and introduction
+state, decrypted requests, local application responses, and local timing. It
+has no client address or direct-client dialing API.
 
-### Rendezvous relay
+### Entry node
 
-The relay is not trusted with application content or service authentication. It
-does learn:
+The entry sees the client network address, its next middle node, physical-link
+timing and sizes, and ciphertext. It does not receive the host address or
+application keys.
 
-- source network addresses of both TCP peers;
-- service ID and host public key;
-- registration nonce, session ID, and timestamps;
-- recognizable handshake size and protocol version;
-- frame kind, size, sequence, epoch, direction, count, and timing;
-- connection start, duration, and failure patterns.
+### Middle node
 
-The relay can correlate the client and host for a session. The current protocol
-does not hide that metadata.
+A middle sees only adjacent overlay nodes, timing, sizes, session failures, and
+ciphertext at its forwarding layer. It does not receive an endpoint address.
 
-### Discovery store
+### Service relay
 
-The local discovery implementation sees descriptors, aliases, and relay
-bootstrap entries installed by the user. It makes no network query. A future
-distributed discovery system would introduce new observers and needs a separate
-threat analysis.
+The service relay sees the host network address, its next middle node, timing,
+sizes, and ciphertext. It does not receive the client address.
+
+### Introduction node
+
+The introduction sees both middle nodes, service ID and handshake metadata,
+authorization-token use, timing, size, duration, and failure patterns. It does
+not see either endpoint address in the modeled topology and does not receive
+the end-to-end application keys.
+
+### Discovery participant
+
+A discovery participant sees signed node, service, alias, and introduction
+records stored near its node ID, plus lookup and publication timing when a real
+RPC layer exists. Service records contain no service IP. Node descriptors do
+contain public node routing endpoints.
 
 ## Considered attackers
 
-### Malicious or compromised relay
+### Client-side or host-side ISP
 
-A relay can drop, delay, reorder, truncate, replay, or selectively forward
-traffic; claim no host exists; pair the client with the wrong connection; and
-analyze metadata. It cannot make a different service identity pass descriptor
-and handshake verification or construct valid encrypted frames without the
-negotiated keys.
+A client-side ISP can observe a connection to the entry. A host-side ISP can
+observe a connection to the service relay. Either can measure packet timing,
+sizes, duration, and recognizable protocol behavior. A party observing both
+sides may correlate them because padding, batching, and cover traffic are not
+enabled.
 
-A captured host registration can be raced, but duplicate nonces are rejected
-and the attacker still cannot complete the service handshake. Availability
-attacks remain possible.
+### One malicious relay
 
-### Host identity substitution
+One relay can drop, delay, reorder, truncate, replay, selectively forward, or
+exhaust a circuit. It can analyze its adjacent metadata. Wire 3 authentication
+and AEAD prevent it from modifying a deeper handshake or application frame
+without detection.
 
-A registration whose public key does not derive the claimed service ID or whose
-signature is wrong is rejected by the relay. Even if relay validation is
-bypassed, the client independently requires exact equality between the signed
-descriptor identity and the signed handshake identity before key confirmation.
+In the modeled route, no single relay observation contains both synthetic
+endpoint addresses. Relay-captured bytes do not contain known application
+markers. These tests do not prevent a relay from inferring content from timing
+or sizes.
 
-### Descriptor, alias, and version modification
+### Multiple malicious relays
 
-Changing any signed descriptor field, including `protocolVersion`, invalidates
-the signature. Wire 3 authenticates both the suite offer and selected suite, so
-an active relay cannot remove the hybrid suite or select an unoffered suite.
-There is no automatic fallback to wire 2 after any wire 3 failure.
+Colluding entry and service-relay positions can combine endpoint knowledge.
+Colluding adjacent relays can reconstruct larger route segments. A discovery
+observer combined with a route observer may correlate lookup and connection
+timing. The route planner currently enforces distinct identities but not
+operator, subnet, jurisdiction, autonomous-system, or family diversity.
 
-A local alias is not self-authenticating: filesystem compromise can map
-`test.granger` to another valid identity. A previously signed wire 2 descriptor
-can also be replayed while it remains valid because the prototype has no global
-transparency log or monotonic descriptor-version store. Service-side exact
-version selection prevents that descriptor from silently downgrading a host
-currently serving wire 3, but descriptor rollback remains a documented
-compatibility limitation.
+### Malicious discovery peers
 
-### Handshake modification
+A peer can omit, delay, replay, corrupt, or selectively return records. Record
+signatures and identity bindings prevent it from forging another service or
+node. Highest-sequence selection, local high-water marks, and equivocation
+checks detect tested rollback classes.
 
-The Ed25519 signature covers the complete client hello and unsigned server
-hello. The HKDF schedule also binds the transcript and selected parameters.
-Client and server Finished values prove possession of the derived hybrid keys.
-Modification of a version, identity, session, timestamp, suite, key, nonce, or
-limit therefore terminates the handshake before application traffic.
+A single malicious replica cannot replace a valid signed service record when
+another valid replica responds. It can still censor its copy. Sybil creation,
+eclipse attacks, malicious bootstrap, route-key grinding, churn, and a majority
+of malicious nearest replicas are unsolved.
 
-### Replay and malformed-frame attacker
+### Service identity substitution
 
-Rendezvous registration nonces and session IDs are single-use within a cache
-window. Handshake timestamps and descriptor expiry constrain stale material.
-End-to-end frame sequence numbers must be exact and are bound, with the key
-epoch and full header, into AEAD associated data.
+Changing a service descriptor, alias record, introduction descriptor, node
+descriptor, service descriptor digest, capability, token, sequence, or expiry
+invalidates the relevant signature. The final end-to-end wire 3 handshake must
+authenticate the exact service public key from the verified descriptor.
 
-Duplicate, skipped, reordered, old-session, wrong-kind, unknown-flag,
-wrong-epoch, modified, unauthenticated, and oversized frames terminate and
-poison the channel. Sequence exhaustion fails before a nonce can be reused.
+A human-readable alias remains meaningful only with a trusted local identity
+pin. A valid attacker-signed alias cannot replace the pinned service ID.
 
-### Network observer
+### Replay attacker
 
-A local or path observer sees TCP endpoints, relay use, packet timing, sizes,
-and encrypted protocol bytes. A global observer can correlate host and client
-connections at the relay. Fixed ML-KEM handshake sizes make wire 3 recognizable.
-There is no padding, cover traffic, onion routing, or multi-relay path.
+Signed records expire. Alias and introduction records have monotonic sequences;
+discovery peers and clients reject observed rollback and same-sequence
+equivocation. Introduction request nonces are single-use under installed state.
+
+Wire 3 timestamps, Finished confirmation, exact session IDs, strict frame
+sequences, epochs, and AEAD associated data reject stale handshakes and replayed
+or reordered frames. Availability attacks remain possible.
 
 ### Malicious service
 
-A correctly identified service controls its content. Identity authentication
-does not make HTML safe. In the development browser integration, Qt WebEngine
-renders content in its Chromium renderer sandbox and assigns one origin per
-`.granger` host. A request interceptor blocks embedded cross-service and
-cross-network requests. This does not remove browser-engine vulnerabilities.
+A correctly authenticated service controls its returned content. Identity
+authentication does not make HTML trustworthy. The unchanged development
+browser adapter relies on Chromium sandboxing, one origin per `.granger` host,
+and request interception to block cross-service and cross-network escapes.
+
+### Malicious client
+
+A client can consume introduction attempts, handshakes, bandwidth, and service
+work. Introduction nonces, bounded records, relay quotas, frame limits, and
+session lifetimes constrain some resource use but are not a complete admission,
+reputation, proof-of-work, or denial-of-service design.
+
+### Global observer
+
+A global observer can observe both endpoint-to-overlay connections and many or
+all relay links. Without padding or timing defenses, it can correlate flows by
+start time, burst pattern, sizes, direction, and duration. Multi-hop routing
+does not by itself defeat this attacker.
+
+## Metadata leakage
+
+Encryption does not hide:
+
+- public node endpoints and capabilities;
+- discovery lookup and publication timing in a future network;
+- fixed and recognizable wire 3 handshake sizes;
+- adjacent transport endpoints;
+- encrypted-frame and packet sizes, direction, count, and timing;
+- route setup, lifetime, failure, and retry patterns;
+- service identity at the introduction and end-to-end handshake;
+- total transferred bytes.
+
+The introduction token is distributed with the signed introduction record. It
+prevents stale or accidental introduction use but is not confidential client
+authorization and can be used in denial-of-service attempts.
+
+## Metadata defenses and performance
+
+Padding, uniform frames, batching, traffic shaping, timing normalization, cover
+traffic, and artificial delay remain disabled. Unmeasured activation could
+increase bandwidth and CPU, amplify denial of service, delay interactive page
+loads, or create a more distinctive traffic pattern.
+
+The local benchmark established eleven hybrid wire 3 sessions per circuit. On
+the recorded Windows development environment, 20 setups averaged 25.7 ms and a
+1 MiB transfer over 64 frames reached 25.5 MiB/s. This is an in-process best
+case with no network latency, packet loss, congestion, or competing routes. It
+is insufficient to choose padding buckets or cover schedules. Those mechanisms
+require packet-level measurements on independent nodes and explicit overhead
+budgets before implementation.
 
 ## Post-quantum scope
 
-Wire 3 combines ephemeral ML-KEM-768 and ephemeral X25519 before HKDF. Its
-intended benefit is protection of recorded session traffic against a future
-passive attacker if either key-exchange component and the combiner remain
-secure. This improves post-quantum migration readiness and store-now/decrypt-
-later resistance relative to classical-only wire 2.
+Each wire 3 session combines ephemeral ML-KEM-768 and X25519 before
+transcript-bound HKDF. The intended benefit is resistance to passive
+store-now/decrypt-later collection if either exchange and the combiner remain
+secure.
 
-Service authentication remains Ed25519 and is not post-quantum. A future
-cryptographically relevant quantum computer able to forge Ed25519 could
-actively impersonate a service during a new handshake. Wire 3 must therefore
-not be described as fully post-quantum secure. Migrating identity signatures
-requires a separately reviewed descriptor and address-transition design.
+Service and node authentication remain Ed25519 and are not post-quantum. A
+cryptographically relevant quantum attacker able to forge Ed25519 could
+actively impersonate new sessions. Wire 3 must not be described as fully
+post-quantum secure.
 
-## Key compromise and forward secrecy
+## Key compromise
 
-Every wire 3 session uses fresh X25519 and ML-KEM material. The long-term
-Ed25519 key signs the transcript but is not input to the shared secret.
-Compromise of only that identity key after a completed session does not reveal
-the recorded session keys.
+Each of the eleven modeled bindings uses fresh exchange material. Long-term
+Ed25519 keys authenticate but do not enter the shared secret. Later compromise
+of only an identity key does not reconstruct recorded completed-session keys.
 
-Traffic-key ratchets erase prior Python-managed secrets on a best-effort basis.
-Compromise of a current ratchet state should not reveal earlier epochs, but it
-does reveal the current state and permits derivation of future epochs until a
-fresh handshake. This is forward secrecy and backward epoch protection, not
-post-compromise security.
+Compromise of live channel state exposes that channel's current epoch and may
+permit later epoch derivation until a fresh handshake. Best-effort Python object
+destruction is not guaranteed memory zeroization. Compromise of entry state
+does not reveal host-side channel keys, but endpoint or multiple-relay
+compromise changes that analysis.
 
-Python object copies, allocator behavior, process dumps, swap, and native
-cryptographic objects are outside reliable application-level zeroization.
-Administrator, kernel, debugger, or live process compromise can expose
-plaintext and current keys.
+## Leak and fallback evidence
 
-## Multi-hop assumptions
+Automated tests replace common Python DNS APIs with failing stubs and assert
+zero calls. They also replace `socket.create_connection` and
+`socket.socket.connect` during multi-hop construction and assert zero calls;
+the prototype uses only local socket pairs. The route graph is checked for zero
+direct client-host edges.
 
-The secure-channel API can support independent sessions between future adjacent
-hops. Each hop must authenticate independently and use fresh ephemeral keys,
-session IDs, nonces, counters, ratchets, and lifetimes. Reusing an end-to-end
-key, exporter, nonce space, or ratchet across relays is forbidden.
+Relay observations are sampled and checked for known request and response
+plaintext markers. Distinct node identities, eleven unique channel bindings,
+resource release, tamper, identity spoofing, record rollback, introduction
+nonce replay, missing-hop failure, and a corrupt discovery replica are covered.
 
-No multi-hop routing or onion encryption exists today. Adding it changes which
-nodes see identities, plaintext, and metadata and requires a new threat model.
+This is application-level regression evidence. It is not packet-capture proof,
+an independent-machine test, or validation of every operating-system network
+stack.
 
-## Leak and fallback analysis
+## Remaining limitations
 
-The resolver parses `.granger` names locally. Relay bootstrap accepts only
-numeric IP addresses and constructs AF_INET or AF_INET6 sockets directly. A
-remote descriptor contains no service endpoint. The client and host each have
-only one connection target: the configured relay. The service HTTP bridge
-accepts only a numeric-loopback upstream.
-
-Any missing descriptor, bootstrap entry, signature, suite, host, identity,
-freshness proof, key confirmation, or valid frame ends the request. There is no
-system DNS, ordinary HTTP URL, direct service IP, lower-version retry, or
-alternate transport fallback.
-
-Automated tests replace common Python hostname-resolution APIs with failing
-stubs and record client `connect()` destinations. Relay captures are checked
-for known HTTP and HTML plaintext markers. These tests are regression evidence,
-not packet-capture proof for every operating system and network stack.
-
-## Metadata protection
-
-The current release intentionally does not add padding, uniform frame sizes,
-timing normalization, traffic shaping, or cover traffic. Adding those mechanisms
-without a traffic model could increase distinguishability, latency, bandwidth,
-or denial-of-service exposure.
-
-Future work should measure actual packet and frame distributions before choosing
-padding buckets, maximum overhead, delay bounds, or cover schedules. Real scroll
-or request input must not be delayed merely to make an unvalidated privacy
-claim.
-
-## Remaining attacks and limitations
-
-- Client/host correlation by the relay or a global observer.
-- Relay enumeration of registered service identities and availability.
-- Traffic fingerprinting from handshake, frame headers, sizes, timing, and
-  duration.
-- Denial of service, registration flooding, connection exhaustion, and relay
-  censorship.
-- Unauthenticated relay infrastructure and bootstrap substitution.
-- No client authentication, authorization, identity revocation, recovery,
-  relay federation, path selection, persistence, resumption, or multiplexing.
-- No full post-quantum service authentication.
+- The distributed layer is in-memory and has no network peer RPC or persistence.
+- No authenticated bootstrap, Sybil resistance, routing diversity, reputation,
+  revocation, recovery, churn handling, or distributed availability proof.
+- No production path selection, circuit rotation, relay cells, multiplexing,
+  congestion control, NAT traversal, or relay listener.
+- No padding, cover traffic, batching, traffic-shaping, or global-observer
+  resistance.
+- Introduction tokens are public to record readers and do not authorize users.
+- No client authentication or service access-control protocol.
+- No full post-quantum identity authentication.
 - No protection after administrator, kernel, browser, or live endpoint
   compromise.
-- No independent review, formal proof, production hardening, padding, or cover
-  traffic.
+- No independent security review, formal proof, or production hardening.
+- The existing browser adapter still exercises the compatibility rendezvous,
+  not this distributed transport.
 
 ## Fail-closed rule
 
-Every discovery, descriptor, transport, pairing, identity, suite, transcript,
-freshness, Finished, sequence, epoch, frame, session-lifetime, and upstream-
-policy failure terminates the request. Future transports and cryptographic
-suites must preserve the absence of DNS, clearnet HTTP, direct-host, version,
-and alternate-route fallback.
+Every name, pin, discovery, signature, expiry, sequence, descriptor binding,
+replica, capability, introduction, quota, route, hop, identity, suite,
+transcript, Finished, sequence, epoch, frame, session-lifetime, and upstream
+policy failure terminates the request and releases acquired resources.
+
+The distributed overlay has no DNS, direct TCP to a service, clearnet HTTP,
+legacy rendezvous, lower-version, or alternate-transport fallback.
