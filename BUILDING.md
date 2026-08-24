@@ -59,10 +59,11 @@ Browser changes are complete only after this workflow succeeds:
 The orchestrator requires a clean tracked HEAD, compiles Release, deploys the
 base browser into `release\.local-staging`, adds the signed x64 Python runtime
 and the licensed `cryptography`, `cffi`, and `pycparser` modules used by Granger
-Network, validates the complete manifest,
-runs copied-package and `.granger` acceptance, and atomically promotes only a
-passing directory. The previous canonical directory remains untouched if
-staging fails. User data is outside the package and is not moved or removed.
+Network, validates the complete manifest, runs copied-package and `.granger`
+acceptance, and atomically promotes only a passing directory. Before promotion,
+it also runs the staged browser while the source package is temporarily
+unavailable. The previous canonical directory remains untouched if staging
+fails. User data is outside the package and is not moved or removed.
 
 Canonical local executable:
 
@@ -72,8 +73,12 @@ release\Granger Browser\GrangerBrowser.exe
 
 The generated `local-runtime-metadata.json` records the source HEAD, browser
 hash, Python and `cryptography` versions, licenses, and critical runtime hashes.
-The embedded `python314._pth` and `-I` launch mode prevent `PYTHONPATH`, user
-site-packages, and the system Python installation from influencing the helper.
+It also records the embedded Granger Network version and a deterministic
+per-module source manifest. Packaging and portability checks fail if that
+identity differs from the current tracked source, preventing a cached runtime
+from being promoted. The embedded `python314._pth` and `-I` launch mode prevent
+`PYTHONPATH`, user site-packages, and the system Python installation from
+influencing the helper.
 
 ## Public Windows release
 

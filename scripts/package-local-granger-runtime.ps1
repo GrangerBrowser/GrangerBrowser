@@ -95,8 +95,8 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($probeText)) {
 }
 $runtimeInfo = $probeText | ConvertFrom-Json
 if ([int]$runtimeInfo.bits -ne 64 -or [version]$runtimeInfo.python_version -lt [version]"3.11" -or
-    [version]$runtimeInfo.cryptography_version -lt [version]"44.0") {
-    throw "Granger Network requires x64 Python 3.11+ and cryptography 44+."
+    [version]$runtimeInfo.cryptography_version -lt [version]"47.0") {
+    throw "Granger Network requires x64 Python 3.11+ and cryptography 47+."
 }
 
 $pythonRoot = [IO.Path]::GetFullPath([string]$runtimeInfo.python_root).TrimEnd('\')
@@ -122,6 +122,8 @@ $cffiBackend = [IO.Path]::GetFullPath([string]$runtimeInfo.backend)
 $pycparserRoot = [IO.Path]::GetFullPath([string]$runtimeInfo.pycparser_root)
 $pycparserDistInfo = [IO.Path]::GetFullPath([string]$runtimeInfo.pycparser_dist_info)
 $networkSource = Join-Path $projectRoot "GrangerNetwork/src/granger_network"
+$networkIdentityScript = Join-Path $PSScriptRoot "Get-GrangerNetworkRuntimeIdentity.ps1"
+$sourceNetworkIdentity = & $networkIdentityScript -SourceDirectory $networkSource
 foreach ($requiredSource in @(
     $sourceLib,
     $sourceDlls,
@@ -214,6 +216,14 @@ Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force |
     Remove-Item -Recurse -Force
 Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse -Filter "*.pyc" | Remove-Item -Force
 
+$packagedNetworkRoot = Join-Path $runtimeSitePackages "granger_network"
+$packagedNetworkIdentity = & $networkIdentityScript -SourceDirectory $packagedNetworkRoot
+if ([string]$packagedNetworkIdentity.Version -ne [string]$sourceNetworkIdentity.Version -or
+    [string]$packagedNetworkIdentity.SHA256 -ne [string]$sourceNetworkIdentity.SHA256 -or
+    [int]$packagedNetworkIdentity.FileCount -ne [int]$sourceNetworkIdentity.FileCount) {
+    throw "Packaged Granger Network source identity does not match the current source tree."
+}
+
 $pythonStem = [IO.Path]::GetFileNameWithoutExtension([string]$runtimeInfo.python_dll)
 @(
     "Lib",
@@ -241,10 +251,18 @@ import cryptography
 import cffi
 import pycparser
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM768PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from granger_network import __version__ as granger_network_version
 from granger_network.address import canonical_address
 from granger_network.browser_gateway import PROTOCOL_VERSION
+from granger_network.crypto import SUITE_X25519_MLKEM768
+from granger_network.distributed import DistributedDiscoveryNetwork
+from granger_network.introduction import IntroductionDescriptor
+from granger_network.multihop import MultiHopCircuit
+from granger_network.peer import NodeDescriptor
+from granger_network.protocol import VERSION_3
 
 identity = Ed25519PrivateKey.generate()
 message = b"granger-local-runtime"
@@ -252,6 +270,9 @@ identity.public_key().verify(identity.sign(message), message)
 first = X25519PrivateKey.generate()
 second = X25519PrivateKey.generate()
 assert first.exchange(second.public_key()) == second.exchange(first.public_key())
+mlkem_private = MLKEM768PrivateKey.generate()
+mlkem_secret, mlkem_ciphertext = mlkem_private.public_key().encapsulate()
+assert mlkem_private.decapsulate(mlkem_ciphertext) == mlkem_secret
 key = ChaCha20Poly1305.generate_key()
 nonce = bytes(12)
 assert ChaCha20Poly1305(key).decrypt(nonce, ChaCha20Poly1305(key).encrypt(nonce, message, b"v1"), b"v1") == message
@@ -261,16 +282,30 @@ print(json.dumps({
     "cryptography": cryptography.__version__,
     "cffi": cffi.__version__,
     "dns_requests": 0,
+    "distributed_overlay": all((
+        DistributedDiscoveryNetwork,
+        IntroductionDescriptor,
+        MultiHopCircuit,
+        NodeDescriptor,
+    )),
+    "granger_network": granger_network_version,
+    "mlkem768": True,
     "protocol": PROTOCOL_VERSION,
     "python": sys.version.split()[0],
     "pycparser": pycparser.__version__,
+    "suite": SUITE_X25519_MLKEM768,
+    "wire": VERSION_3,
 }))
 '@
     $validationText = & $packagedPython -I -B -c $validationCode
     if ($LASTEXITCODE -ne 0) { throw "Packaged Granger Network Python runtime failed validation." }
     $runtimeValidation = $validationText | ConvertFrom-Json
     if (-not [bool]$runtimeValidation.app_local -or [int]$runtimeValidation.bits -ne 64 -or
-        [int]$runtimeValidation.protocol -ne 1 -or [int]$runtimeValidation.dns_requests -ne 0) {
+        [int]$runtimeValidation.protocol -ne 1 -or [int]$runtimeValidation.dns_requests -ne 0 -or
+        [string]$runtimeValidation.granger_network -ne [string]$sourceNetworkIdentity.Version -or
+        [int]$runtimeValidation.wire -ne 3 -or [int]$runtimeValidation.suite -ne 1 -or
+        -not [bool]$runtimeValidation.mlkem768 -or
+        -not [bool]$runtimeValidation.distributed_overlay) {
         throw "Packaged Granger Network Python runtime reported unexpected state."
     }
 } finally {
@@ -313,7 +348,7 @@ $runtimeFileRecords = foreach ($relativePath in $criticalRuntimeFiles) {
     }
 }
 [ordered]@{
-    SchemaVersion = 1
+    SchemaVersion = 2
     SourceHead = $sourceHead
     BrowserExecutableSHA256 = (Get-FileHash -LiteralPath (Join-Path $packageRoot "GrangerBrowser.exe") -Algorithm SHA256).Hash
     PythonVersion = [string]$runtimeInfo.python_version
@@ -329,7 +364,10 @@ $runtimeFileRecords = foreach ($relativePath in $criticalRuntimeFiles) {
     PycparserVersion = [string]$runtimeInfo.pycparser_version
     PycparserLicense = "BSD-3-Clause"
     PycparserVerifiedFiles = [int]$runtimeInfo.pycparser_verified_files
-    GrangerNetworkVersion = "0.2.0"
+    GrangerNetworkVersion = [string]$packagedNetworkIdentity.Version
+    GrangerNetworkSourceSHA256 = [string]$packagedNetworkIdentity.SHA256
+    GrangerNetworkSourceFiles = [int]$packagedNetworkIdentity.FileCount
+    GrangerNetworkFiles = @($packagedNetworkIdentity.Files)
     IsolatedRuntime = $true
     RuntimeFiles = @($runtimeFileRecords)
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $packageRoot "local-runtime-metadata.json") -Encoding UTF8
@@ -351,6 +389,9 @@ $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $manifestPath -En
     Package = $packageRoot
     PythonVersion = [string]$runtimeInfo.python_version
     CryptographyVersion = [string]$runtimeInfo.cryptography_version
+    GrangerNetworkVersion = [string]$packagedNetworkIdentity.Version
+    GrangerNetworkSourceSHA256 = [string]$packagedNetworkIdentity.SHA256
+    GrangerNetworkSourceFiles = [int]$packagedNetworkIdentity.FileCount
     SourceHead = $sourceHead
     RuntimeFiles = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File).Count
     RuntimeSize = (Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File |

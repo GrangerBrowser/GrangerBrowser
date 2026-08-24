@@ -152,6 +152,41 @@ function Invoke-GrangerNetworkAcceptance {
     return $result
 }
 
+function Invoke-SourceIndependentDemo {
+    param(
+        [Parameter(Mandatory)][string]$Browser,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [Parameter(Mandatory)][string]$RunRoot
+    )
+
+    $sourcePackage = Join-Path $projectRoot "GrangerNetwork/src/granger_network"
+    $unavailablePackage = Join-Path $projectRoot "GrangerNetwork/src/.granger_network-source-unavailable"
+    if (-not (Test-Path -LiteralPath $sourcePackage -PathType Container) -or
+        (Test-Path -LiteralPath $unavailablePackage)) {
+        throw "Granger Network source-independence precondition failed."
+    }
+    $moved = $false
+    try {
+        [IO.Directory]::Move($sourcePackage, $unavailablePackage)
+        $moved = $true
+        Invoke-IsolatedBrowser -Executable $Browser -Arguments @(
+            "--smoke-granger-network-local-demo",
+            "--smoke-output=$OutputPath"
+        ) -RunRoot $RunRoot
+    } finally {
+        if ($moved -and (Test-Path -LiteralPath $unavailablePackage -PathType Container)) {
+            [IO.Directory]::Move($unavailablePackage, $sourcePackage)
+        }
+    }
+    $result = Get-Content -LiteralPath $OutputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $result.ok -or -not $result.aliasNavigation -or
+        -not $result.canonicalNavigation -or -not $result.appLocalRuntime -or
+        [int]$result.dnsRequests -ne 0) {
+        throw "Packaged Granger Network depends on the source tree."
+    }
+    return $result
+}
+
 $trackedStatus = @(git -C $projectRoot status --porcelain --untracked-files=no)
 if ($LASTEXITCODE -ne 0 -or $trackedStatus.Count -ne 0) {
     throw "Commit tracked source changes before producing the canonical local release."
@@ -160,6 +195,7 @@ $sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
     throw "Could not determine the source HEAD."
 }
+$expectedNetworkIdentity = & (Join-Path $PSScriptRoot "Get-GrangerNetworkRuntimeIdentity.ps1") -SourceDirectory (Join-Path $projectRoot "GrangerNetwork/src/granger_network")
 
 if ((Test-Path -LiteralPath $canonical) -and (Test-Path -LiteralPath $previous)) {
     throw "Interrupted local release swap detected. Resolve $previous before rebuilding."
@@ -184,7 +220,10 @@ try {
 
     $runtime = & (Join-Path $PSScriptRoot "package-local-granger-runtime.ps1") `
         -PackageDirectory "release/.local-staging" -PythonExecutable $PythonExecutable
-    if (-not $runtime.OK -or $runtime.SourceHead -ne $sourceHead) {
+    if (-not $runtime.OK -or $runtime.SourceHead -ne $sourceHead -or
+        [string]$runtime.GrangerNetworkVersion -ne [string]$expectedNetworkIdentity.Version -or
+        [string]$runtime.GrangerNetworkSourceSHA256 -ne [string]$expectedNetworkIdentity.SHA256 -or
+        [int]$runtime.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount) {
         throw "App-local Granger Network runtime packaging failed."
     }
     Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
@@ -206,6 +245,9 @@ try {
         -not $stagingDemo.canonicalNavigation -or [int]$stagingDemo.dnsRequests -ne 0) {
         throw "Staged double-click test.granger demo acceptance failed."
     }
+
+    $sourceIndependentOutput = Join-Path $resultRoot "staging-source-independent.json"
+    $sourceIndependentDemo = Invoke-SourceIndependentDemo -Browser (Join-Path $staging "GrangerBrowser.exe") -OutputPath $sourceIndependentOutput -RunRoot (Join-Path $resultRoot "staging-source-independent")
 
     & (Join-Path $PSScriptRoot "test-release.ps1") `
         -PackageDirectory "release/.local-staging" -AllowLocalGrangerRuntime
@@ -232,7 +274,10 @@ try {
     $canonicalExecutable = Join-Path $canonical "GrangerBrowser.exe"
     $canonicalMetadata = Get-Content -LiteralPath (Join-Path $canonical "local-runtime-metadata.json") `
         -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$canonicalMetadata.SourceHead -ne $sourceHead) {
+    if ([string]$canonicalMetadata.SourceHead -ne $sourceHead -or
+        [string]$canonicalMetadata.GrangerNetworkVersion -ne [string]$expectedNetworkIdentity.Version -or
+        [string]$canonicalMetadata.GrangerNetworkSourceSHA256 -ne [string]$expectedNetworkIdentity.SHA256 -or
+        [int]$canonicalMetadata.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount) {
         throw "Promoted local release does not match source HEAD $sourceHead."
     }
 
@@ -310,6 +355,9 @@ try {
         ExecutableSHA256 = (Get-FileHash -LiteralPath $canonicalExecutable -Algorithm SHA256).Hash
         GrangerNetworkIncluded = $true
         GrangerNetworkRuntime = $runtime
+        GrangerNetworkVersion = [string]$canonicalMetadata.GrangerNetworkVersion
+        GrangerNetworkSourceSHA256 = [string]$canonicalMetadata.GrangerNetworkSourceSHA256
+        GrangerNetworkSourceFiles = [int]$canonicalMetadata.GrangerNetworkSourceFiles
         WindowsPortability = $canonicalPortability
         BrowserStartup = [bool]$profile.ok
         QtWebEngine = [bool]$profile.ok
@@ -317,6 +365,7 @@ try {
         I2P = [bool]$i2p.ok
         TestGranger = [bool]$canonicalDemo.aliasNavigation
         CanonicalGranger = [bool]$canonicalDemo.canonicalNavigation
+        SourceIndependentStart = [bool]$sourceIndependentDemo.ok
         GrangerDnsRequests = [int]$canonicalDemo.dnsRequests
         DirectFallbackConnections = [int]$bootstrap.directBackendConnections
         OrphanProcesses = 0

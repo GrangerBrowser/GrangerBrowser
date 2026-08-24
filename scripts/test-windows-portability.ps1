@@ -391,16 +391,46 @@ $localRuntimeMetadata = $null
 if (Test-Path -LiteralPath $localRuntimeMetadataPath -PathType Leaf) {
     $localRuntimeMetadata = Get-Content -LiteralPath $localRuntimeMetadataPath -Raw -Encoding UTF8 |
         ConvertFrom-Json
-    if ([int]$localRuntimeMetadata.SchemaVersion -ne 1 -or
+    if ([int]$localRuntimeMetadata.SchemaVersion -ne 2 -or
         [string]$localRuntimeMetadata.SourceHead -notmatch '^[0-9a-f]{40}$' -or
         [string]$localRuntimeMetadata.PythonArchitecture -ne "x64" -or
         [version]$localRuntimeMetadata.PythonVersion -lt [version]"3.11" -or
-        [version]$localRuntimeMetadata.CryptographyVersion -lt [version]"44.0" -or
+        [version]$localRuntimeMetadata.CryptographyVersion -lt [version]"47.0" -or
         [version]$localRuntimeMetadata.CffiVersion -lt [version]"1.0" -or
         [version]$localRuntimeMetadata.PycparserVersion -lt [version]"2.0" -or
-        [string]$localRuntimeMetadata.GrangerNetworkVersion -ne "0.2.0" -or
+        [string]$localRuntimeMetadata.GrangerNetworkVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
+        [string]$localRuntimeMetadata.GrangerNetworkSourceSHA256 -notmatch '^[0-9A-Fa-f]{64}$' -or
+        [int]$localRuntimeMetadata.GrangerNetworkSourceFiles -lt 1 -or
         -not [bool]$localRuntimeMetadata.IsolatedRuntime) {
         throw "Local Granger Network runtime metadata is invalid."
+    }
+    $networkRoot = Join-Path $packageRoot "runtime/python/Lib/site-packages/granger_network"
+    $networkIdentity = & (Join-Path $PSScriptRoot "Get-GrangerNetworkRuntimeIdentity.ps1") -SourceDirectory $networkRoot
+    if ([string]$networkIdentity.Version -ne [string]$localRuntimeMetadata.GrangerNetworkVersion -or
+        [string]$networkIdentity.SHA256 -ne [string]$localRuntimeMetadata.GrangerNetworkSourceSHA256 -or
+        [int]$networkIdentity.FileCount -ne [int]$localRuntimeMetadata.GrangerNetworkSourceFiles) {
+        throw "Packaged Granger Network identity does not match local runtime metadata."
+    }
+    $networkFileRecords = @($localRuntimeMetadata.GrangerNetworkFiles)
+    if ($networkFileRecords.Count -ne [int]$networkIdentity.FileCount) {
+        throw "Packaged Granger Network file metadata is incomplete."
+    }
+    foreach ($entry in $networkFileRecords) {
+        $relativePath = ([string]$entry.Path).Replace('/', '\')
+        if ([IO.Path]::IsPathRooted($relativePath) -or
+            @($relativePath.Split('\') | Where-Object { $_ -eq '..' }).Count -ne 0) {
+            throw "Granger Network file metadata escaped its package root: $relativePath"
+        }
+        $candidate = Join-Path $networkRoot $relativePath
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Packaged Granger Network file is missing: $relativePath"
+        }
+        $item = Get-Item -LiteralPath $candidate
+        if ($item.Length -ne [long]$entry.Size -or
+            -not (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.Equals(
+                [string]$entry.SHA256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Packaged Granger Network file metadata mismatch: $relativePath"
+        }
     }
     $browserHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot "GrangerBrowser.exe") `
         -Algorithm SHA256).Hash
