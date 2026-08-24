@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "granger/i18n/Localization.h"
+#include "granger/network/GrangerNetworkUrl.h"
 #include "granger/ui/DesignTokens.h"
 
 namespace granger {
@@ -186,7 +187,7 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
             cancelPendingNavigationFailure();
         }
         if (!m_internalContent && !m_loading) {
-            m_displayAddress = url.toString();
+            m_displayAddress = GrangerNetworkUrl::displayAddress(url);
             emit displayAddressChanged(m_displayAddress);
         }
         const QString scheme = url.scheme().toLower();
@@ -477,7 +478,7 @@ void BrowserTab::loadUrl(const QUrl &url, bool updateDisplayImmediately)
     const QString initial = url.toString(QUrl::FullyEncoded);
     if (!initial.isEmpty()) m_redirectChain.append(initial);
     if (updateDisplayImmediately) {
-        m_displayAddress = url.toString();
+        m_displayAddress = GrangerNetworkUrl::displayAddress(url);
         emit displayAddressChanged(m_displayAddress);
     }
     m_view->setUrl(url);
@@ -548,12 +549,32 @@ void BrowserTab::markDownloadStarted(const QUrl &url, const QString &fileName)
 
 void BrowserTab::goBack()
 {
-    m_view->back();
+    if (QWebEngineHistory *history = m_view ? m_view->history() : nullptr;
+        history && history->canGoBack()) {
+        const QWebEngineHistoryItem target = history->backItem();
+        if (target.isValid()
+            && (GrangerNetworkUrl::isCustomUrl(m_view->url())
+                || GrangerNetworkUrl::isCustomUrl(target.url()))) {
+            history->goToItem(target);
+            return;
+        }
+    }
+    if (m_view) m_view->back();
 }
 
 void BrowserTab::goForward()
 {
-    m_view->forward();
+    if (QWebEngineHistory *history = m_view ? m_view->history() : nullptr;
+        history && history->canGoForward()) {
+        const QWebEngineHistoryItem target = history->forwardItem();
+        if (target.isValid()
+            && (GrangerNetworkUrl::isCustomUrl(m_view->url())
+                || GrangerNetworkUrl::isCustomUrl(target.url()))) {
+            history->goToItem(target);
+            return;
+        }
+    }
+    if (m_view) m_view->forward();
 }
 
 void BrowserTab::reload()
@@ -622,7 +643,7 @@ void BrowserTab::handleLoadFinished(bool ok)
     if (!ok && !m_internalContent) {
         if (m_finalResponseWasHttpError) {
             cancelPendingNavigationFailure();
-            m_displayAddress = m_view->url().toString();
+            m_displayAddress = GrangerNetworkUrl::displayAddress(m_view->url());
             const QString responseTitle = m_view->title().trimmed();
             if (!responseTitle.isEmpty()) m_title = responseTitle;
             m_stableDisplayAddress = m_displayAddress;
@@ -668,7 +689,7 @@ void BrowserTab::handleLoadFinished(bool ok)
         emit titleChanged(m_title);
         emit displayAddressChanged(m_displayAddress);
     } else {
-        const QString finalAddress = m_view->url().toString();
+        const QString finalAddress = GrangerNetworkUrl::displayAddress(m_view->url());
         if (!finalAddress.isEmpty() && finalAddress != m_displayAddress) {
             m_displayAddress = finalAddress;
             emit displayAddressChanged(m_displayAddress);

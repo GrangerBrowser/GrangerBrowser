@@ -22,6 +22,7 @@
 #include "granger/browser/InternalPages.h"
 #include "granger/containers/ContainerManager.h"
 #include "granger/network/NetworkManager.h"
+#include "granger/network/GrangerNetworkRuntime.h"
 #include "granger/network/PrivacyNetworkTypes.h"
 #include "granger/pamp_lite/network/PampRoutedEnricher.h"
 #include "granger/privacy/PermissionManager.h"
@@ -115,6 +116,7 @@ public:
     void setExternalFixtureForDiagnostics(const QString &html, const QUrl &publicUrl);
     void toggleDeveloperToolsForDiagnostics(bool inspectElement = false);
     QJsonObject developerToolsDiagnostics() const;
+    QJsonObject grangerNetworkDiagnosticsForDiagnostics() const;
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -444,6 +446,7 @@ private:
     BrowserManager m_browser;
     BridgeManager m_bridges;
     NetworkManager m_network;
+    GrangerNetworkRuntime m_grangerNetwork;
     PrivacyPolicyManager m_privacy;
     ContainerManager m_containers;
     PermissionManager m_permissions;

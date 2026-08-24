@@ -1,5 +1,7 @@
 #include "granger/privacy/PrivacyPolicyManager.h"
 
+#include "granger/network/GrangerNetworkUrl.h"
+
 #include "granger/browser/BrowserProfile.h"
 #include "granger/core/AppPaths.h"
 #include "granger/privacy/ContentBlocker.h"
@@ -1041,7 +1043,6 @@ PrivacyRequestDecision PrivacyPolicyManager::requestDecision(const QUrl &request
                                                              const QByteArray &method,
                                                              PrivacyProfileKind profile) const
 {
-    Q_UNUSED(initiator)
     PrivacyRequestDecision decision;
     bool contentBlocked = false;
     QUrl candidateUrl = requestUrl;
@@ -1049,6 +1050,21 @@ PrivacyRequestDecision PrivacyPolicyManager::requestDecision(const QUrl &request
         ? firstPartyUrl : requestUrl;
     EffectivePrivacyPolicy policy = effectivePolicy(policyUrl, profile);
     const bool mainFrame = resourceType == int(QWebEngineUrlRequestInfo::ResourceTypeMainFrame);
+    const GrangerNetworkRequestPolicy grangerPolicy = GrangerNetworkUrl::evaluateRequest(
+        requestUrl, firstPartyUrl, initiator, mainFrame, method);
+    if (grangerPolicy.action != GrangerNetworkRequestAction::NotApplicable) {
+        if (grangerPolicy.action == GrangerNetworkRequestAction::Redirect) {
+            decision.redirect = grangerPolicy.redirect;
+        } else if (grangerPolicy.action == GrangerNetworkRequestAction::Block) {
+            decision.block = true;
+        }
+        decision.restriction = grangerPolicy.reason;
+        if (decision.block) {
+            recordRestriction(firstPartyUrl.isValid() ? firstPartyUrl : requestUrl,
+                              QStringLiteral("Granger Network boundary"));
+        }
+        return decision;
+    }
 
     if (mainFrame && method.toUpper() == QByteArrayLiteral("GET")) {
         if (policy.stripTrackingParameters && m_contentBlocker) {

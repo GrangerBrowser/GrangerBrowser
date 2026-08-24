@@ -89,6 +89,9 @@
 #include "granger/containers/ContainerManager.h"
 #include "granger/i18n/Localization.h"
 #include "granger/network/PrivacyNetworkManager.h"
+#include "granger/network/GrangerNetworkRuntime.h"
+#include "granger/network/GrangerNetworkBrowserSmokeTests.h"
+#include "granger/network/GrangerNetworkUrl.h"
 #include "granger/network/PrivateRouteSmokeTests.h"
 #include "granger/privacy/PrivacyPolicyManager.h"
 #include "granger/privacy/PrivacySmokeTests.h"
@@ -4916,6 +4919,9 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
         {QStringLiteral("bracketed IPv6"), QStringLiteral("[2001:db8::1]:8443/a"), granger::AddressInputKind::Host, QStringLiteral("https://[2001:db8::1]:8443/a")},
         {QStringLiteral("localhost"), QStringLiteral("localhost:3000"), granger::AddressInputKind::Host, QStringLiteral("https://localhost:3000")},
         {QStringLiteral("onion"), QStringLiteral("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/"), granger::AddressInputKind::Onion, QStringLiteral("http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/")},
+        {QStringLiteral("Granger alias"), QStringLiteral("test.granger"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("granger-network://test.granger/")},
+        {QStringLiteral("Granger HTTPS interception"), QStringLiteral("https://test.granger/docs?q=1"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("granger-network://test.granger/docs?q=1")},
+        {QStringLiteral("Granger canonical"), QStringLiteral("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.granger"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("granger-network://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.granger/")},
         {QStringLiteral("plain text"), QStringLiteral("privacy browser"), granger::AddressInputKind::Search, QString()},
         {QStringLiteral("email is search text"), QStringLiteral("email@example.com"), granger::AddressInputKind::Search, QString()},
         {QStringLiteral("literal plus is search text"), QStringLiteral("hello+world"), granger::AddressInputKind::Search, QString()},
@@ -4942,6 +4948,37 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
            unicodeWhitespaceInput.kind == granger::AddressInputKind::Search
                && unicodeWhitespaceInput.query == QStringLiteral("privacy browser"),
            unicodeWhitespaceInput.query, QStringLiteral("privacy browser"));
+    const granger::AddressResolution invalidGranger = search.resolveInput(
+        QStringLiteral("nested.test.granger"), QStringLiteral("duckduckgo"));
+    record(QStringLiteral("invalid Granger address never becomes a search"),
+           invalidGranger.kind == granger::AddressInputKind::GrangerNetwork
+               && !invalidGranger.url.isValid() && !invalidGranger.error.isEmpty(),
+           granger::SearchManager::inputKindName(invalidGranger.kind),
+           QStringLiteral("granger-network blocked"));
+
+    const QUrl grangerOrigin(QStringLiteral("granger-network://test.granger/"));
+    const QUrl secondOrigin(QStringLiteral("granger-network://second.granger/asset.js"));
+    const auto sameOriginPolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        QUrl(QStringLiteral("granger-network://test.granger/style.css")), grangerOrigin,
+        grangerOrigin, false, QByteArrayLiteral("GET"));
+    record(QStringLiteral("same-origin Granger resource is allowed"),
+           sameOriginPolicy.action == granger::GrangerNetworkRequestAction::Allow);
+    const auto crossOriginPolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        secondOrigin, grangerOrigin, grangerOrigin, false, QByteArrayLiteral("GET"));
+    record(QStringLiteral("cross-service Granger resource is blocked"),
+           crossOriginPolicy.action == granger::GrangerNetworkRequestAction::Block);
+    const auto clearnetPolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        QUrl(QStringLiteral("https://example.com/track")), grangerOrigin,
+        grangerOrigin, false, QByteArrayLiteral("GET"));
+    record(QStringLiteral("Granger to clearnet resource is blocked"),
+           clearnetPolicy.action == granger::GrangerNetworkRequestAction::Block);
+    const auto httpNamespacePolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        QUrl(QStringLiteral("https://test.granger/app.js")), grangerOrigin,
+        grangerOrigin, false, QByteArrayLiteral("GET"));
+    record(QStringLiteral("HTTP Granger resource is intercepted before DNS"),
+           httpNamespacePolicy.action == granger::GrangerNetworkRequestAction::Redirect
+               && httpNamespacePolicy.redirect.toString(QUrl::FullyEncoded)
+                   == QStringLiteral("granger-network://test.granger/app.js"));
 
     for (const QString &route : granger::SearchManager::supportedInternalRoutes()) {
         const granger::AddressResolution result = search.resolveInput(route, QStringLiteral("google"));
@@ -6099,6 +6136,7 @@ int main(int argc, char *argv[])
     applyWebRtcLeakProtectionStartupFlag();
     applyAntiTelemetryStartupFlags();
     applyFingerprintProcessFlags();
+    granger::GrangerNetworkRuntime::registerUrlScheme();
     const QString smokeProxy = startupArgumentValue(argc, argv, QStringLiteral("--smoke-proxy="));
     const bool automaticRouteSmoke = hasStartupArgument(argc, argv, QStringLiteral("--smoke-automatic-route"));
     const bool externalPrivacyAudit =
@@ -6207,6 +6245,12 @@ int main(int argc, char *argv[])
     configureRuntimePrivacySettings(storedPrivacyBoolean(QStringLiteral("disablePrefetch"),
                                                          antiTelemetryEnabledFromSettings()));
     const QStringList arguments = QCoreApplication::arguments();
+    app.setProperty("granger.networkSourceRoot",
+                    argumentValue(arguments, QStringLiteral("--granger-network-source=")));
+    app.setProperty("granger.networkRegistryRoot",
+                    argumentValue(arguments, QStringLiteral("--granger-network-registry=")));
+    app.setProperty("granger.networkPython",
+                    argumentValue(arguments, QStringLiteral("--granger-network-python=")));
     if (arguments.contains(QStringLiteral("--smoke-brand-migration"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
         return granger::runBrandMigrationSmokeTests(
@@ -6224,6 +6268,16 @@ int main(int argc, char *argv[])
         return granger::runPrivateRouteSmokeTests(
             smokeOutput.isEmpty()
                 ? QStringLiteral("output/private-route-smoke.json") : smokeOutput);
+    }
+    if (arguments.contains(QStringLiteral("--smoke-granger-network-browser"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runGrangerNetworkBrowserSmoke(
+            app,
+            smokeOutput.isEmpty()
+                ? QStringLiteral("output/granger-network-browser-smoke.json") : smokeOutput,
+            argumentValue(arguments, QStringLiteral("--granger-network-alias=")),
+            argumentValue(arguments, QStringLiteral("--granger-network-canonical=")),
+            argumentValue(arguments, QStringLiteral("--granger-network-second=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

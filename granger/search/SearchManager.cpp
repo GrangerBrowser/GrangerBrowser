@@ -1,6 +1,7 @@
 #include "granger/search/SearchManager.h"
 
 #include "granger/core/Brand.h"
+#include "granger/network/GrangerNetworkUrl.h"
 
 #include <QHostAddress>
 #include <QRegularExpression>
@@ -130,6 +131,14 @@ AddressResolution SearchManager::resolveInput(const QString &input, const QStrin
 
     const QUrl explicitUrl(firstLine, QUrl::StrictMode);
     const QString scheme = explicitUrl.scheme().toLower();
+    if (GrangerNetworkUrl::targetsNamespace(explicitUrl)) {
+        result.kind = AddressInputKind::GrangerNetwork;
+        result.url = GrangerNetworkUrl::fromNamespaceUrl(explicitUrl);
+        if (!result.url.isValid()) {
+            result.error = QStringLiteral("invalid Granger Network address");
+        }
+        return result;
+    }
     if (scheme == QStringLiteral("http") || scheme == QStringLiteral("https")) {
         if (explicitUrl.isValid() && !explicitUrl.host().isEmpty()) {
             if (explicitUrl.host().endsWith(QStringLiteral(".onion"), Qt::CaseInsensitive)) {
@@ -152,6 +161,17 @@ AddressResolution SearchManager::resolveInput(const QString &input, const QStrin
     if (localhost.match(firstLine).hasMatch()) {
         result.kind = AddressInputKind::Host;
         result.url = QUrl(QStringLiteral("https://") + firstLine, QUrl::StrictMode);
+        return result;
+    }
+    const QUrl grangerUrl = GrangerNetworkUrl::fromUserInput(firstLine);
+    if (grangerUrl.isValid()) {
+        result.kind = AddressInputKind::GrangerNetwork;
+        result.url = grangerUrl;
+        return result;
+    }
+    if (firstLine.contains(QStringLiteral(".granger"), Qt::CaseInsensitive)) {
+        result.kind = AddressInputKind::GrangerNetwork;
+        result.error = QStringLiteral("invalid Granger Network address");
         return result;
     }
     if (firstLine.contains(QLatin1Char(' '))) {
@@ -216,6 +236,7 @@ QString SearchManager::inputKindName(AddressInputKind kind)
     case AddressInputKind::Host: return QStringLiteral("host");
     case AddressInputKind::Onion: return QStringLiteral("onion");
     case AddressInputKind::I2p: return QStringLiteral("i2p");
+    case AddressInputKind::GrangerNetwork: return QStringLiteral("granger-network");
     case AddressInputKind::Internal: return QStringLiteral("internal");
     case AddressInputKind::Search: return QStringLiteral("search");
     }

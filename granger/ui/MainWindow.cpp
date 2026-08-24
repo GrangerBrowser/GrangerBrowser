@@ -91,6 +91,7 @@
 #include "granger/core/EmergencyWipeManager.h"
 #include "granger/i18n/Localization.h"
 #include "granger/network/PrivacyNetworkManager.h"
+#include "granger/network/GrangerNetworkUrl.h"
 #include "granger/privacy/PrivacyConfigSerializer.h"
 #include "granger/security/HttpsFirstPolicy.h"
 #include "granger/tabs/TabManager.h"
@@ -104,6 +105,12 @@
 namespace granger {
 
 namespace {
+QUrl browserUrlForDisplayAddress(const QString &address)
+{
+    const QUrl grangerUrl = GrangerNetworkUrl::fromUserInput(address);
+    return grangerUrl.isValid() ? grangerUrl : QUrl(address);
+}
+
 QMessageBox::StandardButton localizedMessageBox(
     QWidget *parent,
     QMessageBox::Icon icon,
@@ -1316,6 +1323,13 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
       m_permissions(m_privacy, this)
 {
     Localization::setLanguage(m_settings.language());
+    connect(&m_privacy, &PrivacyPolicyManager::webProfileCreated,
+            this, [this](QWebEngineProfile *profile) {
+        m_grangerNetwork.installOnProfile(profile);
+    });
+    for (QWebEngineProfile *profile : m_privacy.existingWebProfiles()) {
+        m_grangerNetwork.installOnProfile(profile);
+    }
     LocalLogEvent startupEvent;
     startupEvent.severity = LocalLogSeverity::Info;
     startupEvent.category = QStringLiteral("browser");
@@ -1427,6 +1441,7 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
 MainWindow::~MainWindow()
 {
     if (qApp) qApp->removeEventFilter(this);
+    m_grangerNetwork.stop();
 
     // Member managers outlive this destructor body. Stop their callbacks before
     // tabs and WebEngine pages are torn down so shutdown cannot re-enter the UI.
@@ -1779,7 +1794,7 @@ QJsonObject MainWindow::currentPrivacyDiagnosticsForDiagnostics() const
     if (!tab) {
         return QJsonObject{{QStringLiteral("available"), false}};
     }
-    const QUrl url(tab->displayAddress());
+    const QUrl url = browserUrlForDisplayAddress(tab->displayAddress());
     return QJsonObject{
         {QStringLiteral("available"), true},
         {QStringLiteral("url"), url.toString(QUrl::FullyEncoded)},
@@ -2083,6 +2098,11 @@ QJsonObject MainWindow::developerToolsDiagnostics() const
                   qgetenv("QTWEBENGINE_REMOTE_DEBUGGING").trimmed().size() > 0
                       || qgetenv("QTWEBENGINE_CHROMIUM_FLAGS").contains("remote-debugging"));
     return result;
+}
+
+QJsonObject MainWindow::grangerNetworkDiagnosticsForDiagnostics() const
+{
+    return m_grangerNetwork.diagnostics();
 }
 
 bool MainWindow::developerToolsAllowedForTab(BrowserTab *tab) const
@@ -2574,7 +2594,7 @@ void MainWindow::wireSignals()
         event.details.insert(QStringLiteral("restriction"), category);
         m_eventLogger.record(event);
         BrowserTab *tab = currentTab();
-        if (tab && canonicalPrivacyOrigin(QUrl(tab->displayAddress())) == origin) {
+        if (tab && canonicalPrivacyOrigin(browserUrlForDisplayAddress(tab->displayAddress())) == origin) {
             updatePrivacyIndicator(tab);
         }
     });
@@ -2595,8 +2615,9 @@ void MainWindow::wireSignals()
         for (QWidget *widget : m_tabs->pages()) {
             auto *tab = qobject_cast<BrowserTab *>(widget);
             if (!tab || isInternalAddress(tab->displayAddress())) continue;
-            m_privacy.applyToPage(tab->page(), QUrl(tab->displayAddress()), tab->privacyProfileKind());
-            m_privacy.applyContentFilters(tab->page(), QUrl(tab->displayAddress()));
+            const QUrl url = browserUrlForDisplayAddress(tab->displayAddress());
+            m_privacy.applyToPage(tab->page(), url, tab->privacyProfileKind());
+            m_privacy.applyContentFilters(tab->page(), url);
             applyTabPrivacyContext(tab);
             updatePrivacyIndicator(tab);
         }
@@ -3882,7 +3903,18 @@ BrowserTab *MainWindow::createTab(bool privateTab,
     });
     tab->setMainFrameNavigationHandler(
         [this, tab](const QUrl &url, QWebEnginePage::NavigationType type) {
-        Q_UNUSED(type)
+        if (GrangerNetworkUrl::targetsNamespace(url)
+            && !GrangerNetworkUrl::isCustomUrl(url)) {
+            const QPointer<BrowserTab> guardedTab(tab);
+            const QString address = url.toString(QUrl::FullyEncoded);
+            QMetaObject::invokeMethod(this, [this, guardedTab, address] {
+                if (guardedTab) navigateTab(guardedTab, address);
+            }, Qt::QueuedConnection);
+            return false;
+        }
+        if (url.scheme().compare(GrangerNetworkUrl::scheme(), Qt::CaseInsensitive) == 0) {
+            return GrangerNetworkUrl::isCustomUrl(url);
+        }
         const QString scheme = url.scheme().toLower();
         const bool networkNavigation = scheme == QStringLiteral("http")
             || scheme == QStringLiteral("https");
@@ -4031,15 +4063,16 @@ BrowserTab *MainWindow::createTab(bool privateTab,
     });
     connect(tab, &BrowserTab::loadFinished, this, [this, tab](bool ok) {
         if (ok) {
-            if (QUrl(tab->displayAddress()).scheme().toLower() == QStringLiteral("https")) {
+            const QUrl loadedUrl = browserUrlForDisplayAddress(tab->displayAddress());
+            if (loadedUrl.scheme().toLower() == QStringLiteral("https")) {
                 m_httpsUpgradeAttempts.remove(tab);
             }
             recordHistory(tab);
-            m_privacy.applyContentFilters(tab->page(), QUrl(tab->displayAddress()));
+            m_privacy.applyContentFilters(tab->page(), loadedUrl);
             updatePrivacyIndicator(tab);
         }
         if (tab->title().trimmed().isEmpty() || tab->title() == QStringLiteral("Browser")) {
-            const QUrl loaded(tab->displayAddress());
+            const QUrl loaded = browserUrlForDisplayAddress(tab->displayAddress());
             const QString fallback = loaded.host().isEmpty()
                 ? Localization::text(QStringLiteral("toolbar.new_tab"))
                 : loaded.host();
@@ -4923,8 +4956,12 @@ void MainWindow::reapplyRouteProfiles(bool reloadExternalPages)
         if (!tab) continue;
         const QString address = tab->displayAddress().trimmed();
         if (isInternalAddress(address) || address.isEmpty()) continue;
-        const QUrl url(address);
+        const QUrl url = browserUrlForDisplayAddress(address);
         if (!url.isValid()) continue;
+        if (GrangerNetworkUrl::isCustomUrl(url)) {
+            m_privacy.applyToPage(tab->page(), url, tab->privacyProfileKind());
+            continue;
+        }
         const PrivacyProfileKind before = tab->privacyProfileKind();
         prepareTabPrivacyProfile(tab, url);
         if (reloadExternalPages && before != tab->privacyProfileKind()) {
@@ -4971,6 +5008,11 @@ bool MainWindow::privateRouteTransitioning() const
 
 bool MainWindow::destinationAllowedForNavigation(const QUrl &url, QString *reason) const
 {
+    if (GrangerNetworkUrl::isCustomUrl(url)) return true;
+    if (GrangerNetworkUrl::targetsNamespace(url)) {
+        if (reason) *reason = QStringLiteral("Invalid Granger Network destination");
+        return false;
+    }
     if (const PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
         routes && routes->gatewayListening()) {
         if (qApp->property("granger.usePrivacyGateway").toBool()) {
@@ -5059,7 +5101,7 @@ void MainWindow::handlePrivacyRouteStatus(const PrivacyRouteStatus &status)
             for (QWidget *widget : m_tabs->pages()) {
                 auto *tab = qobject_cast<BrowserTab *>(widget);
                 if (!tab || isInternalAddress(tab->displayAddress())) continue;
-                const QUrl url(tab->displayAddress());
+                const QUrl url = browserUrlForDisplayAddress(tab->displayAddress());
                 if (!url.isValid() || (url.scheme() != QStringLiteral("http")
                     && url.scheme() != QStringLiteral("https"))) continue;
                 if (tab->property("granger.pendingPrivateRouteUrl").toString().isEmpty()) {
@@ -5393,6 +5435,21 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
         } else {
             loadInternalPage(tab, internalAddress);
         }
+        return;
+    }
+    if (resolution.kind == AddressInputKind::GrangerNetwork) {
+        if (!resolution.url.isValid() || !GrangerNetworkUrl::isCustomUrl(resolution.url)) {
+            tab->showErrorPageForAddress(
+                clean,
+                QStringLiteral("Invalid Granger Network address"),
+                QStringLiteral("Granger Browser could not open this private destination."),
+                QStringLiteral("Use one ASCII service label followed by .granger."));
+            return;
+        }
+        tab->setProperty("granger.pendingPrivateRouteUrl", QVariant());
+        prepareTabPrivacyProfile(tab, resolution.url);
+        tab->page()->prepareMainFrameNavigation(resolution.url);
+        tab->loadUrl(resolution.url);
         return;
     }
 
@@ -7733,7 +7790,7 @@ void MainWindow::syncAddressBar()
         m_navigation->setAddress(tab->displayAddress());
         m_tabs->setActiveSidebarDestination(tab->displayAddress());
         m_navigation->setNavigationState(tab->canGoBack(), tab->canGoForward());
-        const QUrl displayedUrl(tab->displayAddress());
+        const QUrl displayedUrl = browserUrlForDisplayAddress(tab->displayAddress());
         const QString securityStatus =
             m_certificateErrors.contains(displayedUrl.host())
             ? QStringLiteral("certificate-error")
@@ -7741,7 +7798,7 @@ void MainWindow::syncAddressBar()
         m_navigation->setSecurityStatus(
             securityStatus,
             m_settings.showInsecureConnectionWarningEnabled());
-        const int networkCount = m_privacy.restrictionCount(QUrl(tab->displayAddress()));
+        const int networkCount = m_privacy.restrictionCount(displayedUrl);
         m_navigation->setPrivacyRestrictionCount(
             qMax(networkCount, m_tabPrivacyRestrictions.value(tab).size()));
     }
@@ -7750,7 +7807,7 @@ void MainWindow::syncAddressBar()
 void MainWindow::updatePrivacyIndicator(BrowserTab *tab)
 {
     if (!tab || !tab->page()) return;
-    const QUrl url(tab->displayAddress());
+    const QUrl url = browserUrlForDisplayAddress(tab->displayAddress());
     if (isInternalAddress(tab->displayAddress())) {
         m_tabPrivacyRestrictions.remove(tab);
         if (currentTab() == tab) m_navigation->setPrivacyRestrictionCount(0);
@@ -9215,7 +9272,8 @@ void MainWindow::forgetSiteData(BrowserTab *tab, const QUrl &origin)
 {
     if (!tab || !tab->page()) return;
     const QString canonical = canonicalPrivacyOrigin(origin);
-    const QString currentCanonical = canonicalPrivacyOrigin(QUrl(tab->displayAddress()));
+    const QString currentCanonical = canonicalPrivacyOrigin(
+        browserUrlForDisplayAddress(tab->displayAddress()));
     if (canonical.isEmpty() || canonical != currentCanonical || origin.host().isEmpty()) {
         QMessageBox::warning(this,
                              Localization::text(QStringLiteral("privacy.forget_site.title")),
@@ -12265,7 +12323,9 @@ void MainWindow::applyRuntimePrivacySettings()
     for (QWidget *widget : m_tabs ? m_tabs->pages() : QVector<QWidget *>{}) {
         auto *tab = qobject_cast<BrowserTab *>(widget);
         if (!tab || isInternalAddress(tab->displayAddress())) continue;
-        m_privacy.applyToPage(tab->page(), QUrl(tab->displayAddress()), tab->privacyProfileKind());
+        m_privacy.applyToPage(tab->page(),
+                              browserUrlForDisplayAddress(tab->displayAddress()),
+                              tab->privacyProfileKind());
     }
 }
 

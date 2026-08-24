@@ -65,6 +65,12 @@ qt_add_executable(granger_browser
     granger/i2p/I2pManager.h
     granger/network/NetworkManager.cpp
     granger/network/NetworkManager.h
+    granger/network/GrangerNetworkUrl.cpp
+    granger/network/GrangerNetworkUrl.h
+    granger/network/GrangerNetworkRuntime.cpp
+    granger/network/GrangerNetworkRuntime.h
+    granger/network/GrangerNetworkBrowserSmokeTests.cpp
+    granger/network/GrangerNetworkBrowserSmokeTests.h
     granger/network/PrivacyNetworkTypes.cpp
     granger/network/PrivacyNetworkTypes.h
     granger/network/PrivateRouteGateway.cpp

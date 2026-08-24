@@ -21,6 +21,7 @@ enum class AddressInputKind {
     Host,
     Onion,
     I2p,
+    GrangerNetwork,
     Internal,
     Search
 };
