@@ -98,6 +98,27 @@ def child_environment(audit_path: Path, role: str) -> dict[str, str]:
     return environment
 
 
+def packaged_browser_environment(environment: dict[str, str]) -> dict[str, str]:
+    if os.name == "nt":
+        system_root = Path(environment.get("SystemRoot", r"C:\Windows"))
+        environment["PATH"] = os.pathsep.join(
+            (str(system_root / "System32"), str(system_root))
+        )
+    else:
+        environment["PATH"] = os.pathsep.join(("/usr/bin", "/bin"))
+    for name in (
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONUSERBASE",
+        "QTDIR",
+        "CMAKE_PREFIX_PATH",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+    ):
+        environment.pop(name, None)
+    return environment
+
+
 def start_child(
     root: Path,
     name: str,
@@ -584,20 +605,7 @@ def run_acceptance(
             browser_environment["GRANGER_SETTINGS_ROOT"] = str(root / "browser-settings")
             browser_environment["GRANGER_DOWNLOAD_ROOT"] = str(root / "browser-downloads")
             if expect_packaged_runtime:
-                system_root = Path(browser_environment.get("SystemRoot", r"C:\Windows"))
-                browser_environment["PATH"] = os.pathsep.join(
-                    (str(system_root / "System32"), str(system_root))
-                )
-                for name in (
-                    "PYTHONHOME",
-                    "PYTHONPATH",
-                    "PYTHONUSERBASE",
-                    "QTDIR",
-                    "CMAKE_PREFIX_PATH",
-                    "QT_PLUGIN_PATH",
-                    "QT_QPA_PLATFORM_PLUGIN_PATH",
-                ):
-                    browser_environment.pop(name, None)
+                packaged_browser_environment(browser_environment)
             elif qt_bin is not None:
                 browser_environment["PATH"] = (
                     str(qt_bin) + os.pathsep + browser_environment.get("PATH", "")
@@ -666,20 +674,7 @@ def run_acceptance(
                 hosting_environment["GRANGER_SETTINGS_ROOT"] = str(root / "browser-hosting-settings")
                 hosting_environment["GRANGER_DOWNLOAD_ROOT"] = str(root / "browser-hosting-downloads")
                 if expect_packaged_runtime:
-                    system_root = Path(hosting_environment.get("SystemRoot", r"C:\Windows"))
-                    hosting_environment["PATH"] = os.pathsep.join(
-                        (str(system_root / "System32"), str(system_root))
-                    )
-                    for name in (
-                        "PYTHONHOME",
-                        "PYTHONPATH",
-                        "PYTHONUSERBASE",
-                        "QTDIR",
-                        "CMAKE_PREFIX_PATH",
-                        "QT_PLUGIN_PATH",
-                        "QT_QPA_PLATFORM_PLUGIN_PATH",
-                    ):
-                        hosting_environment.pop(name, None)
+                    packaged_browser_environment(hosting_environment)
                 elif qt_bin is not None:
                     hosting_environment["PATH"] = (
                         str(qt_bin) + os.pathsep + hosting_environment.get("PATH", "")
