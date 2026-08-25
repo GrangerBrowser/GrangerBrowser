@@ -42,6 +42,12 @@ End-to-end wire-3 service channel
 Loopback-only HTTP backend
 ```
 
+For browser-managed publication, `GrangerHostingManager` starts a separate
+app-local `granger_network.hosting` process per enabled service. Static folders
+terminate in an allowlisted file bridge; dynamic services terminate only at a
+numeric loopback HTTP target. Both use the existing service publication,
+introduction, rendezvous, and wire-3 path shown above.
+
 No component resolves a `.granger` name through system DNS. The browser does
 not reinterpret an unavailable `.granger` address as search text or HTTP. The
 WAN gateway has no compatibility or local-demo fallback unless that mode was
@@ -68,6 +74,8 @@ explicitly selected for a test.
    through the rendezvous.
 8. **Application bridge**: GET, HEAD and POST messages carry bounded paths,
    selected headers and at most 2 MiB bodies to a numeric loopback HTTP target.
+   Static hosting uses a GET/HEAD filesystem bridge with canonical root
+   containment, fixed MIME values, and configurable per-file bounds.
 
 ## Process model
 
@@ -126,6 +134,10 @@ The host performs only outbound operations:
 
 No service record contains the backend host, backend port, LAN address, public
 address or ISP information.
+
+Browser-created services persist identity and configuration below the local
+browser data root. Only explicitly enabled services are restored on startup.
+Missing WAN configuration creates no route and no hosting process.
 
 ## Connection establishment
 

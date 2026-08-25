@@ -10,6 +10,17 @@ numeric loopback HTTP target.
 Neither the service descriptor nor introduction descriptor contains the
 backend, LAN, NAT, ISP, or public host endpoint.
 
+The browser-managed workflow, static-file policy, and on-disk lifecycle are
+documented in [Hosting.md](Hosting.md).
+
+## Create from Granger Browser
+
+Open `Settings -> Granger Network -> Sites & Hosting`, choose `Static website`
+or `Local application`, validate the source, then select `Publish service`.
+The displayed canonical address is an identity-derived service name, not a DNS
+registration. `Open` navigates through the browser custom scheme and WAN
+gateway; it never opens the source folder or localhost.
+
 ## Initialize a service
 
 ```powershell
@@ -74,6 +85,11 @@ requests, response status/headers/body, multiple sequential requests, and
 concurrent streams. The test forum exercises HTML, CSS, JavaScript, POST, and
 readback. Responses are buffered with a 2 MiB limit; streaming downloads,
 WebSocket, CONNECT, arbitrary TCP forwarding, and UDP are not implemented.
+
+The browser-managed loopback bridge strips client/network forwarding headers.
+It supplies a fresh opaque `X-Granger-Session` value for each end-to-end
+service session. The value is not the client IP and cannot be supplied by the
+remote site request.
 
 ## Lifecycle
 

@@ -24,6 +24,7 @@
 #include <QWebEngineUrlSchemeHandler>
 
 #include <memory>
+#include <utility>
 
 namespace granger {
 namespace {
@@ -369,15 +370,13 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     configureManagedProcess(process);
     process->setProcessChannelMode(QProcess::SeparateChannels);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-    const QString appLocalPython = QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("runtime/python/python.exe"));
-    const QString appLocalModuleRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("runtime/python/Lib/site-packages"));
-    const bool appLocalRuntime = QFileInfo(python).absoluteFilePath().compare(
-                                     QFileInfo(appLocalPython).absoluteFilePath(),
-                                     Qt::CaseInsensitive) == 0
-        && QDir(moduleRoot).absolutePath().compare(QDir(appLocalModuleRoot).absolutePath(),
-                                                   Qt::CaseInsensitive) == 0;
+    const QString appLocalRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python"));
+    const bool appLocalRuntime = QFileInfo(python).absoluteFilePath().startsWith(
+                                     QDir(appLocalRoot).absolutePath(),
+                                     Qt::CaseInsensitive)
+        && QDir(moduleRoot).absolutePath().startsWith(
+            QDir(appLocalRoot).absolutePath(), Qt::CaseInsensitive);
     for (const QString &name : {QStringLiteral("PYTHONHOME"),
                                 QStringLiteral("PYTHONPATH"),
                                 QStringLiteral("PYTHONSTARTUP"),
@@ -624,11 +623,23 @@ QString GrangerNetworkRuntime::configuredModuleRoot() const
         }
     }
 
-    const QString appLocalModuleRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("runtime/python/Lib/site-packages"));
-    if (QFileInfo::exists(QDir(appLocalModuleRoot).filePath(
-            QStringLiteral("granger_network/browser_gateway.py")))) {
-        return QDir(appLocalModuleRoot).absolutePath();
+    const QString pythonRuntimeRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python"));
+    QStringList appLocalModuleRoots{
+        QDir(pythonRuntimeRoot).filePath(QStringLiteral("Lib/site-packages")),
+        QDir(pythonRuntimeRoot).filePath(QStringLiteral("lib/site-packages"))
+    };
+    QDir pythonLib(QDir(pythonRuntimeRoot).filePath(QStringLiteral("lib")));
+    for (const QString &versionDirectory : pythonLib.entryList(
+             {QStringLiteral("python*")}, QDir::Dirs | QDir::NoDotAndDotDot)) {
+        appLocalModuleRoots.append(
+            pythonLib.filePath(versionDirectory + QStringLiteral("/site-packages")));
+    }
+    for (const QString &appLocalModuleRoot : std::as_const(appLocalModuleRoots)) {
+        if (QFileInfo::exists(QDir(appLocalModuleRoot).filePath(
+                QStringLiteral("granger_network/browser_gateway.py")))) {
+            return QDir(appLocalModuleRoot).absolutePath();
+        }
     }
 
     QDir cursor(QCoreApplication::applicationDirPath());
@@ -655,9 +666,16 @@ QString GrangerNetworkRuntime::configuredRegistryRoot() const
 
 QString GrangerNetworkRuntime::configuredPython() const
 {
-    const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("runtime/python/python.exe"));
-    if (QFileInfo::exists(appLocal)) return QFileInfo(appLocal).absoluteFilePath();
+    const QString runtimeRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python"));
+    const QStringList appLocalCandidates{
+        QDir(runtimeRoot).filePath(QStringLiteral("python.exe")),
+        QDir(runtimeRoot).filePath(QStringLiteral("bin/python3")),
+        QDir(runtimeRoot).filePath(QStringLiteral("bin/python"))
+    };
+    for (const QString &appLocal : appLocalCandidates) {
+        if (QFileInfo::exists(appLocal)) return QFileInfo(appLocal).absoluteFilePath();
+    }
 
     QString configured = qApp
         ? qApp->property("granger.networkPython").toString().trimmed() : QString();

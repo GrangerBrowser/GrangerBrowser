@@ -263,6 +263,7 @@ from granger_network.introduction import IntroductionDescriptor
 from granger_network.multihop import MultiHopCircuit
 from granger_network.peer import NodeDescriptor
 from granger_network.protocol import VERSION_3
+from granger_network.hosting import HOSTING_VERSION, StaticSiteBridge
 
 identity = Ed25519PrivateKey.generate()
 message = b"granger-local-runtime"
@@ -289,6 +290,8 @@ print(json.dumps({
         NodeDescriptor,
     )),
     "granger_network": granger_network_version,
+    "hosting": HOSTING_VERSION,
+    "hosting_static_bridge": bool(StaticSiteBridge),
     "mlkem768": True,
     "protocol": PROTOCOL_VERSION,
     "python": sys.version.split()[0],
@@ -301,7 +304,9 @@ print(json.dumps({
     if ($LASTEXITCODE -ne 0) { throw "Packaged Granger Network Python runtime failed validation." }
     $runtimeValidation = $validationText | ConvertFrom-Json
     if (-not [bool]$runtimeValidation.app_local -or [int]$runtimeValidation.bits -ne 64 -or
-        [int]$runtimeValidation.protocol -ne 2 -or [int]$runtimeValidation.dns_requests -ne 0 -or
+        [int]$runtimeValidation.protocol -ne 2 -or [int]$runtimeValidation.hosting -ne 1 -or
+        -not [bool]$runtimeValidation.hosting_static_bridge -or
+        [int]$runtimeValidation.dns_requests -ne 0 -or
         [string]$runtimeValidation.granger_network -ne [string]$sourceNetworkIdentity.Version -or
         [int]$runtimeValidation.wire -ne 3 -or [int]$runtimeValidation.suite -ne 1 -or
         -not [bool]$runtimeValidation.mlkem768 -or
@@ -334,7 +339,8 @@ $criticalRuntimeFiles = @(
     "runtime/python/$([string]$runtimeInfo.python_dll)",
     "runtime/python/Lib/site-packages/$([IO.Path]::GetFileName($cffiBackend))",
     "runtime/python/Lib/site-packages/cryptography/hazmat/bindings/_rust.pyd",
-    "runtime/python/Lib/site-packages/granger_network/browser_gateway.py"
+    "runtime/python/Lib/site-packages/granger_network/browser_gateway.py",
+    "runtime/python/Lib/site-packages/granger_network/hosting.py"
 )
 $runtimeFileRecords = foreach ($relativePath in $criticalRuntimeFiles) {
     $path = Join-Path $packageRoot $relativePath

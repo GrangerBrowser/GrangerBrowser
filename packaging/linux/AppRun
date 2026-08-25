@@ -15,6 +15,6 @@ export QML2_IMPORT_PATH="$APPDIR/usr/qml"
 export QTWEBENGINEPROCESS_PATH="$APPDIR/usr/libexec/QtWebEngineProcess"
 export QTWEBENGINE_RESOURCES_PATH="$APPDIR/usr/resources"
 export QTWEBENGINE_LOCALES_PATH="$APPDIR/usr/translations/qtwebengine_locales"
-export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/usr/bin/runtime/tor"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/usr/bin/runtime/tor:$APPDIR/usr/bin/runtime/python/lib"
 
 exec "$APPDIR/usr/bin/GrangerBrowser" "$@"

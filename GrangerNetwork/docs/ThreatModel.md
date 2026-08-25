@@ -104,6 +104,21 @@ The service receives application content and timing, but the protocol does not
 provide the client endpoint. Active content can still collect application-level
 identifiers supplied by the user or browser.
 
+A malicious static source can contain active HTML/JavaScript and is treated as
+untrusted web content. Hosting validation prevents filesystem escape and
+executable-file publication; it does not make page script trustworthy. A
+malicious local application receives request content and an opaque per-session
+identifier, but forwarding/client/relay IP headers are removed.
+
+### Malicious hosted source
+
+Static request paths are decoded once and resolved under a canonical source
+root. Traversal, absolute paths, network paths, unsupported extensions,
+oversized files, and symlink escapes fail closed. The selected source directory
+remains trusted local input: a compromised local process able to modify allowed
+files can change the published site. Content is not snapshotted or signed as an
+authoring-time file manifest.
+
 ### Malicious relay
 
 A relay can drop, delay, reorder, duplicate, truncate, selectively forward, or
@@ -223,6 +238,8 @@ post-quantum secure.
 - TCP head-of-line blocking and network-level denial of service remain.
 - Application responses are bounded and buffered; large streaming and
   WebSocket traffic are not implemented.
+- Hosting availability depends on its local source/backend and a valid shared
+  WAN configuration; there is no public relay fleet in this stage.
 - Python process memory is not guaranteed to be zeroized.
 - No formal verification, independent review, or production security audit.
 

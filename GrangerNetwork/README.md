@@ -41,6 +41,8 @@ through the rendezvous before application data is exchanged.
   service sessions.
 - `granger_network.wan_host`: service publication, multiple introduction
   circuits and descriptor refresh.
+- `granger_network.hosting`: browser-managed static-site and numeric-loopback
+  application publication with persistent identity lifecycle.
 - `granger_network.browser_gateway`: bounded stdio bridge used by Qt WebEngine.
 - `granger/network/GrangerNetworkRuntime.cpp`: browser custom-scheme handler
   for `granger-network://<name>.granger/`.
@@ -160,6 +162,14 @@ Paths are relative to the configuration directory and may not escape it.
 Canonical cryptographic names do not require aliases. Human-readable aliases
 are local identity pins, not global DNS.
 
+## Sites and Hosting
+
+The browser exposes `Settings -> Granger Network -> Sites & Hosting`. Static
+folders require `index.html` and pass an allowlisted path/file scan. Dynamic
+services must be reachable on numeric loopback. Create, open, copy, stop,
+restart, edit, and delete controls call the real hosting runtime; there is no
+mock service state. See [Hosting.md](docs/Hosting.md).
+
 ## Security boundary
 
 - `.granger` is intercepted before system DNS.
@@ -182,6 +192,7 @@ are local identity pins, not global DNS.
 - [Bootstrap operations](docs/Bootstrap.md)
 - [Routing](docs/Routing.md)
 - [Service publishing](docs/Services.md)
+- [Sites and hosting](docs/Hosting.md)
 - [Operations](docs/Operations.md)
 - [Physical WAN test](docs/WAN-Test.md)
 - [Pre-v0.4 WAN audit](docs/WANAudit.md)

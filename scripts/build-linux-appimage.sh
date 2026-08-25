@@ -60,6 +60,7 @@ mkdir -p "$appdir/usr/bin/runtime" "$appdir/usr/lib" \
     "$appdir/usr/share/licenses/granger-browser"
 cp -a "$runtime_root/tor" "$appdir/usr/bin/runtime/"
 cp -a "$runtime_root/i2p" "$appdir/usr/bin/runtime/"
+bash "$project_root/scripts/package-linux-granger-runtime.sh" "$appdir"
 cp -a "$project_root/NOTICE.txt" "$project_root/DISTRIBUTION.md" \
     "$appdir/usr/share/licenses/granger-browser/"
 cp -a "$project_root/third_party/i2pd/LICENSE" \
@@ -89,7 +90,8 @@ chmod 0755 "$browser" \
     "$appdir/usr/bin/runtime/tor/tor" \
     "$appdir/usr/bin/runtime/tor/pluggable_transports/lyrebird" \
     "$appdir/usr/bin/runtime/tor/pluggable_transports/conjure-client" \
-    "$appdir/usr/bin/runtime/i2p/i2pd" "$project_root/packaging/linux/AppRun"
+    "$appdir/usr/bin/runtime/i2p/i2pd" \
+    "$appdir/usr/bin/runtime/python/bin/python3" "$project_root/packaging/linux/AppRun"
 
 linuxdeploy_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
 linuxdeploy_sha256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
@@ -127,6 +129,7 @@ export APPIMAGE_EXTRACT_AND_RUN=1
     --appdir "$appdir" \
     --executable "$browser" \
     --executable "$appdir/usr/bin/runtime/i2p/i2pd" \
+    --executable "$appdir/usr/bin/runtime/python/bin/python3" \
     --desktop-file "$project_root/packaging/linux/granger-browser.desktop" \
     --icon-file "$project_root/granger/resources/app-icon.png" \
     --custom-apprun "$project_root/packaging/linux/AppRun" \
@@ -158,6 +161,8 @@ required_files=(
     "usr/bin/runtime/tor/pluggable_transports/pt_config.json"
     "usr/bin/runtime/i2p/i2pd"
     "usr/bin/runtime/i2p/certificates"
+    "usr/bin/runtime/python/bin/python3"
+    "usr/bin/local-runtime-metadata.json"
     "usr/share/licenses/granger-browser/linuxdeploy-MIT.txt"
     "usr/share/licenses/granger-browser/linuxdeploy-appimage-plugin-MIT.txt"
     "usr/share/licenses/granger-browser/linuxdeploy-SOURCES.md"
@@ -165,6 +170,13 @@ required_files=(
 )
 for relative_path in "${required_files[@]}"; do
     [[ -e "$appdir/$relative_path" ]] || fail "AppDir is missing $relative_path"
+done
+python_site_packages="$(jq -r '.sitePackages' "$appdir/usr/bin/local-runtime-metadata.json")"
+for relative_path in \
+    "$python_site_packages/granger_network/browser_gateway.py" \
+    "$python_site_packages/granger_network/hosting.py"; do
+    [[ -f "$appdir/usr/bin/$relative_path" ]] \
+        || fail "AppDir is missing $relative_path"
 done
 chmod 0755 "$appdir/usr/libexec/QtWebEngineProcess"
 if [[ -e "$appdir/usr/bin/QtWebEngineProcess" \

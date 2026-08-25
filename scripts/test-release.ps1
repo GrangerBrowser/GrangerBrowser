@@ -109,6 +109,7 @@ if ($AllowLocalGrangerRuntime) {
         "runtime/python/python3.dll",
         "runtime/python/Lib/site-packages/cryptography/__init__.py",
         "runtime/python/Lib/site-packages/granger_network/browser_gateway.py",
+        "runtime/python/Lib/site-packages/granger_network/hosting.py",
         "local-runtime-metadata.json"
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $copiedPackage $relativePath) -PathType Leaf)) {
