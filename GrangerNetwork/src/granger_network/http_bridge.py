@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
 import socket
 from dataclasses import dataclass
 from typing import Mapping
@@ -15,6 +16,7 @@ MAX_HTTP_BODY = 2 * 1024 * 1024
 MAX_PATH_LENGTH = 4096
 _REQUEST_HEADERS = {"accept", "accept-language", "content-type", "user-agent"}
 _RESPONSE_HEADERS = {"cache-control", "content-language", "content-type", "etag", "last-modified"}
+_SESSION_IDENTITY = re.compile(r"^gs_[A-Za-z0-9_-]{16,96}$")
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,11 @@ class LoopbackHttpTarget:
             return (self.host, self.port, 0, 0)
         return (self.host, self.port)
 
+    @property
+    def url(self) -> str:
+        authority = f"[{self.host}]" if self.family == socket.AF_INET6 else self.host
+        return f"http://{authority}:{self.port}"
+
 
 class LoopbackHttpBridge:
     def __init__(
@@ -92,6 +99,8 @@ class LoopbackHttpBridge:
         path: str,
         headers: Mapping[str, str] | None = None,
         body: bytes = b"",
+        *,
+        session_identity: str = "",
     ) -> HttpResult:
         if not isinstance(method, str):
             raise UpstreamPolicyError("request method must be text")
@@ -128,6 +137,10 @@ class LoopbackHttpBridge:
             if not isinstance(value, str) or "\r" in value or "\n" in value or len(value) > 1024:
                 raise UpstreamPolicyError("request header contains an invalid value")
             forwarded_headers[lower_name] = value
+        if session_identity:
+            if not isinstance(session_identity, str) or not _SESSION_IDENTITY.fullmatch(session_identity):
+                raise UpstreamPolicyError("local Granger session identity is invalid")
+            forwarded_headers["x-granger-session"] = session_identity
 
         authority = self.target.host
         if self.target.family == socket.AF_INET6:

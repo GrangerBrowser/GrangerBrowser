@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
+from granger_network.hosting import StaticSiteBridge
 from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
 from granger_network.node import WanNodeServer
@@ -260,6 +261,108 @@ class WanServiceTests(unittest.TestCase):
             for observation in node.circuit_observations:
                 self.assertFalse(observation.contains(MESSAGE))
                 self.assertFalse(observation.contains(b"POST /message"))
+        self.assertEqual(host.errors, [])
+
+    def test_static_site_bridge_stays_inside_encrypted_overlay(self) -> None:
+        (
+            client_entry,
+            client_middle,
+            service_entry,
+            host_middle,
+            introduction_node,
+            rendezvous_node,
+        ) = self.descriptors
+        site = self.root / "static-site"
+        (site / "images").mkdir(parents=True)
+        files = {
+            "index.html": b"<!doctype html><h1>Hosted through Granger</h1>",
+            "style.css": b"body{background:#101216}",
+            "script.js": b"document.body.dataset.hosted='yes'",
+            "data.json": b'{"hosted":true}',
+            "images/mark.png": b"\x89PNG\r\n\x1a\nGRANGER_STATIC_IMAGE",
+        }
+        for relative, content in files.items():
+            (site / relative).write_bytes(content)
+
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "distributed-overlay",
+            metadata={"contentType": "text/html", "title": "Static Granger site"},
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [introduction_node.node_id],
+            sequence=1,
+            lifetime=900,
+        )
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            (
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (introduction_node, "introduction"),
+            ),
+            (
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (rendezvous_node, "rendezvous"),
+            ),
+            StaticSiteBridge(site),
+            timeout=5.0,
+            rendezvous_lifetime=120,
+        )
+        connections: list[tuple] = []
+        original_connect = socket.socket.connect
+
+        def record_connect(sock: socket.socket, address: tuple) -> None:
+            connections.append(address)
+            original_connect(sock, address)
+
+        try:
+            with (
+                patch("socket.socket.connect", new=record_connect),
+                patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")) as getaddrinfo,
+                patch("socket.gethostbyname", side_effect=AssertionError("DNS used")) as gethostbyname,
+                patch("socket.gethostbyname_ex", side_effect=AssertionError("DNS used")) as gethostbyname_ex,
+            ):
+                host.start_background()
+                host.wait_ready(15.0)
+                client = WanServiceClient(
+                    ServiceIdentity.generate(),
+                    service,
+                    introduction,
+                    (
+                        (client_entry, "entry"),
+                        (client_middle, "middle"),
+                    ),
+                    timeout=5.0,
+                )
+                with client.connect(introduction_node) as session:
+                    for relative, content in files.items():
+                        response = session.fetch("/" + relative)
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.body, content)
+                    self.assertEqual(session.fetch("/", method="HEAD").status, 200)
+                    self.assertEqual(session.fetch("/", method="HEAD").body, b"")
+                    self.assertEqual(session.fetch("/", method="POST", body=b"x").status, 405)
+                self.assertEqual(getaddrinfo.call_count, 0)
+                self.assertEqual(gethostbyname.call_count, 0)
+                self.assertEqual(gethostbyname_ex.call_count, 0)
+        finally:
+            host.stop()
+
+        allowed_ports = {descriptor.endpoint.port for descriptor in self.descriptors}
+        self.assertTrue(connections)
+        self.assertTrue(all(address[1] in allowed_ports for address in connections))
+        for node in self.nodes:
+            for observation in node.circuit_observations:
+                for content in files.values():
+                    self.assertFalse(observation.contains(content))
         self.assertEqual(host.errors, [])
 
 

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import struct
 import threading
+import secrets
 from dataclasses import dataclass
 from typing import Mapping
 
 from .binary import BinaryReader, BinaryWriter
 from .cells import CellMultiplexer, MuxStream
 from .errors import GrangerNetworkError, ProtocolError, ResourceLimitError
-from .http_bridge import HttpResult, LoopbackHttpBridge, MAX_HTTP_BODY, MAX_PATH_LENGTH
+from .http_bridge import HttpResult, MAX_HTTP_BODY, MAX_PATH_LENGTH
 
 
 APPLICATION_VERSION = 1
@@ -219,7 +220,7 @@ class WanApplicationServer:
     def __init__(
         self,
         multiplexer: CellMultiplexer,
-        bridge: LoopbackHttpBridge,
+        bridge: object,
         *,
         max_concurrent_streams: int = 32,
         timeout: float = 10.0,
@@ -229,6 +230,7 @@ class WanApplicationServer:
         self.multiplexer = multiplexer
         self.bridge = bridge
         self.timeout = timeout
+        self._session_identity = "gs_" + secrets.token_urlsafe(18)
         self._slots = threading.BoundedSemaphore(max_concurrent_streams)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -274,6 +276,7 @@ class WanApplicationServer:
                 request.path,
                 request.headers,
                 request.body,
+                session_identity=self._session_identity,
             )
             _send_message(stream, encode_application_response(response))
         except (GrangerNetworkError, OSError, TimeoutError) as error:

@@ -1,0 +1,12 @@
+body {
+  margin: 0;
+  background: rgb(16, 18, 22);
+  color: #eef0f6;
+  font: 16px "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 640px;
+  margin: 64px auto;
+  padding: 24px;
+}

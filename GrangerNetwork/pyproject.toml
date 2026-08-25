@@ -19,6 +19,7 @@ granger-browser-gateway = "granger_network.browser_gateway:main"
 granger-node = "granger_network.node:main"
 granger-wan-host = "granger_network.wan_host:main"
 granger-wan-client = "granger_network.wan_client:main"
+granger-hosting = "granger_network.hosting:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
