@@ -281,25 +281,46 @@ class WanDiscoveryClient:
         self.minimum_replicas = minimum_replicas
         self.timeout = timeout
         self._highest_seen: dict[tuple[str, str], int] = {}
+        self._failed_until: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def _request(self, peer: NodeDescriptor, message: RpcType, payload: bytes, expected: RpcType) -> bytes:
-        connection = connect_authenticated_peer(
-            peer,
-            self.identity,
-            PeerRole.CLIENT,
-            timeout=self.timeout,
-        )
+        connection = None
         try:
+            connection = connect_authenticated_peer(
+                peer,
+                self.identity,
+                PeerRole.CLIENT,
+                timeout=self.timeout,
+            )
             response = connection.rpc.request(message, payload, expected=expected)
             if self.cache is not None:
                 self.cache.add(peer)
+            with self._lock:
+                self._failed_until.pop(peer.node_id, None)
             return response.payload
+        except (GrangerNetworkError, OSError):
+            with self._lock:
+                self._failed_until[peer.node_id] = time.monotonic() + max(
+                    5.0,
+                    min(60.0, self.timeout * 4.0),
+                )
+            raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
     def find_nodes(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]:
-        pending = list(self.pool.candidates("discovery"))
+        seeds = list(self.pool.candidates("discovery"))
+        with self._lock:
+            current = time.monotonic()
+            pending = [
+                peer
+                for peer in seeds
+                if self._failed_until.get(peer.node_id, 0.0) <= current
+            ]
+        if not pending:
+            pending = seeds
         known = {peer.node_id: peer for peer in pending}
         queried: set[str] = set()
         while pending and len(queried) < MAX_DISCOVERY_QUERIES:

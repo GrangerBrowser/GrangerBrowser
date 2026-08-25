@@ -21,6 +21,7 @@ from granger_network.resolver import LocalResolver
 
 def request_document(**changes: object) -> bytes:
     document: dict[str, object] = {
+        "body": "",
         "headers": {"accept": "text/css", "cookie": "must-not-pass"},
         "method": "GET",
         "name": "test.granger",
@@ -56,11 +57,13 @@ class BrowserGatewayTests(unittest.TestCase):
         for changes in (
             {"name": "example.com"},
             {"name": "nested.test.granger"},
-            {"method": "POST"},
+            {"method": "PUT"},
+            {"method": "POST", "body": "***"},
+            {"method": "GET", "body": base64.b64encode(b"unexpected").decode("ascii")},
             {"path": "//example.com/escape"},
             {"path": "/bad\npath"},
             {"requestId": "invalid"},
-            {"version": 2},
+            {"version": 1},
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 parse_request(request_document(**changes))
@@ -85,6 +88,49 @@ class BrowserGatewayTests(unittest.TestCase):
             "/style.css?theme=dark",
             method="GET",
             headers={"accept": "text/css"},
+        )
+
+    def test_post_body_is_forwarded_only_to_a_body_capable_gateway(self) -> None:
+        response = GrangerResponse(
+            201,
+            "Created",
+            {"content-type": "text/plain"},
+            b"stored",
+            f"{'c' * 52}.granger",
+        )
+
+        class BodyGateway:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            def fetch_gateway(self, *args):
+                self.calls.append(args)
+                return response
+
+        gateway = BodyGateway()
+        body = b"GRANGER_TEST_MESSAGE_123"
+        result = handle_request(
+            gateway,
+            2.0,
+            request_document(
+                method="POST",
+                path="/message",
+                body=base64.b64encode(body).decode("ascii"),
+                headers={"content-type": "text/plain", "cookie": "must-not-pass"},
+            ),
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            gateway.calls,
+            [
+                (
+                    "test.granger",
+                    "/message",
+                    "POST",
+                    {"content-type": "text/plain"},
+                    body,
+                )
+            ],
         )
 
     def test_unknown_service_fails_closed_with_safe_error(self) -> None:

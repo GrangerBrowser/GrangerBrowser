@@ -4,14 +4,88 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from .descriptor import ServiceDescriptor
 from ._codec import atomic_write_text
 from .errors import GrangerNetworkError, OverlayRoutingError
+from .peer import NodeDescriptor
+from .wan_config import WanDiscoveryRuntime
 from .wan_config import load_discovery_runtime
 from .wan_discovery import WanDistributedResolver
-from .wan_routing import WanRouteSelector
-from .wan_service import WanServiceClient
+from .wan_routing import WanRouteSelection, WanRouteSelector
+from .wan_service import WanServiceClient, WanServiceSession
+
+
+@dataclass(frozen=True)
+class WanClientConnection:
+    service: ServiceDescriptor
+    session: WanServiceSession
+    route: WanRouteSelection
+    introduction_node: NodeDescriptor
+    attempts: int
+
+
+def connect_service(
+    runtime: WanDiscoveryRuntime,
+    resolver: WanDistributedResolver,
+    name: str,
+    *,
+    excluded_ids: set[str] | None = None,
+    route_attempts: int = 3,
+    timeout: float = 8.0,
+) -> WanClientConnection:
+    if not 1 <= route_attempts <= 8:
+        raise ValueError("WAN route attempt count is invalid")
+    service = resolver.resolve(name)
+    introduction = resolver.resolve_introduction(service)
+    selector = WanRouteSelector(runtime.discovery)
+    failures: list[str] = []
+    attempts = 0
+    introduction_nodes = []
+    for point in introduction.points:
+        try:
+            introduction_nodes.append(resolver.resolve_node(point.node_id))
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            failures.append(type(error).__name__)
+    for introduction_node in introduction_nodes:
+        try:
+            candidates = selector.client_candidates(
+                service.service_id,
+                excluded_ids=set(excluded_ids or ()) | {introduction_node.node_id},
+                limit=route_attempts,
+            )
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            failures.append(type(error).__name__)
+            continue
+        for prefix in candidates:
+            if attempts >= route_attempts:
+                break
+            attempts += 1
+            client = WanServiceClient(
+                runtime.identity,
+                service,
+                introduction,
+                prefix.route,
+                timeout=timeout,
+            )
+            try:
+                return WanClientConnection(
+                    service,
+                    client.connect(introduction_node),
+                    prefix,
+                    introduction_node,
+                    attempts,
+                )
+            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                failures.append(type(error).__name__)
+        if attempts >= route_attempts:
+            break
+    raise OverlayRoutingError(
+        "private route attempts were exhausted without a direct fallback: "
+        + ",".join(failures)
+    )
 
 
 def _alias_pins(values: list[str]) -> dict[str, str]:
@@ -36,32 +110,15 @@ def _connect(options: argparse.Namespace):
         minimum_replicas=options.minimum_replicas,
     )
     resolver = WanDistributedResolver(runtime.discovery, _alias_pins(options.alias_pin))
-    service = resolver.resolve(options.name)
-    introduction = resolver.resolve_introduction(service)
-    introduction_node = resolver.resolve_node(introduction.points[0].node_id)
-    selector = WanRouteSelector(runtime.discovery)
-    failures: list[str] = []
-    candidates = selector.client_candidates(
-        service.service_id,
+    connected = connect_service(
+        runtime,
+        resolver,
+        options.name,
         excluded_ids=set(options.exclude_node),
-        limit=options.route_attempts,
+        route_attempts=options.route_attempts,
+        timeout=options.timeout,
     )
-    for attempt, prefix in enumerate(candidates, start=1):
-        client = WanServiceClient(
-            runtime.identity,
-            service,
-            introduction,
-            prefix.route,
-            timeout=options.timeout,
-        )
-        try:
-            return service, client.connect(introduction_node), prefix, attempt
-        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-            failures.append(type(error).__name__)
-    raise OverlayRoutingError(
-        "private route attempts were exhausted without a direct fallback: "
-        + ",".join(failures)
-    )
+    return connected.service, connected.session, connected.route, connected.attempts
 
 
 def run_fetch(options: argparse.Namespace) -> int:

@@ -124,6 +124,7 @@ GrangerNetworkRequestPolicy GrangerNetworkUrl::evaluateRequest(
     const QByteArray normalizedMethod = method.toUpper();
     const bool safeMethod = normalizedMethod == QByteArrayLiteral("GET")
         || normalizedMethod == QByteArrayLiteral("HEAD");
+    const bool serviceWrite = normalizedMethod == QByteArrayLiteral("POST");
     const bool namespaceTarget = targetsNamespace(requestUrl);
     const bool customTarget = isCustomUrl(requestUrl);
     const bool httpTarget = isHttpNamespaceUrl(requestUrl);
@@ -148,7 +149,9 @@ GrangerNetworkRequestPolicy GrangerNetworkUrl::evaluateRequest(
         return policy;
     }
     if (customTarget) {
-        if (!safeMethod || (!mainFrame && !sameGrangerOrigin(source, requestUrl))) {
+        const bool sameOrigin = sameGrangerOrigin(source, requestUrl);
+        if ((!safeMethod && !serviceWrite) || (!mainFrame && !sameOrigin)
+            || (serviceWrite && !sameOrigin)) {
             policy.action = GrangerNetworkRequestAction::Block;
             policy.reason = QStringLiteral("Cross-origin Granger Network request");
             return policy;

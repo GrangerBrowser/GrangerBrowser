@@ -67,6 +67,14 @@ def _target(service_id: str, purpose: bytes) -> bytes:
 
 def run_host(options: argparse.Namespace) -> int:
     root = options.state_dir
+    if options.minimum_introduction_points > options.introduction_points:
+        raise ValueError("minimum introduction points exceed the requested count")
+    if not 60 <= options.refresh_margin < options.introduction_lifetime:
+        raise ValueError("introduction refresh margin is invalid")
+    if not 3600 <= options.service_lifetime <= 7 * 24 * 60 * 60:
+        raise ValueError("service descriptor lifetime is invalid")
+    if not 300 <= options.service_refresh_margin < options.service_lifetime:
+        raise ValueError("service descriptor refresh margin is invalid")
     identity = ServiceIdentity.load(root / SERVICE_IDENTITY_FILE)
     service = ServiceDescriptor.from_json(
         (root / SERVICE_DESCRIPTOR_FILE).read_text(encoding="utf-8")
@@ -80,109 +88,153 @@ def run_host(options: argparse.Namespace) -> int:
         replication_factor=options.replication_factor,
         minimum_replicas=options.minimum_replicas,
     )
-    introductions = runtime.discovery.find_nodes(
-        _target(service.service_id, b"introduction"),
-        "introduction",
-    )
-    rendezvous_nodes = runtime.discovery.find_nodes(
-        _target(service.service_id, b"rendezvous"),
-        "rendezvous",
-    )
-    if not introductions or not rendezvous_nodes:
-        raise OverlayRoutingError("introduction or rendezvous infrastructure is unavailable")
-    introduction_node = introductions[0]
-    rendezvous_node = next(
-        (node for node in rendezvous_nodes if node.node_id != introduction_node.node_id),
-        None,
-    )
-    if rendezvous_node is None:
-        raise OverlayRoutingError("no independent rendezvous node is available")
-    introduction = IntroductionDescriptor.create(
-        identity,
-        service,
-        [introduction_node.node_id],
-        sequence=_next_sequence(root / INTRODUCTION_SEQUENCE_FILE),
-        lifetime=15 * 60,
-    )
-    atomic_write_text(
-        root / INTRODUCTION_DESCRIPTOR_FILE,
-        introduction.to_json(),
-        mode=0o644,
-    )
-    runtime.discovery.publish(service)
-    runtime.discovery.publish(introduction)
-
     selector = WanRouteSelector(runtime.discovery)
     bridge = LoopbackHttpBridge(LoopbackHttpTarget.parse(options.upstream))
-    host: WanServiceHost | None = None
-    intro_route = None
-    rendezvous_route = None
-    startup_failures: list[str] = []
-    try:
-        for attempt in range(options.startup_attempts):
-            intro_route = selector.service_route(
-                service.service_id,
-                introduction_node,
-                "introduction",
-            )
-            rendezvous_route = selector.service_route(
-                service.service_id,
-                rendezvous_node,
-                "rendezvous",
-            )
-            candidate = WanServiceHost(
+    generation = 0
+    while True:
+        now = int(time.time())
+        assert service.expires_at is not None
+        if service.expires_at - now <= options.service_refresh_margin:
+            service = ServiceDescriptor.create_remote(
                 identity,
-                service,
-                introduction,
-                intro_route.route,
-                rendezvous_route.route,
-                bridge,
-                timeout=options.timeout,
-                rendezvous_lifetime=options.rendezvous_lifetime,
+                "distributed-overlay",
+                metadata=service.metadata,
+                lifetime=options.service_lifetime,
             )
-            candidate.start_background()
-            try:
-                candidate.wait_ready(options.startup_timeout)
-                host = candidate
-                break
-            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                startup_failures.append(f"{type(error).__name__}:{error}")
-                candidate.stop()
-                if attempt + 1 < options.startup_attempts:
-                    time.sleep(min(1.0, 0.2 * (attempt + 1)))
-        if host is None or intro_route is None or rendezvous_route is None:
-            raise OverlayRoutingError(
-                "service private-route startup attempts were exhausted: "
-                + ";".join(startup_failures)
-            )
-        if options.ready_file is not None:
             atomic_write_text(
-                options.ready_file,
-                json.dumps(
-                    {
-                        "canonicalName": service.canonical_name,
-                        "introductionNodeId": introduction_node.node_id,
-                        "introductionRoute": [node.node_id for node, _role in intro_route.route],
-                        "pid": os.getpid(),
-                        "rendezvousNodeId": rendezvous_node.node_id,
-                        "rendezvousRoute": [node.node_id for node, _role in rendezvous_route.route],
-                        "version": 1,
-                    },
-                    ensure_ascii=True,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
+                root / SERVICE_DESCRIPTOR_FILE,
+                service.to_json(),
                 mode=0o644,
             )
-        while not host.wait(0.25):
-            pass
-        if host.errors:
-            raise RuntimeError(host.errors[0])
-        return 0
-    finally:
-        if host is not None:
-            host.stop()
+        introductions = runtime.discovery.find_nodes(
+            _target(service.service_id, b"introduction"),
+            "introduction",
+        )
+        rendezvous_nodes = runtime.discovery.find_nodes(
+            _target(service.service_id, b"rendezvous"),
+            "rendezvous",
+        )
+        selected_introductions = introductions[: options.introduction_points]
+        if (
+            len(selected_introductions) < options.minimum_introduction_points
+            or not rendezvous_nodes
+        ):
+            raise OverlayRoutingError(
+                "introduction or rendezvous infrastructure is unavailable"
+            )
+        introduction_node_ids = {node.node_id for node in selected_introductions}
+        rendezvous_node = next(
+            (node for node in rendezvous_nodes if node.node_id not in introduction_node_ids),
+            None,
+        )
+        if rendezvous_node is None:
+            raise OverlayRoutingError("no independent rendezvous node is available")
+        introduction = IntroductionDescriptor.create(
+            identity,
+            service,
+            [node.node_id for node in selected_introductions],
+            sequence=_next_sequence(root / INTRODUCTION_SEQUENCE_FILE),
+            lifetime=options.introduction_lifetime,
+        )
+        atomic_write_text(
+            root / INTRODUCTION_DESCRIPTOR_FILE,
+            introduction.to_json(),
+            mode=0o644,
+        )
+        runtime.discovery.publish(service)
+        runtime.discovery.publish(introduction)
+
+        host: WanServiceHost | None = None
+        intro_routes = None
+        rendezvous_route = None
+        startup_failures: list[str] = []
+        try:
+            for attempt in range(options.startup_attempts):
+                candidate: WanServiceHost | None = None
+                try:
+                    intro_routes = tuple(
+                        selector.service_route(
+                            service.service_id,
+                            introduction_node,
+                            "introduction",
+                        )
+                        for introduction_node in selected_introductions
+                    )
+                    rendezvous_route = selector.service_route(
+                        service.service_id,
+                        rendezvous_node,
+                        "rendezvous",
+                    )
+                    candidate = WanServiceHost(
+                        identity,
+                        service,
+                        introduction,
+                        tuple(route.route for route in intro_routes),
+                        rendezvous_route.route,
+                        bridge,
+                        timeout=options.timeout,
+                        rendezvous_lifetime=options.rendezvous_lifetime,
+                    )
+                    candidate.start_background()
+                    candidate.wait_ready(options.startup_timeout)
+                    host = candidate
+                    break
+                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                    startup_failures.append(f"{type(error).__name__}:{error}")
+                    if candidate is not None:
+                        candidate.stop()
+                    if attempt + 1 < options.startup_attempts:
+                        time.sleep(min(1.0, 0.2 * (attempt + 1)))
+            if host is None or intro_routes is None or rendezvous_route is None:
+                raise OverlayRoutingError(
+                    "service private-route startup attempts were exhausted: "
+                    + ";".join(startup_failures)
+                )
+            generation += 1
+            if options.ready_file is not None:
+                atomic_write_text(
+                    options.ready_file,
+                    json.dumps(
+                        {
+                            "canonicalName": service.canonical_name,
+                            "generation": generation,
+                            "introductionExpiresAt": introduction.expires_at,
+                            "introductionNodeId": selected_introductions[0].node_id,
+                            "introductionNodeIds": [
+                                node.node_id for node in selected_introductions
+                            ],
+                            "introductionRoute": [
+                                node.node_id for node, _role in intro_routes[0].route
+                            ],
+                            "introductionRoutes": [
+                                [node.node_id for node, _role in route.route]
+                                for route in intro_routes
+                            ],
+                            "pid": os.getpid(),
+                            "rendezvousNodeId": rendezvous_node.node_id,
+                            "rendezvousRoute": [
+                                node.node_id for node, _role in rendezvous_route.route
+                            ],
+                            "version": 1,
+                        },
+                        ensure_ascii=True,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    mode=0o644,
+                )
+            refresh_at = introduction.expires_at - options.refresh_margin
+            while not host.wait(0.25):
+                if int(time.time()) >= refresh_at:
+                    break
+            if host.wait(0):
+                if host.errors:
+                    raise RuntimeError(host.errors[0])
+                raise RuntimeError("service host stopped before descriptor refresh")
+        finally:
+            if host is not None:
+                host.stop()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -200,6 +252,17 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--ready-file", type=Path)
     serve.add_argument("--timeout", type=float, default=8.0)
     serve.add_argument("--rendezvous-lifetime", type=int, default=180)
+    serve.add_argument("--introduction-lifetime", type=int, default=15 * 60)
+    serve.add_argument("--refresh-margin", type=int, default=2 * 60)
+    serve.add_argument("--service-lifetime", type=int, default=24 * 60 * 60)
+    serve.add_argument("--service-refresh-margin", type=int, default=60 * 60)
+    serve.add_argument("--introduction-points", type=int, choices=range(1, 9), default=2)
+    serve.add_argument(
+        "--minimum-introduction-points",
+        type=int,
+        choices=range(1, 9),
+        default=2,
+    )
     serve.add_argument("--replication-factor", type=int, choices=range(2, 9), default=3)
     serve.add_argument("--minimum-replicas", type=int, choices=range(2, 9), default=2)
     serve.add_argument("--startup-attempts", type=int, choices=range(1, 9), default=4)

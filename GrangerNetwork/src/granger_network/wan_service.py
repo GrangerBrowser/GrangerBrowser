@@ -212,7 +212,12 @@ class WanServiceHost:
         identity: ServiceIdentity,
         service: ServiceDescriptor,
         introduction: IntroductionDescriptor,
-        introduction_route: list[tuple[NodeDescriptor, str]] | tuple[tuple[NodeDescriptor, str], ...],
+        introduction_route: (
+            list[tuple[NodeDescriptor, str]]
+            | tuple[tuple[NodeDescriptor, str], ...]
+            | list[list[tuple[NodeDescriptor, str]] | tuple[tuple[NodeDescriptor, str], ...]]
+            | tuple[tuple[tuple[NodeDescriptor, str], ...], ...]
+        ),
         rendezvous_route: list[tuple[NodeDescriptor, str]] | tuple[tuple[NodeDescriptor, str], ...],
         bridge: LoopbackHttpBridge,
         *,
@@ -223,14 +228,38 @@ class WanServiceHost:
         introduction.verify_for(service)
         if service.identity_public_key != identity.public_key_bytes:
             raise ProtocolError("WAN service host identity does not match its descriptor")
-        if len(introduction_route) < 3 or introduction_route[-1][1] != "introduction":
+        raw_introduction_routes = tuple(introduction_route)
+        if not raw_introduction_routes:
             raise OverlayRoutingError("service introduction route is invalid")
+        first = raw_introduction_routes[0]
+        if (
+            isinstance(first, tuple)
+            and len(first) == 2
+            and isinstance(first[0], NodeDescriptor)
+            and isinstance(first[1], str)
+        ):
+            introduction_routes = (raw_introduction_routes,)
+        else:
+            introduction_routes = tuple(tuple(route) for route in raw_introduction_routes)
+        if any(
+            len(route) < 3 or route[-1][1] != "introduction"
+            for route in introduction_routes
+        ):
+            raise OverlayRoutingError("service introduction route is invalid")
+        introduction_node_ids = {route[-1][0].node_id for route in introduction_routes}
+        if (
+            len(introduction_node_ids) != len(introduction_routes)
+            or introduction_node_ids != {point.node_id for point in introduction.points}
+        ):
+            raise OverlayRoutingError(
+                "service introduction routes do not match the signed descriptor"
+            )
         if len(rendezvous_route) < 3 or rendezvous_route[-1][1] != "rendezvous":
             raise OverlayRoutingError("service rendezvous route is invalid")
         self.identity = identity
         self.service = service
         self.introduction = introduction
-        self.introduction_route = tuple(introduction_route)
+        self.introduction_routes = introduction_routes
         self.rendezvous_route = tuple(rendezvous_route)
         self.bridge = bridge
         self.timeout = timeout
@@ -240,8 +269,8 @@ class WanServiceHost:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
-        self._intro_thread: threading.Thread | None = None
-        self._intro_circuit: BuiltCircuit | None = None
+        self._intro_threads: list[threading.Thread] = []
+        self._intro_circuits: list[BuiltCircuit] = []
         self._rendezvous_circuit: BuiltCircuit | None = None
         self._rendezvous_mux: CellMultiplexer | None = None
         self._channel: SecureChannel | None = None
@@ -278,18 +307,27 @@ class WanServiceHost:
     def _run(self) -> None:
         try:
             builder = CircuitBuilder(self.identity, PeerRole.SERVICE, timeout=self.timeout)
-            self._intro_circuit = builder.open(self.introduction_route)
-            self._intro_circuit.endpoint.rpc.request(
-                RpcType.INTRO_REGISTER,
-                encode_intro_registration(self.service, self.introduction),
-                expected=RpcType.INTRO_REGISTER,
-            )
-            self._intro_circuit.endpoint.channel.connection.settimeout(None)
-            self._intro_thread = threading.Thread(
-                target=self._answer_introductions,
-                daemon=True,
-            )
-            self._intro_thread.start()
+            for route in self.introduction_routes:
+                circuit = builder.open(route)
+                try:
+                    circuit.endpoint.rpc.request(
+                        RpcType.INTRO_REGISTER,
+                        encode_intro_registration(self.service, self.introduction),
+                        expected=RpcType.INTRO_REGISTER,
+                    )
+                    circuit.endpoint.channel.connection.settimeout(None)
+                except Exception:
+                    circuit.close()
+                    raise
+                self._intro_circuits.append(circuit)
+            for circuit in self._intro_circuits:
+                thread = threading.Thread(
+                    target=self._answer_introductions,
+                    args=(circuit,),
+                    daemon=True,
+                )
+                self._intro_threads.append(thread)
+                thread.start()
 
             while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
                 try:
@@ -367,12 +405,11 @@ class WanServiceHost:
                 self._grant_condition.notify_all()
             self._close_rendezvous_session()
 
-    def _answer_introductions(self) -> None:
-        assert self._intro_circuit is not None
+    def _answer_introductions(self, intro_circuit: BuiltCircuit) -> None:
         rendezvous = self.rendezvous_route[-1][0]
         while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
             try:
-                request = self._intro_circuit.endpoint.rpc.receive()
+                request = intro_circuit.endpoint.rpc.receive()
                 if request.message_type is not RpcType.INTRO_DELIVER or request.is_response:
                     raise ProtocolError("service received an unexpected introduction message")
                 introduced = decode_intro_request(request.payload)
@@ -398,7 +435,7 @@ class WanServiceHost:
                     cookie=cookie,
                     lifetime=lifetime,
                 )
-                self._intro_circuit.endpoint.rpc.send(
+                intro_circuit.endpoint.rpc.send(
                     RpcType.INTRO_DELIVER,
                     grant.encode(),
                     request_id=request.request_id,
@@ -406,7 +443,9 @@ class WanServiceHost:
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 if not self._stop.is_set():
-                    self.errors.append(f"introduction:{type(error).__name__}:{error}")
+                    self.session_failures.append(
+                        f"introduction:{type(error).__name__}:{error}"
+                    )
                 return
 
     def _close_rendezvous_session(self) -> None:
@@ -432,12 +471,13 @@ class WanServiceHost:
             self._grant_slot = None
             self._grant_condition.notify_all()
         self._close_rendezvous_session()
-        if self._intro_circuit is not None:
-            self._intro_circuit.close()
-            self._intro_circuit = None
-        if self._intro_thread is not None and self._intro_thread is not threading.current_thread():
-            self._intro_thread.join(timeout=2.0)
-            self._intro_thread = None
+        for circuit in self._intro_circuits:
+            circuit.close()
+        self._intro_circuits.clear()
+        for thread in self._intro_threads:
+            if thread is not threading.current_thread():
+                thread.join(timeout=2.0)
+        self._intro_threads.clear()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=3.0)
             self._thread = None

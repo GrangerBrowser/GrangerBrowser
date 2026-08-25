@@ -38,6 +38,7 @@ public:
                const QString &path,
                const QByteArray &method,
                const QMap<QByteArray, QByteArray> &headers,
+               const QByteArray &body,
                ReplyHandler handler);
     void stop();
     QJsonObject diagnostics() const;
@@ -59,6 +60,7 @@ private:
     QString configuredModuleRoot() const;
     QString configuredRegistryRoot() const;
     QString configuredPython() const;
+    QString configuredWanConfig() const;
 
     QPointer<QProcess> m_process;
     QByteArray m_stdoutBuffer;
@@ -68,6 +70,8 @@ private:
     QString m_runtimePython;
     QString m_runtimeModuleRoot;
     QString m_localDemoCanonical;
+    QString m_gatewayMode;
+    QString m_lastRequestError;
     int m_requestCount = 0;
     int m_responseCount = 0;
     int m_failureCount = 0;
@@ -77,6 +81,7 @@ private:
     qint64 m_workerPid = 0;
     bool m_appLocalRuntime = false;
     bool m_localDemoActive = false;
+    bool m_wanConfigActive = false;
     bool m_ready = false;
     bool m_stopping = false;
 };

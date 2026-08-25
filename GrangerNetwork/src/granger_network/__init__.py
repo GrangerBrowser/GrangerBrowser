@@ -1,3 +1,3 @@
-"""Experimental Granger Network v0.3 prototype."""
+"""Experimental Granger Network v0.4 WAN overlay prototype."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

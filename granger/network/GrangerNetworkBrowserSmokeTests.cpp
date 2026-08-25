@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QPointer>
 #include <QTimer>
 #include <QVariant>
 #include <QWebEnginePage>
@@ -108,13 +109,15 @@ QVariant evaluateJavaScript(QWebEnginePage *page, const QString &source, int tim
     QVariant result;
     if (!page) return result;
     QEventLoop loop;
+    QPointer<QEventLoop> guardedLoop(&loop);
     QTimer timeout;
     timeout.setSingleShot(true);
     QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
     timeout.start(timeoutMs);
-    page->runJavaScript(source, [&](const QVariant &value) {
+    page->runJavaScript(source, [guardedLoop, &result](const QVariant &value) {
+        if (!guardedLoop) return;
         result = value;
-        loop.quit();
+        guardedLoop->quit();
     });
     loop.exec();
     return result;
@@ -419,6 +422,105 @@ int runGrangerNetworkLocalDemoSmoke(QApplication &app, const QString &outputPath
             {QStringLiteral("appLocalRuntime"), runtimeOk},
             {QStringLiteral("dnsRequests"), runtime.value(QStringLiteral("dnsRequests"))},
             {QStringLiteral("canonicalAddress"), pageCanonical},
+            {QStringLiteral("runtime"), runtime}
+        };
+        window.close();
+    }
+    if (!writeResult(outputPath, result)) return 2;
+    return passed ? 0 : 1;
+}
+
+int runGrangerNetworkWanSmoke(QApplication &app,
+                              const QString &outputPath,
+                              const QString &canonicalAddress)
+{
+    Q_UNUSED(app)
+    static const QString message = QStringLiteral("GRANGER_BROWSER_WAN_MESSAGE_456");
+    QJsonObject result;
+    bool passed = false;
+    {
+        SettingsManager settings;
+        settings.setTorConnectionMode(QStringLiteral("disabled"));
+        ThemeManager theme;
+        theme.apply(*qApp);
+        MainWindow window(settings, theme);
+        window.show();
+        BrowserTab *tab = window.currentTabForDiagnostics();
+
+        const LoadResult pageLoad = waitForLoad(tab, [&] {
+            window.openAddressForDiagnostics(canonicalAddress);
+        }, 120000);
+        const QString heading = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral("document.querySelector('h1')?.textContent || ''"),
+            10000).toString();
+        const QString bodyText = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral("document.body?.innerText || ''"),
+            10000).toString();
+        const bool script = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral("document.documentElement.dataset.granger === 'ready'"),
+            10000).toBool();
+        const QString background = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral("getComputedStyle(document.body).backgroundColor"),
+            10000).toString();
+
+        const QString postScript = QStringLiteral(R"JS(
+            (() => {
+              document.body.dataset.wanPost = 'pending';
+              fetch('/message', {
+                method: 'POST',
+                headers: {'Content-Type': 'text/plain'},
+                body: %1
+              }).then(async response => {
+                const messages = await (await fetch('/messages')).text();
+                document.body.dataset.wanPost =
+                  response.status + ':' + (response.headers.get('x-granger-status') || '') + ':'
+                    + (messages.includes(%1) ? 'present' : 'missing');
+              }).catch(error => {
+                document.body.dataset.wanPost = 'failed:' + String(error).slice(0, 160);
+              });
+            })()
+        )JS").arg(QStringLiteral("'%1'").arg(message));
+        evaluateJavaScript(tab ? tab->page() : nullptr, postScript, 10000);
+
+        QString postStatus;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        do {
+            postStatus = evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.body?.dataset.wanPost || ''"),
+                10000).toString();
+            if (postStatus != QStringLiteral("pending") && !postStatus.isEmpty()) break;
+            QEventLoop delay;
+            QTimer::singleShot(100, &delay, &QEventLoop::quit);
+            delay.exec();
+        } while (elapsed.elapsed() < 120000);
+
+        const QJsonObject runtime = window.grangerNetworkDiagnosticsForDiagnostics();
+        const bool canonical = GrangerNetworkUrl::isCanonicalHost(canonicalAddress)
+            && pageLoad.address == canonicalAddress;
+        const bool assets = script && background == QStringLiteral("rgb(16, 18, 22)");
+        const bool post = postStatus == QStringLiteral("200:201:present");
+        const bool gateway = runtime.value(QStringLiteral("gatewayMode")).toString()
+                == QStringLiteral("wan")
+            && runtime.value(QStringLiteral("wanConfigActive")).toBool(false)
+            && runtime.value(QStringLiteral("dnsRequests")).toInt(-1) == 0;
+        passed = pageLoad.loaded && canonical
+            && heading == QStringLiteral("Granger test forum")
+            && assets && post && gateway;
+        result = {
+            {QStringLiteral("ok"), passed},
+            {QStringLiteral("canonicalNavigation"), canonical},
+            {QStringLiteral("pageLoaded"), pageLoad.loaded},
+            {QStringLiteral("heading"), heading},
+            {QStringLiteral("bodyText"), bodyText.left(512)},
+            {QStringLiteral("assets"), assets},
+            {QStringLiteral("post"), post},
+            {QStringLiteral("postStatus"), postStatus},
             {QStringLiteral("runtime"), runtime}
         };
         window.close();

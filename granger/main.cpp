@@ -4963,10 +4963,26 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
         grangerOrigin, false, QByteArrayLiteral("GET"));
     record(QStringLiteral("same-origin Granger resource is allowed"),
            sameOriginPolicy.action == granger::GrangerNetworkRequestAction::Allow);
+    const auto sameOriginPostPolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        QUrl(QStringLiteral("granger-network://test.granger/message")), grangerOrigin,
+        grangerOrigin, false, QByteArrayLiteral("POST"));
+    record(QStringLiteral("same-origin Granger POST is allowed"),
+           sameOriginPostPolicy.action == granger::GrangerNetworkRequestAction::Allow);
     const auto crossOriginPolicy = granger::GrangerNetworkUrl::evaluateRequest(
         secondOrigin, grangerOrigin, grangerOrigin, false, QByteArrayLiteral("GET"));
     record(QStringLiteral("cross-service Granger resource is blocked"),
            crossOriginPolicy.action == granger::GrangerNetworkRequestAction::Block);
+    const auto crossOriginPostPolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        QUrl(QStringLiteral("granger-network://second.granger/message")), grangerOrigin,
+        grangerOrigin, false, QByteArrayLiteral("POST"));
+    record(QStringLiteral("cross-service Granger POST is blocked"),
+           crossOriginPostPolicy.action == granger::GrangerNetworkRequestAction::Block);
+    const auto externalPostPolicy = granger::GrangerNetworkUrl::evaluateRequest(
+        QUrl(QStringLiteral("granger-network://test.granger/message")),
+        QUrl(QStringLiteral("https://example.com/")), QUrl(QStringLiteral("https://example.com/")),
+        true, QByteArrayLiteral("POST"));
+    record(QStringLiteral("external top-level Granger POST is blocked"),
+           externalPostPolicy.action == granger::GrangerNetworkRequestAction::Block);
     const auto clearnetPolicy = granger::GrangerNetworkUrl::evaluateRequest(
         QUrl(QStringLiteral("https://example.com/track")), grangerOrigin,
         grangerOrigin, false, QByteArrayLiteral("GET"));
@@ -6251,6 +6267,11 @@ int main(int argc, char *argv[])
         arguments, QStringLiteral("--granger-network-registry="));
     app.setProperty("granger.networkRegistryRoot", networkRegistryArgument);
     app.setProperty("granger.networkRegistryExplicit", !networkRegistryArgument.isEmpty());
+    app.setProperty("granger.networkWanConfig",
+                    argumentValue(arguments, QStringLiteral("--granger-network-wan-config=")));
+    app.setProperty("granger.networkLocalDemo",
+                    arguments.contains(QStringLiteral("--granger-network-local-demo"))
+                        || arguments.contains(QStringLiteral("--smoke-granger-network-local-demo")));
     app.setProperty("granger.networkPython",
                     argumentValue(arguments, QStringLiteral("--granger-network-python=")));
     if (arguments.contains(QStringLiteral("--smoke-brand-migration"))) {
@@ -6287,6 +6308,14 @@ int main(int argc, char *argv[])
             app,
             smokeOutput.isEmpty()
                 ? QStringLiteral("output/granger-network-local-demo-smoke.json") : smokeOutput);
+    }
+    if (arguments.contains(QStringLiteral("--smoke-granger-network-wan"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runGrangerNetworkWanSmoke(
+            app,
+            smokeOutput.isEmpty()
+                ? QStringLiteral("output/granger-network-wan-smoke.json") : smokeOutput,
+            argumentValue(arguments, QStringLiteral("--granger-network-canonical=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

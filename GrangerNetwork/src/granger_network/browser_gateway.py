@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import concurrent.futures
 import html
 import json
 import os
 import re
 import socket
 import sys
+import threading
 from pathlib import Path
 
 from ._codec import parse_json_object
 from .address import normalize_name
-from .client import GrangerClient
+from .client import GrangerClient, GrangerResponse
 from .descriptor import ServiceDescriptor
 from .errors import (
     DescriptorError,
@@ -28,16 +31,26 @@ from .identity import ServiceIdentity
 from .resolver import LocalResolver
 from .service import GrangerServiceHost
 from .transport import LoopbackEndpoint
+from .wan_client import WanClientConnection, connect_service
+from .wan_config import load_browser_wan_config, load_discovery_runtime
+from .wan_discovery import WanDistributedResolver
 
 
-PROTOCOL_VERSION = 1
-MAX_MESSAGE_BYTES = 32 * 1024
+PROTOCOL_VERSION = 2
+MAX_REQUEST_BODY = 2 * 1024 * 1024
+MAX_MESSAGE_BYTES = 3 * 1024 * 1024
 MAX_PATH_LENGTH = 4096
 MAX_HEADER_VALUE = 1024
 MAX_RESPONSE_BODY = 2 * 1024 * 1024
 _REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
-_ALLOWED_REQUEST_HEADERS = {"accept", "accept-language", "user-agent"}
+_ALLOWED_REQUEST_HEADERS = {
+    "accept",
+    "accept-language",
+    "content-type",
+    "user-agent",
+}
 _dns_request_count = 0
+_write_lock = threading.Lock()
 
 
 class _LocalDemoBridge:
@@ -129,6 +142,84 @@ class _LocalDemo:
         self.host.stop()
 
 
+class _WanGateway:
+    def __init__(self, config_path: Path, state_dir: Path) -> None:
+        config = load_browser_wan_config(config_path)
+        self._runtime = load_discovery_runtime(
+            config.bootstrap_path,
+            config.authority_pin_path,
+            Path(state_dir) / "peer-cache.json",
+            Path(state_dir) / "client-identity.json",
+            timeout=config.timeout,
+            replication_factor=config.replication_factor,
+            minimum_replicas=config.minimum_replicas,
+        )
+        self._resolver = WanDistributedResolver(self._runtime.discovery, config.alias_pins)
+        self._route_attempts = config.route_attempts
+        self._timeout = config.timeout
+        self._sessions: dict[str, WanClientConnection] = {}
+        self._lock = threading.Lock()
+
+    def fetch_gateway(
+        self,
+        name: str,
+        path: str,
+        method: str,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> GrangerResponse:
+        with self._lock:
+            connected = self._sessions.get(name)
+            if connected is None:
+                connected = connect_service(
+                    self._runtime,
+                    self._resolver,
+                    name,
+                    route_attempts=self._route_attempts,
+                    timeout=self._timeout,
+                )
+                self._sessions[name] = connected
+        try:
+            response = connected.session.fetch(
+                path,
+                method=method,
+                headers=headers,
+                body=body,
+            )
+            return GrangerResponse(
+                response.status,
+                response.reason,
+                response.headers,
+                response.body,
+                connected.service.canonical_name,
+            )
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError):
+            with self._lock:
+                if self._sessions.get(name) is connected:
+                    self._sessions.pop(name, None)
+                    connected.session.close()
+            raise
+
+    def close(self) -> None:
+        with self._lock:
+            sessions = tuple(self._sessions.values())
+            self._sessions.clear()
+        for connected in sessions:
+            connected.session.close()
+
+
+class _UnavailableGateway:
+    def fetch_gateway(
+        self,
+        _name: str,
+        _path: str,
+        _method: str,
+        _headers: dict[str, str],
+        _body: bytes,
+    ) -> GrangerResponse:
+        raise RendezvousError("no Granger WAN configuration is installed")
+
+
 def _deny_dns(*_args: object, **_kwargs: object) -> object:
     global _dns_request_count
     _dns_request_count += 1
@@ -192,7 +283,16 @@ def parse_request(content: bytes) -> dict[str, object]:
         document = parse_json_object(content.decode("utf-8"))
     except UnicodeDecodeError as error:
         raise ValueError("gateway request is not UTF-8") from error
-    expected = {"headers", "method", "name", "path", "requestId", "type", "version"}
+    expected = {
+        "body",
+        "headers",
+        "method",
+        "name",
+        "path",
+        "requestId",
+        "type",
+        "version",
+    }
     if set(document) != expected:
         raise ValueError("gateway request fields are invalid")
     if document["type"] != "fetch" or document["version"] != PROTOCOL_VERSION:
@@ -201,14 +301,26 @@ def parse_request(content: bytes) -> dict[str, object]:
     if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
         raise ValueError("gateway request identifier is invalid")
     method = document["method"]
-    if not isinstance(method, str) or method.upper() not in {"GET", "HEAD"}:
-        raise ValueError("gateway permits only GET and HEAD")
+    if not isinstance(method, str) or method.upper() not in {"GET", "HEAD", "POST"}:
+        raise ValueError("gateway request method is unsupported")
+    encoded_body = document["body"]
+    if not isinstance(encoded_body, str):
+        raise ValueError("gateway request body is invalid")
+    try:
+        body = base64.b64decode(encoded_body, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("gateway request body is not canonical base64") from error
+    if len(body) > MAX_REQUEST_BODY or base64.b64encode(body).decode("ascii") != encoded_body:
+        raise ValueError("gateway request body exceeds its limit")
+    if method.upper() in {"GET", "HEAD"} and body:
+        raise ValueError("GET and HEAD gateway requests cannot contain a body")
     try:
         name = normalize_name(document["name"])
     except GrangerNetworkError as error:
         raise ValueError("gateway destination is not a valid .granger name") from error
     return {
         "headers": _validate_headers(document["headers"]),
+        "body": body,
         "method": method.upper(),
         "name": name,
         "path": _validate_path(document["path"]),
@@ -232,19 +344,30 @@ def _error_code(error: BaseException) -> str:
     return "REQUEST_REJECTED"
 
 
-def handle_request(resolver: LocalResolver, timeout: float, content: bytes) -> dict[str, object]:
+def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str, object]:
     request_id = ""
     try:
         document = parse_json_object(content.decode("utf-8"))
         request_id = _safe_request_id(document)
         request = parse_request(content)
         request_id = str(request["requestId"])
-        response = GrangerClient(resolver, timeout=timeout).fetch(
-            str(request["name"]),
-            str(request["path"]),
-            method=str(request["method"]),
-            headers=request["headers"],
-        )
+        if hasattr(resolver, "fetch_gateway"):
+            response = resolver.fetch_gateway(
+                str(request["name"]),
+                str(request["path"]),
+                str(request["method"]),
+                request["headers"],
+                request["body"],
+            )
+        else:
+            if request["body"]:
+                raise ProtocolError("compatibility gateway does not carry request bodies")
+            response = GrangerClient(resolver, timeout=timeout).fetch(
+                str(request["name"]),
+                str(request["path"]),
+                method=str(request["method"]),
+                headers=request["headers"],
+            )
         if len(response.body) > MAX_RESPONSE_BODY:
             raise ProtocolError("service response exceeds the browser gateway limit")
         return {
@@ -278,19 +401,53 @@ def _write(document: dict[str, object]) -> None:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("ascii")
-    sys.stdout.buffer.write(encoded + b"\n")
-    sys.stdout.buffer.flush()
+    with _write_lock:
+        sys.stdout.buffer.write(encoded + b"\n")
+        sys.stdout.buffer.flush()
 
 
-def serve(registry: Path, timeout: float, local_demo: bool = False) -> int:
-    demo = _LocalDemo(registry) if local_demo else None
-    resolver = demo.resolver if demo is not None else LocalResolver(registry)
+def serve(
+    registry: Path | None,
+    timeout: float,
+    *,
+    local_demo: bool = False,
+    wan_config: Path | None = None,
+    state_dir: Path | None = None,
+) -> int:
+    install_dns_guard()
+    demo = _LocalDemo(registry) if local_demo and registry is not None else None
+    if wan_config is not None:
+        if state_dir is None:
+            raise ValueError("WAN browser gateway requires a state directory")
+        resolver: object = _WanGateway(wan_config, state_dir)
+        mode = "wan"
+    elif demo is not None:
+        resolver = demo.resolver
+        mode = "local-demo"
+    elif registry is not None:
+        resolver = LocalResolver(registry)
+        mode = "compatibility"
+    else:
+        resolver = _UnavailableGateway()
+        mode = "unavailable"
     if demo is not None:
         demo.start()
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=16,
+        thread_name_prefix="granger-browser-request",
+    )
+    pending_slots = threading.BoundedSemaphore(64)
+
+    def dispatch(content: bytes) -> None:
+        try:
+            _write(handle_request(resolver, timeout, content))
+        finally:
+            pending_slots.release()
+
     try:
-        install_dns_guard()
         ready: dict[str, object] = {
             "localDemo": demo is not None,
+            "mode": mode,
             "pid": os.getpid(),
             "type": "ready",
             "version": PROTOCOL_VERSION,
@@ -313,27 +470,62 @@ def serve(registry: Path, timeout: float, local_demo: bool = False) -> int:
                     }
                 )
                 return 2
-            _write(handle_request(resolver, timeout, content[:-1]))
+            if not pending_slots.acquire(blocking=False):
+                document = parse_json_object(content[:-1].decode("utf-8"))
+                _write(
+                    {
+                        "code": "REQUEST_REJECTED",
+                        "dnsRequests": _dns_request_count,
+                        "ok": False,
+                        "requestId": _safe_request_id(document),
+                        "type": "response",
+                        "version": PROTOCOL_VERSION,
+                    }
+                )
+                continue
+            try:
+                executor.submit(dispatch, content[:-1])
+            except Exception:
+                pending_slots.release()
+                raise
     finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+        if hasattr(resolver, "close"):
+            resolver.close()
         if demo is not None:
             demo.stop()
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Granger Browser private stdio gateway")
-    parser.add_argument("--registry", type=Path, required=True)
+    parser.add_argument("--registry", type=Path)
+    parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--wan-config", type=Path)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--local-demo", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .network_audit import install_from_environment
+
+    install_from_environment("browser-gateway")
     options = _build_parser().parse_args(argv)
     if not 0.5 <= options.timeout <= 30.0:
         print("granger-browser-gateway: timeout is outside the allowed range", file=sys.stderr)
         return 2
     try:
-        return serve(options.registry, options.timeout, options.local_demo)
+        if options.local_demo and options.registry is None:
+            raise ValueError("local demo requires an explicit registry")
+        if options.wan_config is not None and (options.local_demo or options.registry is not None):
+            raise ValueError("WAN, compatibility, and local demo modes are mutually exclusive")
+        return serve(
+            options.registry,
+            options.timeout,
+            local_demo=options.local_demo,
+            wan_config=options.wan_config,
+            state_dir=options.state_dir,
+        )
     except (OSError, ValueError) as error:
         print(f"granger-browser-gateway: {type(error).__name__}", file=sys.stderr)
         return 2

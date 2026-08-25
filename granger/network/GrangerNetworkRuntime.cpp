@@ -10,9 +10,11 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QIODevice>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
@@ -21,12 +23,18 @@
 #include <QWebEngineUrlScheme>
 #include <QWebEngineUrlSchemeHandler>
 
+#include <memory>
+
 namespace granger {
 namespace {
 
-constexpr int kProtocolVersion = 1;
+constexpr int kProtocolVersion = 2;
 constexpr int kMaximumPendingRequests = 64;
+constexpr int kMaximumRequestBody = 2 * 1024 * 1024;
+constexpr int kRequestBodyTimeoutMs = 5000;
 constexpr int kMaximumResponseLine = 4 * 1024 * 1024;
+constexpr int kCompatibilityRequestTimeoutMs = 15000;
+constexpr int kWanRequestTimeoutMs = 120000;
 
 QString safeErrorMessage(const QString &code)
 {
@@ -96,10 +104,61 @@ public:
         const QUrl url = job->requestUrl();
         const QByteArray method = job->requestMethod().toUpper();
         if (!GrangerNetworkUrl::isCustomUrl(url)
-            || (method != QByteArrayLiteral("GET") && method != QByteArrayLiteral("HEAD"))) {
+            || (method != QByteArrayLiteral("GET") && method != QByteArrayLiteral("HEAD")
+                && method != QByteArrayLiteral("POST"))) {
             job->fail(QWebEngineUrlRequestJob::RequestDenied);
             return;
         }
+
+        if (method == QByteArrayLiteral("POST")) {
+            QIODevice *bodyDevice = job->requestBody();
+            if (bodyDevice) {
+                if ((!bodyDevice->isOpen() && !bodyDevice->open(QIODevice::ReadOnly))
+                    || !bodyDevice->isReadable()) {
+                    job->fail(QWebEngineUrlRequestJob::RequestFailed);
+                    return;
+                }
+                struct BodyReadState {
+                    QByteArray data;
+                    bool completed = false;
+                };
+                const auto state = std::make_shared<BodyReadState>();
+                QPointer<QWebEngineUrlRequestJob> guardedJob(job);
+                const auto consume = [this, guardedJob, bodyDevice, state, url, method] {
+                    if (state->completed || !guardedJob) return;
+                    const qsizetype remaining = kMaximumRequestBody + 1 - state->data.size();
+                    if (remaining > 0) state->data.append(bodyDevice->read(remaining));
+                    if (state->data.size() > kMaximumRequestBody) {
+                        state->completed = true;
+                        guardedJob->fail(QWebEngineUrlRequestJob::RequestDenied);
+                        return;
+                    }
+                    if (!bodyDevice->atEnd()) return;
+                    state->completed = true;
+                    forwardRequest(guardedJob, url, method, state->data);
+                };
+                QObject::connect(bodyDevice, &QIODevice::readyRead, job, consume);
+                QObject::connect(bodyDevice, &QIODevice::readChannelFinished, job, consume);
+                QTimer::singleShot(kRequestBodyTimeoutMs, job, [guardedJob, state] {
+                    if (state->completed || !guardedJob) return;
+                    state->completed = true;
+                    guardedJob->fail(QWebEngineUrlRequestJob::RequestFailed);
+                });
+                consume();
+                return;
+            }
+        }
+
+        forwardRequest(job, url, method, QByteArray());
+    }
+
+private:
+    void forwardRequest(QWebEngineUrlRequestJob *job,
+                        const QUrl &url,
+                        const QByteArray &method,
+                        const QByteArray &requestBody)
+    {
+        if (!job || !m_runtime) return;
 
         QString path = url.path(QUrl::FullyEncoded);
         if (path.isEmpty()) path = QStringLiteral("/");
@@ -119,6 +178,7 @@ public:
         }
         for (const QByteArray &name : {QByteArrayLiteral("accept"),
                                       QByteArrayLiteral("accept-language"),
+                                      QByteArrayLiteral("content-type"),
                                       QByteArrayLiteral("user-agent")}) {
             const QByteArray value = requestHeaders.value(name);
             if (!value.isEmpty() && value.size() <= 1024
@@ -130,7 +190,7 @@ public:
                                      .contains(QByteArrayLiteral("text/html"));
         QPointer<QWebEngineUrlRequestJob> guardedJob(job);
         m_runtime->fetch(
-            url.host().toLower(), path, method, forwardedHeaders,
+            url.host().toLower(), path, method, forwardedHeaders, requestBody,
             [guardedJob, url, method, expectsHtml](const GrangerNetworkReply &reply) {
                 if (!guardedJob) return;
                 if (!reply.ok) {
@@ -160,6 +220,10 @@ public:
                 buffer->open(QIODevice::ReadOnly);
                 QMultiMap<QByteArray, QByteArray> responseHeaders = hardenedResponseHeaders(
                     contentType.toLower().startsWith(QByteArrayLiteral("text/html")));
+                if (reply.status >= 100 && reply.status <= 599) {
+                    responseHeaders.insert(QByteArrayLiteral("X-Granger-Status"),
+                                           QByteArray::number(reply.status));
+                }
                 for (const QByteArray &name : {QByteArrayLiteral("cache-control"),
                                               QByteArrayLiteral("content-language"),
                                               QByteArrayLiteral("etag"),
@@ -175,7 +239,6 @@ public:
             });
     }
 
-private:
     QPointer<GrangerNetworkRuntime> m_runtime;
 };
 
@@ -220,6 +283,7 @@ void GrangerNetworkRuntime::fetch(const QString &name,
                                   const QString &path,
                                   const QByteArray &method,
                                   const QMap<QByteArray, QByteArray> &headers,
+                                  const QByteArray &body,
                                   ReplyHandler handler)
 {
     ++m_requestCount;
@@ -236,6 +300,7 @@ void GrangerNetworkRuntime::fetch(const QString &name,
         requestHeaders.insert(QString::fromLatin1(it.key()), QString::fromLatin1(it.value()));
     }
     QJsonObject document{
+        {QStringLiteral("body"), QString::fromLatin1(body.toBase64())},
         {QStringLiteral("headers"), requestHeaders},
         {QStringLiteral("method"), QString::fromLatin1(method.toUpper())},
         {QStringLiteral("name"), name.toLower()},
@@ -246,7 +311,9 @@ void GrangerNetworkRuntime::fetch(const QString &name,
     };
     auto *timer = new QTimer(this);
     timer->setSingleShot(true);
-    timer->setInterval(15000);
+    timer->setInterval(configuredWanConfig().isEmpty()
+                           ? kCompatibilityRequestTimeoutMs
+                           : kWanRequestTimeoutMs);
     connect(timer, &QTimer::timeout, this, [this, requestId] {
         if (!m_pending.contains(requestId)) return;
         GrangerNetworkReply reply;
@@ -277,6 +344,16 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     const QString python = configuredPython();
     const QString moduleRoot = configuredModuleRoot();
     const QString registryRoot = configuredRegistryRoot();
+    const QString wanConfig = configuredWanConfig();
+    QString requestedWanConfig = qApp
+        ? qApp->property("granger.networkWanConfig").toString().trimmed() : QString();
+    if (requestedWanConfig.isEmpty()) {
+        requestedWanConfig = qEnvironmentVariable("GRANGER_NETWORK_WAN_CONFIG").trimmed();
+    }
+    if (!requestedWanConfig.isEmpty() && wanConfig.isEmpty()) {
+        if (error) *error = QStringLiteral("Explicit Granger WAN config is unavailable");
+        return false;
+    }
     const QString modulePath = QDir(moduleRoot).filePath(
         QStringLiteral("granger_network/browser_gateway.py"));
     if (python.isEmpty() || !QFileInfo::exists(modulePath)) {
@@ -326,11 +403,20 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
         arguments.append(QStringLiteral("-B"));
     }
     arguments.append({QStringLiteral("-m"), QStringLiteral("granger_network.browser_gateway"),
-                      QStringLiteral("--registry"), registryRoot,
                       QStringLiteral("--timeout"), QStringLiteral("10")});
-    if (appLocalRuntime && qApp
-        && !qApp->property("granger.networkRegistryExplicit").toBool()) {
+    const bool localDemo = qApp
+        && qApp->property("granger.networkLocalDemo").toBool();
+    const bool explicitRegistry = qApp
+        && qApp->property("granger.networkRegistryExplicit").toBool();
+    if (!wanConfig.isEmpty()) {
+        arguments.append({QStringLiteral("--wan-config"), wanConfig,
+                          QStringLiteral("--state-dir"),
+                          QDir(registryRoot).filePath(QStringLiteral("wan"))});
+    } else if (localDemo) {
+        arguments.append({QStringLiteral("--registry"), registryRoot});
         arguments.append(QStringLiteral("--local-demo"));
+    } else if (explicitRegistry) {
+        arguments.append({QStringLiteral("--registry"), registryRoot});
     }
     process->setArguments(arguments);
     connect(process, &QProcess::readyReadStandardOutput,
@@ -356,6 +442,9 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     m_appLocalRuntime = appLocalRuntime;
     m_localDemoActive = false;
     m_localDemoCanonical.clear();
+    m_gatewayMode.clear();
+    m_lastRequestError.clear();
+    m_wanConfigActive = !wanConfig.isEmpty();
     m_ready = false;
     m_stdoutBuffer.clear();
     ++m_workerStartCount;
@@ -412,6 +501,15 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
         m_workerPid = qint64(document.value(QStringLiteral("pid")).toDouble());
         m_localDemoActive = document.value(QStringLiteral("localDemo")).toBool(false);
         m_localDemoCanonical = document.value(QStringLiteral("localDemoCanonical")).toString();
+        m_gatewayMode = document.value(QStringLiteral("mode")).toString();
+        if (!QSet<QString>{QStringLiteral("wan"), QStringLiteral("compatibility"),
+                           QStringLiteral("local-demo"), QStringLiteral("unavailable")}
+                 .contains(m_gatewayMode)) {
+            m_lastWorkerError = QStringLiteral("Granger Network runtime returned an invalid mode");
+            failAll(QStringLiteral("CONNECTION_FAILED"));
+            stop();
+            return;
+        }
         m_ready = true;
         flushPendingRequests();
         return;
@@ -431,9 +529,11 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
     if (!reply.ok) {
         reply.errorCode = document.value(QStringLiteral("code")).toString();
         if (reply.errorCode.isEmpty()) reply.errorCode = QStringLiteral("CONNECTION_FAILED");
+        m_lastRequestError = reply.errorCode;
         complete(requestId, reply);
         return;
     }
+    m_lastRequestError.clear();
     reply.status = document.value(QStringLiteral("status")).toInt(0);
     reply.reason = document.value(QStringLiteral("reason")).toString();
     reply.canonicalService = document.value(QStringLiteral("canonicalService")).toString();
@@ -492,6 +592,8 @@ void GrangerNetworkRuntime::stop()
     m_workerPid = 0;
     m_localDemoActive = false;
     m_localDemoCanonical.clear();
+    m_gatewayMode.clear();
+    m_wanConfigActive = false;
     m_stdoutBuffer.clear();
     if (process) {
         QObject::disconnect(process, nullptr, this, nullptr);
@@ -566,6 +668,21 @@ QString GrangerNetworkRuntime::configuredPython() const
     return configured;
 }
 
+QString GrangerNetworkRuntime::configuredWanConfig() const
+{
+    QString configured = qApp
+        ? qApp->property("granger.networkWanConfig").toString().trimmed() : QString();
+    if (configured.isEmpty()) {
+        configured = qEnvironmentVariable("GRANGER_NETWORK_WAN_CONFIG").trimmed();
+    }
+    if (!configured.isEmpty()) {
+        return QFileInfo::exists(configured) ? QFileInfo(configured).absoluteFilePath() : QString();
+    }
+    const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/granger-network/browser-wan.json"));
+    return QFileInfo::exists(appLocal) ? QFileInfo(appLocal).absoluteFilePath() : QString();
+}
+
 QJsonObject GrangerNetworkRuntime::diagnostics() const
 {
     return {
@@ -585,8 +702,11 @@ QJsonObject GrangerNetworkRuntime::diagnostics() const
         {QStringLiteral("appLocalRuntime"), m_appLocalRuntime},
         {QStringLiteral("localDemoActive"), m_localDemoActive},
         {QStringLiteral("localDemoCanonical"), m_localDemoCanonical},
+        {QStringLiteral("gatewayMode"), m_gatewayMode},
+        {QStringLiteral("wanConfigActive"), m_wanConfigActive},
         {QStringLiteral("ready"), m_ready},
-        {QStringLiteral("lastWorkerError"), m_lastWorkerError}
+        {QStringLiteral("lastWorkerError"), m_lastWorkerError},
+        {QStringLiteral("lastRequestError"), m_lastRequestError}
     };
 }
 

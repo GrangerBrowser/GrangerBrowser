@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shutil
@@ -31,6 +32,7 @@ from granger_network.wan_config import load_discovery_runtime, write_bootstrap_b
 MESSAGE = "GRANGER_TEST_MESSAGE_123"
 PLAINTEXT_MARKERS = (
     MESSAGE.encode("ascii"),
+    b"GRANGER_BROWSER_WAN_MESSAGE_456",
     b"GET / HTTP/1.1",
     b"POST /message HTTP/1.1",
     b"Granger test forum",
@@ -59,6 +61,27 @@ def available_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+def process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        return bool(
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+        ) and exit_code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def child_environment(audit_path: Path, role: str) -> dict[str, str]:
@@ -204,9 +227,11 @@ def initialize_topology(root: Path) -> tuple[list[NodeDescriptor], dict[str, Pat
         ("middle-b", ("middle",)),
         ("middle-c", ("middle",)),
         ("middle-d", ("middle",)),
+        ("middle-e", ("middle",)),
         ("service-entry-a", ("service-relay",)),
         ("service-entry-b", ("service-relay",)),
-        ("introduction", ("introduction",)),
+        ("introduction-a", ("introduction",)),
+        ("introduction-b", ("introduction",)),
         ("rendezvous", ("rendezvous",)),
     )
     descriptors: list[NodeDescriptor] = []
@@ -253,7 +278,14 @@ def run_checked(command: list[str], environment: dict[str, str]) -> subprocess.C
     return result
 
 
-def run_acceptance(root: Path, report_path: Path) -> dict:
+def run_acceptance(
+    root: Path,
+    report_path: Path,
+    *,
+    browser: Path | None = None,
+    qt_bin: Path | None = None,
+    expect_packaged_runtime: bool = False,
+) -> dict:
     root = Path(root).resolve()
     report_path = Path(report_path).resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -393,7 +425,12 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
         if host_ready.get("canonicalName") != canonical_name:
             raise AcceptanceError("host readiness returned a different service identity")
         host_route_ids = sorted(
-            set(host_ready["introductionRoute"]) | set(host_ready["rendezvousRoute"])
+            {
+                node_id
+                for route in host_ready["introductionRoutes"]
+                for node_id in route
+            }
+            | set(host_ready["rendezvousRoute"])
         )
         route_exclusion_arguments: list[str] = []
         for node_id in host_route_ids:
@@ -477,6 +514,122 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
         if not client_a_report.get("messagePresent"):
             raise AcceptanceError("forum POST was not visible to the subsequent reader")
 
+        unrestricted_client, unrestricted_report_path, unrestricted_output_path = (
+            start_fetch_client("client-unrestricted", [], attempts=6)
+        )
+        unrestricted_exit = wait_exit(unrestricted_client, 90.0)
+        if unrestricted_exit != 0:
+            raise AcceptanceError(
+                "client without test-only host-route exclusions failed to use the overlay"
+            )
+        unrestricted_report = json.loads(
+            unrestricted_report_path.read_text(encoding="utf-8")
+        )
+        if MESSAGE.encode("ascii") not in unrestricted_output_path.read_bytes():
+            raise AcceptanceError("unrestricted client did not receive the forum message")
+
+        browser_result: dict = {}
+        if browser is not None:
+            browser_config_path = root / "browser-wan.json"
+            atomic_write_text(
+                browser_config_path,
+                json.dumps(
+                    {
+                        "aliasPins": {},
+                        "authorityPin": authority_pin_path.name,
+                        "bootstrap": bootstrap_path.name,
+                        "minimumReplicas": 2,
+                        "replicationFactor": 6,
+                        "routeAttempts": 6,
+                        "timeoutSeconds": 8,
+                        "version": 1,
+                    },
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                mode=0o644,
+            )
+            browser_output = root / "browser-wan-smoke.json"
+            browser_environment = child_environment(
+                root / "audit" / "browser.jsonl",
+                "browser-gateway",
+            )
+            browser_environment["GRANGER_DATA_ROOT"] = str(root / "browser-data")
+            browser_environment["GRANGER_CACHE_ROOT"] = str(root / "browser-cache")
+            if expect_packaged_runtime:
+                system_root = Path(browser_environment.get("SystemRoot", r"C:\Windows"))
+                browser_environment["PATH"] = os.pathsep.join(
+                    (str(system_root / "System32"), str(system_root))
+                )
+                for name in (
+                    "PYTHONHOME",
+                    "PYTHONPATH",
+                    "PYTHONUSERBASE",
+                    "QTDIR",
+                    "CMAKE_PREFIX_PATH",
+                    "QT_PLUGIN_PATH",
+                    "QT_QPA_PLATFORM_PLUGIN_PATH",
+                ):
+                    browser_environment.pop(name, None)
+            elif qt_bin is not None:
+                browser_environment["PATH"] = (
+                    str(qt_bin) + os.pathsep + browser_environment.get("PATH", "")
+                )
+            browser_command = [
+                str(browser),
+                "--smoke-granger-network-wan",
+                f"--smoke-output={browser_output}",
+                f"--granger-network-wan-config={browser_config_path}",
+                f"--granger-network-canonical={canonical_name}",
+            ]
+            if not expect_packaged_runtime:
+                browser_command.extend(
+                    (
+                        f"--granger-network-source={NETWORK_ROOT}",
+                        f"--granger-network-python={sys.executable}",
+                    )
+                )
+            browser_completed = subprocess.run(
+                browser_command,
+                cwd=root,
+                env=browser_environment,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+            if browser_output.is_file():
+                browser_result = json.loads(browser_output.read_text(encoding="utf-8"))
+            worker_pid = int(browser_result.get("runtime", {}).get("workerPid", 0))
+            time.sleep(0.25)
+            browser_result["harness"] = {
+                "exitCode": browser_completed.returncode,
+                "orphanGateway": process_is_running(worker_pid),
+                "packagedRuntimeRequested": expect_packaged_runtime,
+                "stderr": browser_completed.stderr[-4000:],
+                "stdout": browser_completed.stdout[-4000:],
+            }
+            atomic_write_text(
+                root / "browser-process.json",
+                json.dumps(
+                    browser_result,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                mode=0o644,
+            )
+            if (
+                browser_completed.returncode != 0
+                or browser_result.get("ok") is not True
+                or browser_result["harness"]["orphanGateway"]
+            ):
+                raise AcceptanceError("real Qt WebEngine WAN browser smoke failed")
+
         initial_host_ready = host_ready
         terminate_child(host)
         offline_client, offline_report_path, offline_output_path = start_fetch_client(
@@ -503,7 +656,12 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
         if host_ready.get("canonicalName") != canonical_name:
             raise AcceptanceError("restarted host changed its service identity")
         host_route_ids = sorted(
-            set(host_ready["introductionRoute"]) | set(host_ready["rendezvousRoute"])
+            {
+                node_id
+                for route in host_ready["introductionRoutes"]
+                for node_id in route
+            }
+            | set(host_ready["rendezvousRoute"])
         )
         route_exclusion_arguments = []
         for node_id in host_route_ids:
@@ -609,7 +767,9 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
         udp_events = [event for event in all_events if event.get("event") == "udp_send"]
         client_ports = destination_ports(
             audit_events.get("client-a", [])
+            + audit_events.get("browser", [])
             + audit_events.get("client-offline", [])
+            + audit_events.get("client-unrestricted", [])
             + audit_events.get("client-b", [])
             + audit_events.get("client-c", [])
             + audit_events.get("client-d", [])
@@ -640,7 +800,7 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
         host_entry_ports = {
             descriptors_by_id[route[0]].endpoint.port
             for readiness in (initial_host_ready, host_ready)
-            for route in (readiness["introductionRoute"], readiness["rendezvousRoute"])
+            for route in (*readiness["introductionRoutes"], readiness["rendezvousRoute"])
         }
         backend_port = int(backend_ready["port"])
         allowed_client_ports = discovery_ports | all_client_entry_ports
@@ -661,6 +821,7 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
                 int(initial_host_ready["pid"]),
                 int(host_ready["pid"]),
                 int(client_a_report["pid"]),
+                int(unrestricted_report["pid"]),
                 int(offline_client.process.pid),
                 int(client_b_report["pid"]),
                 int(client_c_report["pid"]),
@@ -675,6 +836,13 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
             and MESSAGE.encode("ascii") in cached_messages,
             "bootstrapFailureRecovered": node_children[failed_bootstrap_name].process.poll()
             is not None,
+            "browserWanIntegration": browser is None
+            or (
+                browser_result.get("ok") is True
+                and browser_result.get("post") is True
+                and browser_result.get("runtime", {}).get("gatewayMode") == "wan"
+                and browser_result.get("runtime", {}).get("dnsRequests") == 0
+            ),
             "clientConnectedOnlyToBootstrapAndEntry": bool(client_ports)
             and client_ports.issubset(allowed_client_ports),
             "clientDidNotConnectToHostBackend": backend_port not in client_ports,
@@ -692,6 +860,7 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
                 )
             ),
             "forumMessageRoundTrip": client_a_report.get("messagePresent") is True,
+            "independentClientRoute": unrestricted_report.get("status") == 200,
             "hostOfflineFailClosed": offline_exit != 0
             and not offline_report_path.exists()
             and not offline_output_path.exists(),
@@ -725,11 +894,17 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
                 .strip()
             )
             >= 2,
+            "multipleIntroductionCircuits": all(
+                len(readiness.get("introductionRoutes", [])) >= 2
+                and len(set(readiness.get("introductionNodeIds", []))) >= 2
+                for readiness in (initial_host_ready, host_ready)
+            ),
             "udpSends": len(udp_events) == 0,
         }
         report.update(
             {
                 "canonicalName": canonical_name,
+                "browser": browser_result,
                 "checks": checks,
                 "clientDestinationPorts": sorted(client_ports),
                 "clientRoutes": [
@@ -762,9 +937,9 @@ def run_acceptance(root: Path, report_path: Path) -> dict:
                 "eventCount": len(all_events),
                 "hostDestinationPorts": sorted(host_ports),
                 "hostRoutes": {
-                    "initialIntroduction": initial_host_ready["introductionRoute"],
+                    "initialIntroductions": initial_host_ready["introductionRoutes"],
                     "initialRendezvous": initial_host_ready["rendezvousRoute"],
-                    "restartedIntroduction": host_ready["introductionRoute"],
+                    "restartedIntroductions": host_ready["introductionRoutes"],
                     "restartedRendezvous": host_ready["rendezvousRoute"],
                 },
                 "markerHits": marker_hits,
@@ -814,9 +989,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Granger Network multi-process WAN acceptance")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--browser", type=Path)
+    parser.add_argument("--qt-bin", type=Path)
+    parser.add_argument("--expect-packaged-runtime", action="store_true")
     options = parser.parse_args(argv)
     try:
-        report = run_acceptance(options.work_dir, options.report)
+        if options.browser is not None and not options.expect_packaged_runtime and options.qt_bin is None:
+            parser.error("--qt-bin is required for a non-packaged browser")
+        report = run_acceptance(
+            options.work_dir,
+            options.report,
+            browser=options.browser.resolve() if options.browser is not None else None,
+            qt_bin=options.qt_bin.resolve() if options.qt_bin is not None else None,
+            expect_packaged_runtime=options.expect_packaged_runtime,
+        )
     except Exception as error:
         print(f"wan-process-acceptance: {type(error).__name__}: {error}", file=sys.stderr)
         return 2
