@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import threading
+import time
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -19,7 +20,7 @@ from .errors import (
     ResolutionError,
 )
 from .introduction import AliasRecord, IntroductionDescriptor
-from .peer import NodeDescriptor, validate_node_id
+from .peer import MAX_NODE_CLOCK_SKEW, NodeDescriptor, validate_node_id
 from .protocol import VERSION_3
 from .rendezvous_control import validate_service_id
 from .transport import RendezvousEndpoint
@@ -218,6 +219,10 @@ class DistributedDiscoveryNetwork:
         if len(set(node_ids)) != len(node_ids):
             raise DiscoveryError("distributed discovery peer identities must be unique")
         self._peers = tuple(peers)
+        self._peer_routing_values = tuple(
+            (peer, int.from_bytes(_node_id_bytes(peer.descriptor.node_id), "big"))
+            for peer in peers
+        )
         self.replication_factor = replication_factor
         self.minimum_replicas = minimum_replicas
         self._highest_seen: dict[tuple[str, str], int] = {}
@@ -226,22 +231,19 @@ class DistributedDiscoveryNetwork:
 
     def _closest_peers(self, kind: str, key: str, now: int | None) -> tuple[DiscoveryPeer, ...]:
         target = int.from_bytes(_routing_key(kind, key), "big")
-        eligible: list[DiscoveryPeer] = []
-        for peer in self._peers:
-            try:
-                peer.descriptor.verify(now=now)
-            except DescriptorError:
-                continue
-            eligible.append(peer)
-        eligible.sort(
-            key=lambda peer: int.from_bytes(
-                _node_id_bytes(peer.descriptor.node_id), "big"
-            )
-            ^ target
-        )
+        current = int(time.time()) if now is None else now
+        if isinstance(current, bool) or not isinstance(current, int):
+            raise DiscoveryError("discovery lookup time must be an integer")
+        eligible = [
+            (peer, routing_value)
+            for peer, routing_value in self._peer_routing_values
+            if peer.descriptor.issued_at <= current + MAX_NODE_CLOCK_SKEW
+            and peer.descriptor.expires_at > current
+        ]
+        eligible.sort(key=lambda item: item[1] ^ target)
         if len(eligible) < self.minimum_replicas:
             raise DiscoveryError("too few valid discovery peers are available")
-        return tuple(eligible[: self.replication_factor])
+        return tuple(peer for peer, _routing_value in eligible[: self.replication_factor])
 
     def publish(self, record: DistributedRecord, now: int | None = None) -> int:
         envelope = encode_record(record, now=now)

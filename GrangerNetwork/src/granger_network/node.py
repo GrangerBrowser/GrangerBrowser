@@ -973,6 +973,8 @@ def initialize_node(
     endpoint: RendezvousEndpoint,
     capabilities: tuple[str, ...],
     policy: RelayPolicy,
+    *,
+    descriptor_lifetime: int = 60 * 60,
 ) -> NodeDescriptor:
     root = Path(state_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -980,7 +982,13 @@ def initialize_node(
     if identity_path.exists():
         raise FileExistsError(f"node state already exists: {root}")
     identity = ServiceIdentity.generate()
-    descriptor = NodeDescriptor.create(identity, endpoint, capabilities, policy)
+    descriptor = NodeDescriptor.create(
+        identity,
+        endpoint,
+        capabilities,
+        policy,
+        lifetime=descriptor_lifetime,
+    )
     identity.save(identity_path)
     atomic_write_text(root / NODE_DESCRIPTOR_FILE, descriptor.to_json(), mode=0o644)
     return descriptor
@@ -1016,6 +1024,7 @@ def _build_parser() -> argparse.ArgumentParser:
     initialize.add_argument("--capability", action="append", required=True)
     initialize.add_argument("--max-connections", type=int, default=128)
     initialize.add_argument("--max-circuits", type=int, default=32)
+    initialize.add_argument("--descriptor-lifetime", type=int, default=60 * 60)
 
     run = subcommands.add_parser("run")
     run.add_argument("--state-dir", type=Path, required=True)
@@ -1045,6 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
                 RendezvousEndpoint(options.listen_host, options.listen_port),
                 capabilities,
                 policy,
+                descriptor_lifetime=options.descriptor_lifetime,
             )
             print(descriptor.node_id)
             return 0

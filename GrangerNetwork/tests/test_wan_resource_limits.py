@@ -10,7 +10,7 @@ from granger_network.descriptor import ServiceDescriptor
 from granger_network.distributed import encode_record
 from granger_network.errors import DiscoveryError
 from granger_network.identity import ServiceIdentity
-from granger_network.node import WanNodeServer
+from granger_network.node import WanNodeServer, initialize_node
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_discovery import PersistentRecordStore
@@ -23,6 +23,17 @@ def available_port() -> int:
 
 
 class WanResourceLimitTests(unittest.TestCase):
+    def test_node_initialization_applies_requested_descriptor_lifetime(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="granger-node-lifetime-") as temporary:
+            descriptor = initialize_node(
+                Path(temporary),
+                RendezvousEndpoint("127.0.0.1", available_port()),
+                ("discovery",),
+                RelayPolicy(enabled=False),
+                descriptor_lifetime=24 * 60 * 60,
+            )
+            self.assertEqual(descriptor.expires_at - descriptor.issued_at, 24 * 60 * 60)
+
     def test_real_listener_rejects_connections_beyond_signed_policy(self) -> None:
         identity = ServiceIdentity.generate()
         descriptor = NodeDescriptor.create(
