@@ -89,7 +89,7 @@ print(json.dumps({
     "python_version": platform.python_version(),
 }))
 '@
-$probeText = & $PythonExecutable -I -c $probeCode
+$probeText = $probeCode | & $PythonExecutable -I -
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($probeText)) {
     throw "Python runtime discovery failed."
 }
@@ -300,7 +300,7 @@ print(json.dumps({
     "wire": VERSION_3,
 }))
 '@
-    $validationText = & $packagedPython -I -B -c $validationCode
+    $validationText = $validationCode | & $packagedPython -I -B -
     if ($LASTEXITCODE -ne 0) { throw "Packaged Granger Network Python runtime failed validation." }
     $runtimeValidation = $validationText | ConvertFrom-Json
     if (-not [bool]$runtimeValidation.app_local -or [int]$runtimeValidation.bits -ne 64 -or
