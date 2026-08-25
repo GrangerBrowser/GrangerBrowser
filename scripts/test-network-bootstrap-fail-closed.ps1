@@ -26,10 +26,17 @@ function Start-GrangerProbe {
     $startInfo.WorkingDirectory = $testRoot
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    foreach ($argument in $Arguments) {
-        $startInfo.ArgumentList.Add($argument)
+    $quoted = foreach ($argument in $Arguments) {
+        '"' + $argument.Replace('"', '\"') + '"'
     }
-    return [Diagnostics.Process]::Start($startInfo)
+    $startInfo.Arguments = $quoted -join ' '
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) {
+        $process.Dispose()
+        throw "Granger probe process could not be started."
+    }
+    return $process
 }
 
 $testRoot = Join-Path (Split-Path -Parent $resultPath) `
