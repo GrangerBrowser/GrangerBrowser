@@ -19,15 +19,28 @@ from .identity import ServiceIdentity
 from .transport import RendezvousEndpoint
 
 
-NODE_DESCRIPTOR_VERSION = 1
+LEGACY_NODE_DESCRIPTOR_VERSION = 1
+NODE_DESCRIPTOR_VERSION = 2
 NODE_ID_DOMAIN = b"granger-network-v0.3/node-id\x00"
 NODE_DESCRIPTOR_SIGNATURE_DOMAIN = b"granger-network-v0.3/node-descriptor\x00"
+NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V2 = b"granger-network-v0.4/node-descriptor\x00"
 MAX_NODE_DESCRIPTOR_LIFETIME = 24 * 60 * 60
 MAX_NODE_CLOCK_SKEW = 120
 NODE_CAPABILITIES = frozenset(
-    {"discovery", "entry", "middle", "introduction", "service-relay"}
+    {
+        "bootstrap",
+        "discovery",
+        "entry",
+        "middle",
+        "introduction",
+        "rendezvous",
+        "service-relay",
+    }
 )
-RELAY_CAPABILITIES = NODE_CAPABILITIES - {"discovery"}
+RELAY_CAPABILITIES = frozenset(
+    {"entry", "middle", "introduction", "rendezvous", "service-relay"}
+)
+NODE_REACHABILITY = frozenset({"reachable", "non-reachable", "unknown"})
 _NODE_ID = re.compile(r"^[a-z2-7]{52}$")
 
 
@@ -48,14 +61,22 @@ def validate_node_id(value: str) -> str:
 class RelayPolicy:
     enabled: bool = False
     max_circuits: int = 32
+    max_streams: int = 128
+    max_connections: int = 128
     max_bytes_per_circuit: int = 64 * 1024 * 1024
     max_bandwidth_kib_per_second: int = 1024
+    burst_kib: int = 2048
+    memory_budget_kib: int = 64 * 1024
+    connection_timeout_seconds: int = 10
+    idle_timeout_seconds: int = 120
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise ResourceLimitError("relay participation flag must be boolean")
         limits = (
             (self.max_circuits, 1, 4096, "relay circuit limit"),
+            (self.max_streams, 1, 16384, "relay stream limit"),
+            (self.max_connections, 1, 16384, "relay connection limit"),
             (
                 self.max_bytes_per_circuit,
                 64 * 1024,
@@ -68,6 +89,20 @@ class RelayPolicy:
                 1024 * 1024,
                 "relay bandwidth limit",
             ),
+            (self.burst_kib, 64, 1024 * 1024, "relay burst limit"),
+            (
+                self.memory_budget_kib,
+                1024,
+                4 * 1024 * 1024,
+                "relay memory budget",
+            ),
+            (
+                self.connection_timeout_seconds,
+                1,
+                120,
+                "relay connection timeout",
+            ),
+            (self.idle_timeout_seconds, 5, 3600, "relay idle timeout"),
         )
         for value, minimum, maximum, label in limits:
             if (
@@ -77,31 +112,74 @@ class RelayPolicy:
             ):
                 raise ResourceLimitError(f"{label} is outside the supported range")
 
-    def to_document(self) -> dict[str, int | bool]:
-        return {
+    def to_document(self, *, version: int = NODE_DESCRIPTOR_VERSION) -> dict[str, int | bool]:
+        document: dict[str, int | bool] = {
             "enabled": self.enabled,
             "maxBandwidthKiBPerSecond": self.max_bandwidth_kib_per_second,
             "maxBytesPerCircuit": self.max_bytes_per_circuit,
             "maxCircuits": self.max_circuits,
         }
+        if version == NODE_DESCRIPTOR_VERSION:
+            document.update(
+                {
+                    "burstKiB": self.burst_kib,
+                    "connectionTimeoutSeconds": self.connection_timeout_seconds,
+                    "idleTimeoutSeconds": self.idle_timeout_seconds,
+                    "maxConnections": self.max_connections,
+                    "maxStreams": self.max_streams,
+                    "memoryBudgetKiB": self.memory_budget_kib,
+                }
+            )
+        elif version != LEGACY_NODE_DESCRIPTOR_VERSION:
+            raise DescriptorError("unsupported node descriptor version")
+        return document
 
     @classmethod
-    def from_document(cls, document: object) -> "RelayPolicy":
-        if not isinstance(document, dict) or set(document) != {
+    def from_document(
+        cls,
+        document: object,
+        *,
+        version: int = NODE_DESCRIPTOR_VERSION,
+    ) -> "RelayPolicy":
+        legacy_fields = {
             "enabled",
             "maxBandwidthKiBPerSecond",
             "maxBytesPerCircuit",
             "maxCircuits",
-        }:
+        }
+        current_fields = legacy_fields | {
+            "burstKiB",
+            "connectionTimeoutSeconds",
+            "idleTimeoutSeconds",
+            "maxConnections",
+            "maxStreams",
+            "memoryBudgetKiB",
+        }
+        expected = legacy_fields if version == LEGACY_NODE_DESCRIPTOR_VERSION else current_fields
+        if version not in {LEGACY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION}:
+            raise DescriptorError("unsupported node descriptor version")
+        if not isinstance(document, dict) or set(document) != expected:
             raise DescriptorError("node relay policy has an invalid schema")
         try:
-            return cls(
-                enabled=document["enabled"],
-                max_circuits=document["maxCircuits"],
-                max_bytes_per_circuit=document["maxBytesPerCircuit"],
-                max_bandwidth_kib_per_second=document["maxBandwidthKiBPerSecond"],
-            )
-        except ResourceLimitError as error:
+            values = {
+                "enabled": document["enabled"],
+                "max_circuits": document["maxCircuits"],
+                "max_bytes_per_circuit": document["maxBytesPerCircuit"],
+                "max_bandwidth_kib_per_second": document["maxBandwidthKiBPerSecond"],
+            }
+            if version == NODE_DESCRIPTOR_VERSION:
+                values.update(
+                    {
+                        "burst_kib": document["burstKiB"],
+                        "connection_timeout_seconds": document["connectionTimeoutSeconds"],
+                        "idle_timeout_seconds": document["idleTimeoutSeconds"],
+                        "max_connections": document["maxConnections"],
+                        "max_streams": document["maxStreams"],
+                        "memory_budget_kib": document["memoryBudgetKiB"],
+                    }
+                )
+            return cls(**values)
+        except (KeyError, ResourceLimitError, TypeError) as error:
             raise DescriptorError(str(error)) from error
 
 
@@ -116,9 +194,10 @@ class NodeDescriptor:
     expires_at: int
     signature: bytes
     version: int = NODE_DESCRIPTOR_VERSION
+    reachability: str = "reachable"
 
     def unsigned_document(self) -> dict:
-        return {
+        document = {
             "capabilities": list(self.capabilities),
             "endpoint": {
                 "host": self.endpoint.host,
@@ -129,15 +208,23 @@ class NodeDescriptor:
             "identityKey": encode_base64url(self.identity_public_key),
             "issuedAt": self.issued_at,
             "nodeId": self.node_id,
-            "relayPolicy": self.relay_policy.to_document(),
+            "relayPolicy": self.relay_policy.to_document(version=self.version),
             "version": self.version,
         }
+        if self.version == NODE_DESCRIPTOR_VERSION:
+            document["reachability"] = self.reachability
+        return document
 
     def signature_payload(self) -> bytes:
-        return NODE_DESCRIPTOR_SIGNATURE_DOMAIN + canonical_json(self.unsigned_document())
+        domain = (
+            NODE_DESCRIPTOR_SIGNATURE_DOMAIN
+            if self.version == LEGACY_NODE_DESCRIPTOR_VERSION
+            else NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V2
+        )
+        return domain + canonical_json(self.unsigned_document())
 
     def verify(self, now: int | None = None) -> None:
-        if self.version != NODE_DESCRIPTOR_VERSION or isinstance(self.version, bool):
+        if self.version not in {LEGACY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION} or isinstance(self.version, bool):
             raise DescriptorError("unsupported node descriptor version")
         validate_node_id(self.node_id)
         if (
@@ -160,8 +247,14 @@ class NodeDescriptor:
             raise DescriptorError("node capabilities are invalid")
         if not isinstance(self.relay_policy, RelayPolicy):
             raise DescriptorError("node relay policy is invalid")
+        if self.reachability not in NODE_REACHABILITY:
+            raise DescriptorError("node reachability is invalid")
+        if self.version == LEGACY_NODE_DESCRIPTOR_VERSION and self.reachability != "reachable":
+            raise DescriptorError("legacy node descriptor reachability is invalid")
         if set(self.capabilities) & RELAY_CAPABILITIES and not self.relay_policy.enabled:
             raise DescriptorError("relay capabilities require explicit opt-in")
+        if set(self.capabilities) & RELAY_CAPABILITIES and self.reachability != "reachable":
+            raise DescriptorError("relay capabilities require reachable status")
         for value in (self.issued_at, self.expires_at):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise DescriptorError("node descriptor timestamps must be integers")
@@ -202,6 +295,7 @@ class NodeDescriptor:
         *,
         issued_at: int | None = None,
         lifetime: int = 60 * 60,
+        reachability: str = "reachable",
     ) -> "NodeDescriptor":
         timestamp = int(time.time()) if issued_at is None else issued_at
         if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
@@ -232,6 +326,7 @@ class NodeDescriptor:
             issued_at=timestamp,
             expires_at=timestamp + lifetime,
             signature=b"\x00" * 64,
+            reachability=reachability,
         )
         descriptor = replace(unsigned, signature=identity.sign(unsigned.signature_payload()))
         descriptor.verify(now=timestamp)
@@ -252,6 +347,11 @@ class NodeDescriptor:
                 "signature",
                 "version",
             }
+            version = document.get("version")
+            if version == NODE_DESCRIPTOR_VERSION:
+                expected.add("reachability")
+            elif version != LEGACY_NODE_DESCRIPTOR_VERSION:
+                raise ValueError("unsupported node descriptor version")
             if set(document) != expected:
                 raise ValueError("unexpected node descriptor fields")
             endpoint = document["endpoint"]
@@ -266,11 +366,19 @@ class NodeDescriptor:
                 identity_public_key=decode_base64url(document["identityKey"]),
                 endpoint=RendezvousEndpoint(endpoint["host"], endpoint["port"]),
                 capabilities=tuple(document["capabilities"]),
-                relay_policy=RelayPolicy.from_document(document["relayPolicy"]),
+                relay_policy=RelayPolicy.from_document(
+                    document["relayPolicy"],
+                    version=version,
+                ),
                 issued_at=document["issuedAt"],
                 expires_at=document["expiresAt"],
                 signature=decode_base64url(document["signature"]),
-                version=document["version"],
+                version=version,
+                reachability=(
+                    document["reachability"]
+                    if version == NODE_DESCRIPTOR_VERSION
+                    else "reachable"
+                ),
             )
             descriptor.verify(now=now)
             return descriptor
