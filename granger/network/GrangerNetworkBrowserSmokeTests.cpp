@@ -16,6 +16,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPointer>
+#include <QHostAddress>
+#include <QTcpServer>
 #include <QTimer>
 #include <QVariant>
 #include <QWebEnginePage>
@@ -631,21 +633,83 @@ int runGrangerHostingSmoke(QApplication &app,
             delay.exec();
         } while (settingsWait.elapsed() < 10000);
         const bool settingsPage = settingsAddress.signaled && settingsDom;
+        const auto clickHostingAction = [tab](const QString &fragment) {
+            return evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral(
+                    "(()=>{const link=[...document.querySelectorAll('a')].find(node=>"
+                    "node.href.includes(%1));if(!link)return false;link.click();return true})()")
+                    .arg(QStringLiteral("'%1'").arg(fragment)),
+                10000).toBool();
+        };
+        const auto waitForHostingSelector = [tab](const QString &selector, bool present = true) {
+            QElapsedTimer elapsed;
+            elapsed.start();
+            do {
+                const bool found = evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("Boolean(document.querySelector('%1'))").arg(selector),
+                    10000).toBool();
+                if (found == present) return true;
+                QEventLoop delay;
+                QTimer::singleShot(50, &delay, &QEventLoop::quit);
+                delay.exec();
+            } while (elapsed.elapsed() < 10000);
+            return false;
+        };
+        const bool createWizard = clickHostingAction(QStringLiteral("/hosting/create"))
+            && waitForHostingSelector(QStringLiteral(".hosting-type-grid"));
+        const bool staticWizard = createWizard
+            && clickHostingAction(QStringLiteral("/hosting/begin?type=static"))
+            && waitForHostingSelector(QStringLiteral(".hosting-publish-form"));
+        const bool backToTypes = staticWizard
+            && clickHostingAction(QStringLiteral("/hosting/back"))
+            && waitForHostingSelector(QStringLiteral(".hosting-type-grid"));
+        const bool applicationWizard = backToTypes
+            && clickHostingAction(QStringLiteral("/hosting/begin?type=local-application"))
+            && waitForHostingSelector(QStringLiteral(".hosting-app-form"));
+        const bool cancelWizard = applicationWizard
+            && clickHostingAction(QStringLiteral("/hosting/cancel"))
+            && waitForHostingSelector(QStringLiteral(".hosting-wizard"), false);
+        const bool uiActions = createWizard && staticWizard && backToTypes
+            && applicationWizard && cancelWizard;
         window.openNewTabForDiagnostics();
         tab = window.currentTabForDiagnostics();
 
         HostedServiceRecord created;
         QString createError;
+        bool createCompleted = false;
+        bool createdOk = false;
         QElapsedTimer publishTimer;
         publishTimer.start();
-        const bool createdOk = window.createHostedStaticForDiagnostics(
+        QEventLoop createLoop;
+        QTimer createTimeout;
+        createTimeout.setSingleShot(true);
+        QObject::connect(&createTimeout, &QTimer::timeout, &createLoop, &QEventLoop::quit);
+        const quint64 createOperationId = window.createHostedStaticAsyncForDiagnostics(
             QStringLiteral("Granger hosting acceptance"), sourceDirectory,
-            &created, &createError);
+            [&](bool ok, const HostedServiceRecord &record, const QString &error) {
+                createCompleted = true;
+                createdOk = ok;
+                created = record;
+                createError = error;
+                createLoop.quit();
+            });
+        createTimeout.start(180000);
+        if (!createCompleted) createLoop.exec();
         const qint64 createMs = publishTimer.elapsed();
         const bool identityBound = createdOk
             && GrangerNetworkUrl::isCanonicalHost(created.address);
         const bool online = createdOk
             && waitForHostedStatus(window, created.id, QStringLiteral("online"));
+        const qint64 initialHostPid = online
+            ? window.hostedServiceForDiagnostics(created.id).pid : 0;
+        QString idempotentStartError;
+        const bool idempotentStart = online
+            && window.startHostedServiceForDiagnostics(created.id, &idempotentStartError)
+            && window.hostedServiceForDiagnostics(created.id).pid == initialHostPid
+            && window.grangerHostingDiagnosticsForDiagnostics()
+                   .value(QStringLiteral("processes")).toInt() == 1;
         const qint64 publishMs = online ? publishTimer.elapsed() : -1;
         const qint64 hostWorkingSetBytes = online
             ? processWorkingSetBytes(created.pid) : -1;
@@ -754,14 +818,53 @@ int runGrangerHostingSmoke(QApplication &app,
             && !hostingRuntime.value(QStringLiteral("dnsFallback")).toBool(true);
         const bool removed = !createdOk
             || window.removeHostedServiceForDiagnostics(created.id, &cleanupError);
-        passed = settingsPage && createdOk && identityBound && online && assets
-            && stopped && failClosed && restarted && recovery && privacy && removed;
+        const int servicesBeforeFailureChecks = window.grangerHostingDiagnosticsForDiagnostics()
+            .value(QStringLiteral("services")).toInt(-1);
+        const QVariant configuredWan = qApp->property("granger.networkWanConfig");
+        qApp->setProperty("granger.networkWanConfig", outputPath + QStringLiteral(".missing-wan"));
+        HostedServiceRecord blockedService;
+        QString blockedError;
+        const bool unavailableRejected = !window.createHostedStaticForDiagnostics(
+            QStringLiteral("Blocked hosting acceptance"), sourceDirectory,
+            &blockedService, &blockedError);
+        qApp->setProperty("granger.networkWanConfig", configuredWan);
+        const bool noUnavailableGhost = unavailableRejected && blockedService.id.isEmpty()
+            && window.grangerHostingDiagnosticsForDiagnostics()
+                   .value(QStringLiteral("services")).toInt(-2) == servicesBeforeFailureChecks;
+
+        QTcpServer reservation;
+        const bool portReserved = reservation.listen(QHostAddress::LocalHost, 0);
+        const int offlinePort = portReserved ? int(reservation.serverPort()) : 0;
+        reservation.close();
+        HostedServiceRecord offlineService;
+        QString offlineBackendError;
+        const bool offlineBackendRejected = portReserved
+            && !window.createHostedLocalApplicationForDiagnostics(
+                QStringLiteral("Offline backend acceptance"), QStringLiteral("127.0.0.1"),
+                offlinePort, &offlineService, &offlineBackendError);
+        const QJsonObject finalHostingRuntime = window.grangerHostingDiagnosticsForDiagnostics();
+        const bool noOfflineGhost = offlineBackendRejected && offlineService.id.isEmpty()
+            && finalHostingRuntime.value(QStringLiteral("services")).toInt(-2)
+                == servicesBeforeFailureChecks
+            && finalHostingRuntime.value(QStringLiteral("pendingOperations")).toInt(-1) == 0;
+
+        passed = settingsPage && uiActions && createdOk && identityBound && online
+            && idempotentStart && assets && stopped && failClosed && restarted && recovery
+            && privacy && removed && noUnavailableGhost && noOfflineGhost;
         result = {
             {QStringLiteral("ok"), passed},
             {QStringLiteral("settingsPage"), settingsPage},
             {QStringLiteral("settingsAddress"), settingsAddress.address},
             {QStringLiteral("settingsDom"), settingsDom},
+            {QStringLiteral("uiActions"), uiActions},
+            {QStringLiteral("createWizard"), createWizard},
+            {QStringLiteral("staticWizard"), staticWizard},
+            {QStringLiteral("backToTypes"), backToTypes},
+            {QStringLiteral("applicationWizard"), applicationWizard},
+            {QStringLiteral("cancelWizard"), cancelWizard},
             {QStringLiteral("created"), createdOk},
+            {QStringLiteral("createCompleted"), createCompleted},
+            {QStringLiteral("createOperationId"), qint64(createOperationId)},
             {QStringLiteral("createError"), createError},
             {QStringLiteral("serviceId"), created.id},
             {QStringLiteral("address"), created.address},
@@ -769,6 +872,8 @@ int runGrangerHostingSmoke(QApplication &app,
             {QStringLiteral("recoveryProcessPid"), recoveryRecord.pid},
             {QStringLiteral("identityBound"), identityBound},
             {QStringLiteral("online"), online},
+            {QStringLiteral("idempotentStart"), idempotentStart},
+            {QStringLiteral("idempotentStartError"), idempotentStartError},
             {QStringLiteral("createMs"), createMs},
             {QStringLiteral("publishMs"), publishMs},
             {QStringLiteral("firstRequestMs"), firstRequestMs},
@@ -783,10 +888,17 @@ int runGrangerHostingSmoke(QApplication &app,
             {QStringLiteral("restartError"), restartError},
             {QStringLiteral("recovery"), recovery},
             {QStringLiteral("removed"), removed},
+            {QStringLiteral("networkUnavailableRejected"), unavailableRejected},
+            {QStringLiteral("networkUnavailableError"), blockedError},
+            {QStringLiteral("noNetworkUnavailableGhost"), noUnavailableGhost},
+            {QStringLiteral("offlineBackendRejected"), offlineBackendRejected},
+            {QStringLiteral("offlineBackendPort"), offlinePort},
+            {QStringLiteral("offlineBackendError"), offlineBackendError},
+            {QStringLiteral("noOfflineBackendGhost"), noOfflineGhost},
             {QStringLiteral("dnsRequests"), browserRuntime.value(QStringLiteral("dnsRequests"))},
             {QStringLiteral("directFallback"), hostingRuntime.value(QStringLiteral("directFallback"))},
             {QStringLiteral("first"), first},
-            {QStringLiteral("hostingRuntime"), hostingRuntime},
+            {QStringLiteral("hostingRuntime"), finalHostingRuntime},
             {QStringLiteral("browserRuntime"), browserRuntime}
         };
         window.close();

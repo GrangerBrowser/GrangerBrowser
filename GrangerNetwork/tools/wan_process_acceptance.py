@@ -214,6 +214,22 @@ def destination_ports(events: list[dict]) -> set[int]:
     return result
 
 
+def destination_endpoints(events: list[dict]) -> set[tuple[str, int]]:
+    result: set[tuple[str, int]] = set()
+    for event in events:
+        if event.get("event") not in {"connect", "connect_ex"}:
+            continue
+        address = event.get("address")
+        if (
+            isinstance(address, list)
+            and len(address) >= 2
+            and isinstance(address[0], str)
+            and isinstance(address[1], int)
+        ):
+            result.add((address[0], address[1]))
+    return result
+
+
 def initialize_topology(root: Path) -> tuple[list[NodeDescriptor], dict[str, Path]]:
     specifications = (
         ("bootstrap-a", ("bootstrap", "discovery")),
@@ -878,6 +894,9 @@ def run_acceptance(
             audit_events.get("host", []) + audit_events.get("host-restarted", [])
         )
         hosting_browser_ports = destination_ports(audit_events.get("browser-hosting", []))
+        hosting_browser_endpoints = destination_endpoints(
+            audit_events.get("browser-hosting", [])
+        )
         discovery_ports = {
             descriptor.endpoint.port
             for descriptor in descriptors_by_name.values()
@@ -905,6 +924,14 @@ def run_acceptance(
         allowed_client_ports = discovery_ports | all_client_entry_ports
         allowed_host_ports = discovery_ports | host_entry_ports | {backend_port}
         all_overlay_ports = {descriptor.endpoint.port for descriptor in descriptors}
+        all_overlay_endpoints = {
+            (descriptor.endpoint.host, descriptor.endpoint.port)
+            for descriptor in descriptors
+        }
+        offline_backend_port = int(hosting_browser_result.get("offlineBackendPort", 0))
+        allowed_hosting_endpoints = set(all_overlay_endpoints)
+        if offline_backend_port > 0:
+            allowed_hosting_endpoints.add(("127.0.0.1", offline_backend_port))
 
         captures = sorted((root / "capture").glob("*.bin"))
         marker_hits: list[dict[str, str]] = []
@@ -987,8 +1014,8 @@ def run_acceptance(
             ),
             "hostingConnectedOnlyToOverlayNodes": hosting_source is None
             or (
-                bool(hosting_browser_ports)
-                and hosting_browser_ports.issubset(all_overlay_ports)
+                bool(hosting_browser_endpoints)
+                and hosting_browser_endpoints.issubset(allowed_hosting_endpoints)
             ),
             "independentProcesses": len(process_ids) == len(set(process_ids)),
             "middleFailureRecovered": client_c_report["clientMiddleNodeId"]
@@ -1056,6 +1083,14 @@ def run_acceptance(
                 "eventCount": len(all_events),
                 "hostDestinationPorts": sorted(host_ports),
                 "hostingBrowserDestinationPorts": sorted(hosting_browser_ports),
+                "hostingBrowserDestinations": sorted(
+                    f"{host}:{port}" for host, port in hosting_browser_endpoints
+                ),
+                "hostingOfflineProbeEndpoint": (
+                    f"127.0.0.1:{offline_backend_port}"
+                    if offline_backend_port > 0
+                    else ""
+                ),
                 "hostRoutes": {
                     "initialIntroductions": initial_host_ready["introductionRoutes"],
                     "initialRendezvous": initial_host_ready["rendezvousRoute"],

@@ -333,10 +333,24 @@ def probe_loopback_application(upstream: str, *, timeout: float = 1.5) -> Loopba
     try:
         connection.settimeout(timeout)
         connection.connect(target.socket_address)
+        authority = f"[{target.host}]" if target.family == socket.AF_INET6 else target.host
+        connection.sendall(
+            f"GET / HTTP/1.1\r\nHost: {authority}:{target.port}\r\n"
+            "Connection: close\r\nUser-Agent: Granger-Hosting-Probe/1\r\n\r\n".encode("ascii")
+        )
+        response = bytearray()
+        while b"\r\n" not in response and len(response) < 4096:
+            chunk = connection.recv(512)
+            if not chunk:
+                break
+            response.extend(chunk)
     except OSError as error:
         raise UpstreamPolicyError("local application is not reachable") from error
     finally:
         connection.close()
+    status_line = bytes(response).partition(b"\r\n")[0]
+    if not re.fullmatch(rb"HTTP/1\.[01] [1-5][0-9]{2}(?: [^\r\n]*)?", status_line):
+        raise UpstreamPolicyError("local application did not return a valid HTTP response")
     return target
 
 
@@ -672,6 +686,33 @@ def _print(document: dict[str, object]) -> None:
     print(json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True))
 
 
+def _error_document(command: str, error: Exception) -> dict[str, object]:
+    message = str(error).strip() or type(error).__name__
+    if isinstance(error, FileExistsError):
+        code = "service_already_exists"
+    elif isinstance(error, PermissionError):
+        code = "permission_denied"
+    elif isinstance(error, UpstreamPolicyError):
+        if "local application" in message:
+            code = "backend_unreachable"
+        elif "static site validation" in message:
+            code = "folder_validation_failed"
+        else:
+            code = "upstream_policy_rejected"
+    elif isinstance(error, ValueError):
+        code = "invalid_input"
+    elif isinstance(error, OSError):
+        code = "filesystem_error"
+    else:
+        code = "runtime_error"
+    return {
+        "command": command,
+        "error": {"code": code, "message": message},
+        "ok": False,
+        "version": HOSTING_VERSION,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Granger Network private service hosting runtime")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -748,9 +789,16 @@ def main(argv: list[str] | None = None) -> int:
         if options.command == "serve":
             try:
                 _config, _identity, descriptor = load_hosted_service(options.service_dir)
-                _write_status(options.service_dir, "error", descriptor, error=type(error).__name__)
+                _write_status(
+                    options.service_dir,
+                    "error",
+                    descriptor,
+                    errorCode=type(error).__name__,
+                    errorMessage=str(error)[:512],
+                )
             except Exception:
                 pass
+        _print(_error_document(options.command, error))
         print(f"granger-hosting: {type(error).__name__}: {error}", file=sys.stderr)
         return 2
 

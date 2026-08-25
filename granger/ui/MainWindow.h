@@ -123,6 +123,15 @@ public:
                                           const QString &source,
                                           HostedServiceRecord *created,
                                           QString *error);
+    quint64 createHostedStaticAsyncForDiagnostics(
+        const QString &title,
+        const QString &source,
+        GrangerHostingManager::CreationCompletion completion);
+    bool createHostedLocalApplicationForDiagnostics(const QString &title,
+                                                     const QString &host,
+                                                     int port,
+                                                     HostedServiceRecord *created,
+                                                     QString *error);
     bool startHostedServiceForDiagnostics(const QString &id, QString *error);
     bool stopHostedServiceForDiagnostics(const QString &id, QString *error);
     bool removeHostedServiceForDiagnostics(const QString &id, QString *error);
@@ -363,6 +372,13 @@ private:
     QString containersSettingsHtml() const;
     QString containerSiteRulesHtml() const;
     QString hostingSettingsHtml() const;
+    void refreshHostingSettings(const QString &message = QString());
+    void clearHostingWizard(bool discardPendingService = true);
+    void beginStaticHostingCreation(BrowserTab *tab, const QString &title);
+    void beginLocalHostingCreation(BrowserTab *tab,
+                                   const QString &title,
+                                   const QString &host,
+                                   int port);
     QString contentBlockingAllowlistHtml() const;
     QString contentBlockingDomainPoliciesHtml() const;
     QString contentBlockingRecentEventsHtml(const QUrl &origin = QUrl()) const;
@@ -447,6 +463,14 @@ private:
         QString hostingWizard;
         QString hostingSelectedPath;
         QString hostingEditId;
+        QString hostingOperationStage;
+        QString hostingOperationError;
+        QString hostingDraftTitle;
+        QString hostingDraftHost = QStringLiteral("127.0.0.1");
+        QString hostingPendingServiceId;
+        QString hostingResultAddress;
+        quint64 hostingOperationId = 0;
+        int hostingDraftPort = 8080;
         HostingInspection hostingInspection;
         bool bridgeSavePending = false;
         bool bridgeApplyPending = false;

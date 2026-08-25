@@ -18,12 +18,15 @@
 #include <QTimer>
 #include <QUuid>
 
+#include <memory>
 #include <utility>
 
 namespace granger {
 namespace {
 constexpr int kDefaultMaxFileBytes = 8 * 1024 * 1024;
+constexpr int kHostingStartupTimeoutMs = 120000;
 const QRegularExpression kServiceId(QStringLiteral("^[a-f0-9]{32}$"));
+const QRegularExpression kServiceTitle(QStringLiteral("^[^\\x00-\\x1f\\x7f]{1,80}$"));
 
 QJsonObject readObject(const QString &path)
 {
@@ -42,6 +45,23 @@ QString normalizedLoopbackUrl(const QString &host, int port)
         return QStringLiteral("http://[%1]:%2").arg(trimmed).arg(port);
     }
     return QStringLiteral("http://%1:%2").arg(trimmed).arg(port);
+}
+
+HostingInspection inspectionFromDocument(const QJsonObject &document)
+{
+    HostingInspection result;
+    result.ok = document.value(QStringLiteral("ok")).toBool();
+    result.root = document.value(QStringLiteral("root")).toString();
+    result.files = document.value(QStringLiteral("files")).toInt();
+    result.cssFiles = document.value(QStringLiteral("cssFiles")).toInt();
+    result.jsFiles = document.value(QStringLiteral("jsFiles")).toInt();
+    result.assets = document.value(QStringLiteral("assets")).toInt();
+    result.totalBytes = document.value(QStringLiteral("totalBytes")).toInteger();
+    result.indexFound = document.value(QStringLiteral("indexFound")).toBool();
+    for (const QJsonValue &value : document.value(QStringLiteral("errors")).toArray()) {
+        if (value.isString()) result.errors.append(value.toString());
+    }
+    return result;
 }
 
 QProcessEnvironment isolatedEnvironment(const QString &moduleRoot, bool appLocal)
@@ -212,7 +232,18 @@ bool GrangerHostingManager::runUtility(const QStringList &arguments,
     }
     const QByteArray output = process.readAllStandardOutput().trimmed();
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        const QString detail = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        QString detail;
+        QJsonParseError failureParseError;
+        const QJsonDocument failureDocument = QJsonDocument::fromJson(output, &failureParseError);
+        if (failureParseError.error == QJsonParseError::NoError && failureDocument.isObject()) {
+            const QJsonValue reportedError = failureDocument.object().value(QStringLiteral("error"));
+            detail = reportedError.isObject()
+                ? reportedError.toObject().value(QStringLiteral("message")).toString()
+                : reportedError.toString();
+        }
+        if (detail.isEmpty()) {
+            detail = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        }
         if (error) {
             *error = detail.isEmpty()
                 ? QStringLiteral("Granger Network hosting operation failed.")
@@ -230,6 +261,204 @@ bool GrangerHostingManager::runUtility(const QStringList &arguments,
         *document = parsed.object();
     }
     return true;
+}
+
+void GrangerHostingManager::runUtilityAsync(quint64 operationId,
+                                            const QStringList &arguments,
+                                            UtilityCompletion completion,
+                                            int timeoutMs)
+{
+    if (!m_activeOperations.contains(operationId)) return;
+    const QString python = configuredPython();
+    const QString moduleRoot = configuredModuleRoot();
+    if (python.isEmpty() || moduleRoot.isEmpty()) {
+        QTimer::singleShot(0, this, [this, operationId, completion = std::move(completion)] {
+            if (m_activeOperations.contains(operationId) && completion) {
+                completion(false, {},
+                           QStringLiteral("Granger Network hosting runtime is unavailable."));
+            }
+        });
+        return;
+    }
+
+    const QString appLocalRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
+        QStringLiteral("runtime/python"));
+    const bool appLocal = QFileInfo(python).absoluteFilePath().startsWith(
+        QDir(appLocalRoot).absolutePath(), Qt::CaseInsensitive);
+    auto *process = new QProcess(this);
+    auto *timer = new QTimer(this);
+    timer->setSingleShot(true);
+    configureManagedProcess(process);
+    process->setProcessChannelMode(QProcess::SeparateChannels);
+    process->setProcessEnvironment(isolatedEnvironment(moduleRoot, appLocal));
+    process->setProgram(python);
+    QStringList processArguments;
+    if (appLocal) processArguments.append({QStringLiteral("-I"), QStringLiteral("-B")});
+    processArguments.append({QStringLiteral("-m"), QStringLiteral("granger_network.hosting")});
+    processArguments.append(arguments);
+    process->setArguments(processArguments);
+    m_utilityProcesses.insert(operationId, process);
+    m_utilityTimers.insert(operationId, timer);
+
+    const auto completed = std::make_shared<bool>(false);
+    const auto finalize = [this, operationId, process, timer, completed,
+                           completion = std::move(completion)](bool failedToStart) {
+        if (*completed) return;
+        *completed = true;
+        timer->stop();
+        if (m_utilityTimers.value(operationId) == timer) m_utilityTimers.remove(operationId);
+        if (m_utilityProcesses.value(operationId) == process) {
+            m_utilityProcesses.remove(operationId);
+        }
+        timer->deleteLater();
+
+        const QByteArray output = process->readAllStandardOutput().trimmed();
+        const QString detail = QString::fromUtf8(process->readAllStandardError()).trimmed();
+        QJsonObject document;
+        QJsonParseError parseError;
+        const QJsonDocument parsed = QJsonDocument::fromJson(output, &parseError);
+        if (parseError.error == QJsonParseError::NoError && parsed.isObject()) {
+            document = parsed.object();
+        }
+
+        QString failure;
+        if (process->property("grangerHostingTimedOut").toBool()) {
+            failure = QStringLiteral("Granger Network hosting operation timed out.");
+        } else if (failedToStart) {
+            failure = QStringLiteral("Granger Network hosting runtime could not start.");
+        } else if (process->exitStatus() != QProcess::NormalExit || process->exitCode() != 0) {
+            const QJsonValue reportedError = document.value(QStringLiteral("error"));
+            if (reportedError.isObject()) {
+                failure = reportedError.toObject().value(QStringLiteral("message")).toString();
+            } else if (reportedError.isString()) {
+                failure = reportedError.toString();
+            }
+            if (failure.isEmpty()) failure = detail.left(512);
+            if (failure.isEmpty()) {
+                failure = QStringLiteral("Granger Network hosting operation failed.");
+            }
+        } else if (parseError.error != QJsonParseError::NoError || !parsed.isObject()) {
+            failure = QStringLiteral("Granger Network hosting returned invalid data.");
+        }
+
+        process->deleteLater();
+        if (!m_activeOperations.contains(operationId) || !completion) return;
+        completion(failure.isEmpty(), document, failure);
+    };
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this, [finalize](int, QProcess::ExitStatus) { finalize(false); });
+    connect(process, &QProcess::errorOccurred, this,
+            [finalize](QProcess::ProcessError processError) {
+        if (processError == QProcess::FailedToStart) finalize(true);
+    });
+    connect(timer, &QTimer::timeout, this, [process, finalize] {
+        process->setProperty("grangerHostingTimedOut", true);
+        if (process->state() == QProcess::NotRunning) {
+            finalize(false);
+        } else {
+            process->kill();
+        }
+    });
+    process->start();
+    timer->start(qMax(1000, timeoutMs));
+}
+
+quint64 GrangerHostingManager::beginOperation()
+{
+    while (m_nextOperationId == 0 || m_activeOperations.contains(m_nextOperationId)) {
+        ++m_nextOperationId;
+    }
+    const quint64 operationId = m_nextOperationId++;
+    m_activeOperations.insert(operationId);
+    return operationId;
+}
+
+void GrangerHostingManager::finishOperation(quint64 operationId)
+{
+    m_activeOperations.remove(operationId);
+    m_utilityProcesses.remove(operationId);
+    if (QTimer *timer = m_utilityTimers.take(operationId)) {
+        timer->stop();
+        timer->deleteLater();
+    }
+    m_pendingCreationIds.remove(operationId);
+}
+
+bool GrangerHostingManager::removeCreationArtifacts(const QString &id, QString *error)
+{
+    if (!kServiceId.match(id).hasMatch()) {
+        if (error) *error = QStringLiteral("Hosted service identifier is invalid.");
+        return false;
+    }
+    QDir parent(servicesRoot());
+    bool removed = true;
+    const auto removePath = [](const QString &path) {
+        const QFileInfo info(path);
+        if (!info.exists() && !info.isSymLink()) return true;
+        if (info.isSymLink() || info.isFile()) return QFile::remove(path);
+        return info.isDir() && QDir(path).removeRecursively();
+    };
+    const QString finalRoot = parent.filePath(id);
+    if (!removePath(finalRoot)) removed = false;
+    const QStringList stagingNames = parent.entryList(
+        {QStringLiteral(".%1.*.creating").arg(id)},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    for (const QString &name : stagingNames) {
+        if (!removePath(parent.filePath(name))) removed = false;
+    }
+    if (!removed && error) {
+        *error = QStringLiteral("Incomplete hosted service data could not be removed.");
+    }
+    m_lastErrors.remove(id);
+    m_startedAt.remove(id);
+    return removed;
+}
+
+void GrangerHostingManager::failCreation(quint64 operationId,
+                                         const QString &message,
+                                         const CreationCompletion &completion)
+{
+    QString failure = message.trimmed();
+    const QString id = m_pendingCreationIds.value(operationId);
+    if (!id.isEmpty()) {
+        stopProcess(id);
+        QString cleanupError;
+        if (!removeCreationArtifacts(id, &cleanupError) && !cleanupError.isEmpty()) {
+            failure += QStringLiteral(" ") + cleanupError;
+        }
+    }
+    finishOperation(operationId);
+    if (completion) completion(false, {}, failure);
+    emit servicesChanged();
+}
+
+bool GrangerHostingManager::cancelOperation(quint64 operationId)
+{
+    if (!m_activeOperations.remove(operationId)) return false;
+    if (QTimer *timer = m_utilityTimers.take(operationId)) {
+        timer->stop();
+        timer->deleteLater();
+    }
+    if (QProcess *process = m_utilityProcesses.take(operationId)) {
+        disconnect(process, nullptr, this, nullptr);
+        if (process->state() != QProcess::NotRunning) {
+            process->kill();
+            process->waitForFinished(2000);
+        }
+        process->deleteLater();
+    }
+    const QString id = m_pendingCreationIds.take(operationId);
+    if (!id.isEmpty()) {
+        stopProcess(id);
+        removeCreationArtifacts(id, nullptr);
+        emit servicesChanged();
+    }
+    return true;
+}
+
+bool GrangerHostingManager::operationActive(quint64 operationId) const
+{
+    return operationId != 0 && m_activeOperations.contains(operationId);
 }
 
 HostedServiceRecord GrangerHostingManager::readService(const QString &root) const
@@ -252,7 +481,9 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
     if (!serviceId.isEmpty()) result.address = serviceId + QStringLiteral(".granger");
 
     QProcess *process = m_processes.value(result.id);
-    if (process && process->state() != QProcess::NotRunning) {
+    if (m_stoppingServices.contains(result.id)) {
+        result.status = QStringLiteral("stopping");
+    } else if (process && process->state() != QProcess::NotRunning) {
         result.pid = process->processId();
         result.startedAt = QDateTime::fromMSecsSinceEpoch(
             m_startedAt.value(result.id)).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
@@ -260,10 +491,15 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
             0, (QDateTime::currentMSecsSinceEpoch() - m_startedAt.value(result.id)) / 1000);
         const QJsonObject status = readObject(
             QDir(root).filePath(QStringLiteral("metadata/status.json")));
-        if (status.value(QStringLiteral("state")).toString() == QStringLiteral("online")
+        const QString runtimeState = status.value(QStringLiteral("state")).toString();
+        if (runtimeState == QStringLiteral("online")
             && status.value(QStringLiteral("pid")).toInteger() == result.pid
             && status.value(QStringLiteral("canonicalName")).toString() == result.address) {
             result.status = QStringLiteral("online");
+        } else if (runtimeState == QStringLiteral("error")) {
+            result.status = QStringLiteral("error");
+            result.error = status.value(QStringLiteral("errorMessage")).toString();
+            if (result.error.isEmpty()) result.error = m_lastErrors.value(result.id);
         } else {
             result.status = QStringLiteral("starting");
         }
@@ -303,29 +539,51 @@ HostedServiceRecord GrangerHostingManager::service(const QString &id) const
 HostingInspection GrangerHostingManager::inspectStaticSite(const QString &source,
                                                            QString *error) const
 {
-    HostingInspection result;
     QJsonObject document;
     if (!runUtility({QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
                      QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)},
                     &document, error)) {
-        return result;
+        return {};
     }
-    result.ok = document.value(QStringLiteral("ok")).toBool();
-    result.root = document.value(QStringLiteral("root")).toString();
-    result.files = document.value(QStringLiteral("files")).toInt();
-    result.cssFiles = document.value(QStringLiteral("cssFiles")).toInt();
-    result.jsFiles = document.value(QStringLiteral("jsFiles")).toInt();
-    result.assets = document.value(QStringLiteral("assets")).toInt();
-    result.totalBytes = document.value(QStringLiteral("totalBytes")).toInteger();
-    result.indexFound = document.value(QStringLiteral("indexFound")).toBool();
-    for (const QJsonValue &value : document.value(QStringLiteral("errors")).toArray()) {
-        if (value.isString()) result.errors.append(value.toString());
-    }
+    HostingInspection result = inspectionFromDocument(document);
     if (!result.ok && error && error->isEmpty()) {
         *error = result.errors.isEmpty()
             ? QStringLiteral("Static site validation failed.") : result.errors.first();
     }
     return result;
+}
+
+quint64 GrangerHostingManager::inspectStaticSiteAsync(const QString &source,
+                                                      InspectionCompletion completion)
+{
+    const quint64 operationId = beginOperation();
+    QTimer::singleShot(0, this, [this, operationId, source,
+                                 completion = std::move(completion)] {
+        if (!operationActive(operationId)) return;
+        emit operationStageChanged(operationId, QStringLiteral("validating-folder"));
+        runUtilityAsync(
+            operationId,
+            {QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
+             QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)},
+            [this, operationId, completion](bool ok, const QJsonObject &document,
+                                            const QString &utilityError) {
+                if (!operationActive(operationId)) return;
+                HostingInspection inspection;
+                QString error = utilityError;
+                if (ok) {
+                    inspection = inspectionFromDocument(document);
+                    if (!inspection.ok) {
+                        error = inspection.errors.isEmpty()
+                            ? QStringLiteral("Folder validation failed.")
+                            : QStringLiteral("Folder validation failed: %1")
+                                  .arg(inspection.errors.first());
+                    }
+                }
+                finishOperation(operationId);
+                if (completion) completion(inspection, error);
+            });
+    });
+    return operationId;
 }
 
 bool GrangerHostingManager::probeLocalApplication(const QString &host,
@@ -343,17 +601,40 @@ bool GrangerHostingManager::createStaticSite(const QString &title,
                                              HostedServiceRecord *created,
                                              QString *error)
 {
+    const QString normalizedTitle = title.trimmed();
+    if (!kServiceTitle.match(normalizedTitle).hasMatch()) {
+        if (error) *error = QStringLiteral("Identity creation failed: service title is invalid.");
+        return false;
+    }
+    if (!networkAvailable()) {
+        if (error) *error = QStringLiteral("Network unavailable: signed Granger Network configuration is missing.");
+        return false;
+    }
+    QString inspectionError;
+    if (!inspectStaticSite(source, &inspectionError).ok) {
+        if (error) {
+            *error = QStringLiteral("Folder validation failed: %1").arg(
+                inspectionError.isEmpty() ? QStringLiteral("the selected folder is invalid")
+                                          : inspectionError);
+        }
+        return false;
+    }
     const QString id = QUuid::createUuid().toString(QUuid::Id128).toLower();
     QJsonObject document;
     if (!runUtility({QStringLiteral("create"), QStringLiteral("--services-root"), servicesRoot(),
-                     QStringLiteral("--service-id"), id, QStringLiteral("--title"), title,
+                     QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
                      QStringLiteral("--type"), QStringLiteral("static"),
                      QStringLiteral("--source"), source}, &document, error)) {
+        removeCreationArtifacts(id, nullptr);
         return false;
     }
     QString startError;
-    launchService(id, &startError);
-    if (!startError.isEmpty()) m_lastErrors.insert(id, startError);
+    if (!launchService(id, &startError)) {
+        removeCreationArtifacts(id, nullptr);
+        if (error) *error = QStringLiteral("Network publishing failed: %1").arg(startError);
+        emit servicesChanged();
+        return false;
+    }
     if (created) *created = service(id);
     emit servicesChanged();
     return true;
@@ -365,21 +646,202 @@ bool GrangerHostingManager::createLocalApplication(const QString &title,
                                                    HostedServiceRecord *created,
                                                    QString *error)
 {
+    const QString normalizedTitle = title.trimmed();
+    if (!kServiceTitle.match(normalizedTitle).hasMatch()) {
+        if (error) *error = QStringLiteral("Identity creation failed: service title is invalid.");
+        return false;
+    }
+    if (!networkAvailable()) {
+        if (error) *error = QStringLiteral("Network unavailable: signed Granger Network configuration is missing.");
+        return false;
+    }
+    QString probeError;
+    if (!probeLocalApplication(host, port, &probeError)) {
+        if (error) {
+            *error = QStringLiteral("Backend unreachable: %1").arg(
+                probeError.isEmpty() ? QStringLiteral("the loopback application did not respond")
+                                     : probeError);
+        }
+        return false;
+    }
     const QString id = QUuid::createUuid().toString(QUuid::Id128).toLower();
     QJsonObject document;
     if (!runUtility({QStringLiteral("create"), QStringLiteral("--services-root"), servicesRoot(),
-                     QStringLiteral("--service-id"), id, QStringLiteral("--title"), title,
+                     QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
                      QStringLiteral("--type"), QStringLiteral("local-application"),
                      QStringLiteral("--upstream"), normalizedLoopbackUrl(host, port)},
                     &document, error)) {
+        removeCreationArtifacts(id, nullptr);
         return false;
     }
     QString startError;
-    launchService(id, &startError);
-    if (!startError.isEmpty()) m_lastErrors.insert(id, startError);
+    if (!launchService(id, &startError)) {
+        removeCreationArtifacts(id, nullptr);
+        if (error) *error = QStringLiteral("Network publishing failed: %1").arg(startError);
+        emit servicesChanged();
+        return false;
+    }
     if (created) *created = service(id);
     emit servicesChanged();
     return true;
+}
+
+quint64 GrangerHostingManager::createStaticSiteAsync(const QString &title,
+                                                     const QString &source,
+                                                     CreationCompletion completion)
+{
+    const quint64 operationId = beginOperation();
+    QTimer::singleShot(0, this, [this, operationId, title, source,
+                                 completion = std::move(completion)] {
+        if (!operationActive(operationId)) return;
+        const QString normalizedTitle = title.trimmed();
+        if (!kServiceTitle.match(normalizedTitle).hasMatch()) {
+            failCreation(operationId,
+                         QStringLiteral("Identity creation failed: service title is invalid."),
+                         completion);
+            return;
+        }
+        if (!networkAvailable()) {
+            failCreation(operationId,
+                         QStringLiteral("Network unavailable: signed Granger Network configuration is missing."),
+                         completion);
+            return;
+        }
+        emit operationStageChanged(operationId, QStringLiteral("validating-folder"));
+        runUtilityAsync(
+            operationId,
+            {QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
+             QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)},
+            [this, operationId, normalizedTitle, source, completion](
+                bool ok, const QJsonObject &document, const QString &utilityError) {
+                if (!operationActive(operationId)) return;
+                const HostingInspection inspection = ok
+                    ? inspectionFromDocument(document) : HostingInspection();
+                if (!ok || !inspection.ok) {
+                    const QString detail = !utilityError.isEmpty() ? utilityError
+                        : inspection.errors.isEmpty() ? QStringLiteral("the selected folder is invalid")
+                                                      : inspection.errors.first();
+                    failCreation(operationId,
+                                 QStringLiteral("Folder validation failed: %1").arg(detail),
+                                 completion);
+                    return;
+                }
+
+                emit operationStageChanged(operationId, QStringLiteral("generating-identity"));
+                const QString id = QUuid::createUuid().toString(QUuid::Id128).toLower();
+                m_pendingCreationIds.insert(operationId, id);
+                runUtilityAsync(
+                    operationId,
+                    {QStringLiteral("create"), QStringLiteral("--services-root"), servicesRoot(),
+                     QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
+                     QStringLiteral("--type"), QStringLiteral("static"),
+                     QStringLiteral("--source"), source},
+                    [this, operationId, id, completion](bool createdOk,
+                                                        const QJsonObject &,
+                                                        const QString &createError) {
+                        if (!operationActive(operationId)) return;
+                        if (!createdOk) {
+                            const QString message = createError.contains(
+                                QStringLiteral("already exists"), Qt::CaseInsensitive)
+                                ? QStringLiteral("Service already exists.")
+                                : QStringLiteral("Identity creation failed: %1").arg(createError);
+                            failCreation(operationId, message, completion);
+                            return;
+                        }
+                        emit operationStageChanged(operationId, QStringLiteral("publishing"));
+                        QString startError;
+                        if (!launchService(id, &startError)) {
+                            failCreation(operationId,
+                                         QStringLiteral("Network publishing failed: %1").arg(startError),
+                                         completion);
+                            return;
+                        }
+                        const HostedServiceRecord created = service(id);
+                        finishOperation(operationId);
+                        if (completion) completion(true, created, QString());
+                        emit servicesChanged();
+                    });
+            });
+    });
+    return operationId;
+}
+
+quint64 GrangerHostingManager::createLocalApplicationAsync(
+    const QString &title,
+    const QString &host,
+    int port,
+    CreationCompletion completion)
+{
+    const quint64 operationId = beginOperation();
+    QTimer::singleShot(0, this, [this, operationId, title, host, port,
+                                 completion = std::move(completion)] {
+        if (!operationActive(operationId)) return;
+        const QString normalizedTitle = title.trimmed();
+        if (!kServiceTitle.match(normalizedTitle).hasMatch()) {
+            failCreation(operationId,
+                         QStringLiteral("Identity creation failed: service title is invalid."),
+                         completion);
+            return;
+        }
+        if (!networkAvailable()) {
+            failCreation(operationId,
+                         QStringLiteral("Network unavailable: signed Granger Network configuration is missing."),
+                         completion);
+            return;
+        }
+        emit operationStageChanged(operationId, QStringLiteral("probing-backend"));
+        const QString upstream = normalizedLoopbackUrl(host, port);
+        runUtilityAsync(
+            operationId,
+            {QStringLiteral("probe-application"), QStringLiteral("--upstream"), upstream},
+            [this, operationId, normalizedTitle, upstream, completion](
+                bool reachable, const QJsonObject &document, const QString &probeError) {
+                if (!operationActive(operationId)) return;
+                if (!reachable || !document.value(QStringLiteral("ok")).toBool()) {
+                    const QString detail = probeError.isEmpty()
+                        ? QStringLiteral("the loopback application did not respond") : probeError;
+                    failCreation(operationId,
+                                 QStringLiteral("Backend unreachable: %1").arg(detail), completion);
+                    return;
+                }
+
+                emit operationStageChanged(operationId, QStringLiteral("generating-identity"));
+                const QString id = QUuid::createUuid().toString(QUuid::Id128).toLower();
+                m_pendingCreationIds.insert(operationId, id);
+                runUtilityAsync(
+                    operationId,
+                    {QStringLiteral("create"), QStringLiteral("--services-root"), servicesRoot(),
+                     QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
+                     QStringLiteral("--type"), QStringLiteral("local-application"),
+                     QStringLiteral("--upstream"), upstream},
+                    [this, operationId, id, completion](bool createdOk,
+                                                        const QJsonObject &,
+                                                        const QString &createError) {
+                        if (!operationActive(operationId)) return;
+                        if (!createdOk) {
+                            const QString message = createError.contains(
+                                QStringLiteral("already exists"), Qt::CaseInsensitive)
+                                ? QStringLiteral("Service already exists.")
+                                : QStringLiteral("Identity creation failed: %1").arg(createError);
+                            failCreation(operationId, message, completion);
+                            return;
+                        }
+                        emit operationStageChanged(operationId, QStringLiteral("publishing"));
+                        QString startError;
+                        if (!launchService(id, &startError)) {
+                            failCreation(operationId,
+                                         QStringLiteral("Network publishing failed: %1").arg(startError),
+                                         completion);
+                            return;
+                        }
+                        const HostedServiceRecord created = service(id);
+                        finishOperation(operationId);
+                        if (completion) completion(true, created, QString());
+                        emit servicesChanged();
+                    });
+            });
+    });
+    return operationId;
 }
 
 bool GrangerHostingManager::updateService(const QString &id,
@@ -394,11 +856,27 @@ bool GrangerHostingManager::updateService(const QString &id,
         if (error) *error = QStringLiteral("Hosted service was not found.");
         return false;
     }
+    const QString normalizedTitle = title.trimmed();
+    if (!kServiceTitle.match(normalizedTitle).hasMatch()) {
+        if (error) *error = QStringLiteral("Hosted service title is invalid.");
+        return false;
+    }
     QStringList arguments{QStringLiteral("update"), QStringLiteral("--service-dir"), serviceRoot(id),
-                          QStringLiteral("--title"), title};
+                          QStringLiteral("--title"), normalizedTitle};
     if (previous.type == QStringLiteral("static")) {
-        arguments.append({QStringLiteral("--source"), source.isEmpty() ? previous.source : source});
+        const QString effectiveSource = source.isEmpty() ? previous.source : source;
+        QString inspectionError;
+        if (!inspectStaticSite(effectiveSource, &inspectionError).ok) {
+            if (error) *error = QStringLiteral("Folder validation failed: %1").arg(inspectionError);
+            return false;
+        }
+        arguments.append({QStringLiteral("--source"), effectiveSource});
     } else {
+        QString probeError;
+        if (!probeLocalApplication(host, port, &probeError)) {
+            if (error) *error = QStringLiteral("Backend unreachable: %1").arg(probeError);
+            return false;
+        }
         arguments.append({QStringLiteral("--upstream"), normalizedLoopbackUrl(host, port)});
     }
     QJsonObject document;
@@ -409,7 +887,10 @@ bool GrangerHostingManager::updateService(const QString &id,
         if (wasRunning) launchService(id, nullptr);
         return false;
     }
-    if (previous.autoStart || wasRunning) launchService(id, error);
+    if ((previous.autoStart || wasRunning) && !launchService(id, error)) {
+        emit servicesChanged();
+        return false;
+    }
     emit servicesChanged();
     return true;
 }
@@ -437,7 +918,10 @@ bool GrangerHostingManager::setAutoStart(const QString &id, bool enabled, QStrin
 bool GrangerHostingManager::launchService(const QString &id, QString *error)
 {
     if (!networkAvailable()) {
-        if (error) *error = QStringLiteral("A signed Granger Network configuration is not installed.");
+        const QString message = QStringLiteral(
+            "A signed Granger Network configuration is not installed.");
+        if (kServiceId.match(id).hasMatch()) m_lastErrors.insert(id, message);
+        if (error) *error = message;
         return false;
     }
     QProcess *existing = m_processes.value(id);
@@ -449,6 +933,12 @@ bool GrangerHostingManager::launchService(const QString &id, QString *error)
     }
     const QString python = configuredPython();
     const QString moduleRoot = configuredModuleRoot();
+    if (python.isEmpty() || moduleRoot.isEmpty()) {
+        const QString message = QStringLiteral("Granger Network hosting runtime is unavailable.");
+        m_lastErrors.insert(id, message);
+        if (error) *error = message;
+        return false;
+    }
     const QString appLocalRoot = QDir(QCoreApplication::applicationDirPath()).filePath(
         QStringLiteral("runtime/python"));
     const bool appLocal = QFileInfo(python).absoluteFilePath().startsWith(
@@ -499,8 +989,12 @@ bool GrangerHostingManager::launchService(const QString &id, QString *error)
     process->start();
     if (!process->waitForStarted(3000)) {
         m_processes.remove(id);
+        m_startedAt.remove(id);
+        const QString message = QStringLiteral("Hosting runtime could not start: %1")
+                                    .arg(process->errorString());
+        m_lastErrors.insert(id, message);
         process->deleteLater();
-        if (error) *error = QStringLiteral("Hosting runtime could not start.");
+        if (error) *error = message;
         return false;
     }
     watchStartup(id, process);
@@ -519,11 +1013,24 @@ void GrangerHostingManager::watchStartup(const QString &id, QProcess *process)
         const int attempts = timer->property("attempts").toInt() + 1;
         timer->setProperty("attempts", attempts);
         const HostedServiceRecord current = service(id);
+        const bool timedOut = attempts * timer->interval() >= kHostingStartupTimeoutMs;
         if (!guardedProcess || guardedProcess->state() == QProcess::NotRunning
-            || current.status == QStringLiteral("online") || attempts >= 120) {
+            || current.status == QStringLiteral("online")
+            || current.status == QStringLiteral("error") || timedOut) {
             timer->stop();
             m_startupTimers.remove(id);
             timer->deleteLater();
+            if (current.status == QStringLiteral("error") && guardedProcess
+                && guardedProcess->state() != QProcess::NotRunning) {
+                if (!current.error.isEmpty()) m_lastErrors.insert(id, current.error);
+                stopProcess(id);
+            } else if (timedOut && guardedProcess
+                && guardedProcess->state() != QProcess::NotRunning
+                && current.status != QStringLiteral("online")) {
+                m_lastErrors.insert(id,
+                    QStringLiteral("Publishing to Granger Network timed out."));
+                stopProcess(id);
+            }
             emit servicesChanged();
         }
     });
@@ -555,6 +1062,7 @@ bool GrangerHostingManager::startService(const QString &id, QString *error)
 {
     if (!setAutoStart(id, true, error)) return false;
     const bool started = launchService(id, error);
+    if (!started && error && !error->isEmpty()) m_lastErrors.insert(id, *error);
     emit servicesChanged();
     return started;
 }
@@ -566,7 +1074,10 @@ bool GrangerHostingManager::stopService(const QString &id, QString *error)
         return false;
     }
     if (!setAutoStart(id, false, error)) return false;
+    m_stoppingServices.insert(id);
+    emit servicesChanged();
     stopProcess(id);
+    m_stoppingServices.remove(id);
     m_lastErrors.remove(id);
     emit servicesChanged();
     return true;
@@ -575,8 +1086,12 @@ bool GrangerHostingManager::stopService(const QString &id, QString *error)
 bool GrangerHostingManager::restartService(const QString &id, QString *error)
 {
     if (!setAutoStart(id, true, error)) return false;
+    m_stoppingServices.insert(id);
+    emit servicesChanged();
     stopProcess(id);
+    m_stoppingServices.remove(id);
     const bool started = launchService(id, error);
+    if (!started && error && !error->isEmpty()) m_lastErrors.insert(id, *error);
     emit servicesChanged();
     return started;
 }
@@ -589,14 +1104,8 @@ bool GrangerHostingManager::removeService(const QString &id, QString *error)
         return false;
     }
     stopProcess(id);
-    const QString expectedParent = QDir(servicesRoot()).absolutePath();
-    const QFileInfo info(root);
-    if (info.dir().absolutePath().compare(expectedParent, Qt::CaseInsensitive) != 0
-        || !QDir(root).removeRecursively()) {
-        if (error) *error = QStringLiteral("Hosted service data could not be removed.");
-        return false;
-    }
-    m_lastErrors.remove(id);
+    m_stoppingServices.remove(id);
+    if (!removeCreationArtifacts(id, error)) return false;
     emit servicesChanged();
     return true;
 }
@@ -616,6 +1125,8 @@ void GrangerHostingManager::shutdown()
 {
     if (m_shuttingDown) return;
     m_shuttingDown = true;
+    const QList<quint64> operationIds = m_activeOperations.values();
+    for (quint64 operationId : operationIds) cancelOperation(operationId);
     const QStringList ids = m_processes.keys();
     for (const QString &id : ids) stopProcess(id);
     for (QTimer *timer : std::as_const(m_startupTimers)) {
@@ -641,6 +1152,7 @@ QJsonObject GrangerHostingManager::diagnostics() const
         {QStringLiteral("online"), online},
         {QStringLiteral("starting"), starting},
         {QStringLiteral("processes"), m_processes.size()},
+        {QStringLiteral("pendingOperations"), m_activeOperations.size()},
         {QStringLiteral("runtimeAvailable"), runtimeAvailable()},
         {QStringLiteral("networkAvailable"), networkAvailable()},
         {QStringLiteral("wanConfigInstalled"), !wanConfigPath().isEmpty()},

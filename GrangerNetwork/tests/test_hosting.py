@@ -6,7 +6,9 @@ import socket
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +21,8 @@ from granger_network.hosting import (
     initialize_hosted_service,
     inspect_static_site,
     load_hosted_service,
+    main as hosting_main,
+    probe_loopback_application,
     update_hosted_service,
 )
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
@@ -155,6 +159,41 @@ class StaticHostingTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(len(result.errors), 64)
 
+    def test_inspection_supports_spaces_unicode_and_deep_paths(self) -> None:
+        site = self.root / "site with spaces" / "\u0442\u0435\u0441\u0442"
+        for index in range(12):
+            site /= f"segment-{index:02d}-abcdefgh"
+        site.mkdir(parents=True)
+        (site / "index.html").write_text("<!doctype html><h1>ok</h1>", encoding="utf-8")
+        result = inspect_static_site(site)
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(Path(result.root), site.resolve())
+
+    def test_inspection_rejects_empty_and_missing_index_folders(self) -> None:
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.assertIn("index.html is missing", inspect_static_site(empty).errors)
+        missing_index = self.root / "missing-index"
+        missing_index.mkdir()
+        (missing_index / "style.css").write_text("body{}", encoding="utf-8")
+        result = inspect_static_site(missing_index)
+        self.assertFalse(result.ok)
+        self.assertIn("index.html is missing", result.errors)
+
+    def test_inspection_reports_permission_denied_file(self) -> None:
+        blocked = (self.site / "data.json").resolve()
+        original_open = Path.open
+
+        def guarded_open(path: Path, *args: object, **kwargs: object):
+            if path.resolve() == blocked:
+                raise PermissionError("blocked by test")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", guarded_open):
+            result = inspect_static_site(self.site)
+        self.assertFalse(result.ok)
+        self.assertTrue(any("file is not readable: data.json" in error for error in result.errors))
+
     @unittest.skipIf(os.name == "nt", "ordinary Windows symlinks require elevated privileges")
     def test_inspection_blocks_symlink_escape(self) -> None:
         outside = self.root / "outside"
@@ -244,6 +283,74 @@ class HostedServiceStorageTests(unittest.TestCase):
                 upstream="http://example.com:80",
             )
         self.assertEqual(LoopbackHttpTarget("::1", port).url, f"http://[::1]:{port}")
+
+    def test_local_application_probe_rejects_offline_and_non_http_ports(self) -> None:
+        offline = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        offline.bind(("127.0.0.1", 0))
+        offline_port = int(offline.getsockname()[1])
+        offline.close()
+        with self.assertRaisesRegex(UpstreamPolicyError, "not reachable"):
+            probe_loopback_application(f"http://127.0.0.1:{offline_port}", timeout=0.2)
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = int(listener.getsockname()[1])
+
+        def send_invalid_response() -> None:
+            connection, _address = listener.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(b"not-http\r\n")
+            listener.close()
+
+        worker = threading.Thread(target=send_invalid_response, daemon=True)
+        worker.start()
+        with self.assertRaisesRegex(UpstreamPolicyError, "valid HTTP response"):
+            probe_loopback_application(f"http://127.0.0.1:{port}")
+        worker.join(timeout=2.0)
+
+    def test_local_application_probe_accepts_ipv6_loopback_when_available(self) -> None:
+        if not socket.has_ipv6:
+            self.skipTest("IPv6 is unavailable")
+
+        class Ipv6Server(ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+
+        try:
+            backend = Ipv6Server(("::1", 0), RecordingHandler)
+        except OSError as error:
+            self.skipTest(f"IPv6 loopback is unavailable: {error}")
+        thread = threading.Thread(target=backend.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = int(backend.server_address[1])
+            target = probe_loopback_application(f"http://[::1]:{port}")
+            self.assertEqual(target.host, "::1")
+        finally:
+            backend.shutdown()
+            backend.server_close()
+            thread.join(timeout=2.0)
+
+    def test_cli_failure_uses_structured_json_contract(self) -> None:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+        probe.close()
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = hosting_main([
+                "probe-application",
+                "--upstream",
+                f"http://127.0.0.1:{port}",
+            ])
+        document = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(document["ok"])
+        self.assertEqual(document["error"]["code"], "backend_unreachable")
+        self.assertIn("not reachable", document["error"]["message"])
+        self.assertIn("granger-hosting:", stderr.getvalue())
 
     def test_loopback_proxy_strips_client_and_relay_metadata(self) -> None:
         port = int(self.backend.server_address[1])

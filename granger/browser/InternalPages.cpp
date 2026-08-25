@@ -646,6 +646,23 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-app-form .hosting-title-field,.settings-page .hosting-app-form .hosting-policy-note,.settings-page .hosting-app-form button{grid-column:1/-1}
 .settings-page .hosting-app-form button{justify-self:start;min-width:128px}
 .settings-page .hosting-policy-note{padding:11px 13px;border-left:2px solid var(--ds-accent);background:var(--ds-accent-soft);color:var(--ds-text-secondary);font-size:11px;line-height:1.45}
+.settings-page .hosting-progress-body{display:grid;grid-template-columns:42px minmax(0,1fr);align-items:center;gap:14px}
+.settings-page .hosting-progress-body>div:not(.hosting-operation-actions){display:grid;gap:5px;min-width:0}
+.settings-page .hosting-progress-body strong,.settings-page .hosting-success-body strong{color:var(--ds-text);font-size:14px}
+.settings-page .hosting-progress-body p,.settings-page .hosting-success-body p{margin:0;color:var(--ds-text-secondary);font-size:11px;line-height:1.5}
+.settings-page .hosting-progress-indicator{width:30px;height:30px;border:2px solid var(--ds-border-subtle);border-top-color:var(--ds-accent-hover);border-radius:50%;animation:hostingSpin .8s linear infinite}
+.settings-page .hosting-operation-actions{display:flex;flex-wrap:wrap;gap:8px}
+.settings-page .hosting-progress-body>.hosting-operation-actions{grid-column:1/-1;padding-top:4px}
+.settings-page .hosting-operation-error{display:grid;gap:6px;padding:13px 14px;border:1px solid color-mix(in srgb,var(--ds-danger) 42%,var(--ds-border-subtle));border-radius:var(--ds-radius-md);background:color-mix(in srgb,var(--ds-danger) 8%,var(--ds-bg-surface));color:var(--ds-text-secondary)}
+.settings-page .hosting-operation-error strong{color:#ffadb4;font-size:12px}
+.settings-page .hosting-operation-error p{margin:0 0 4px;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.settings-page .hosting-wizard-nav{display:flex;justify-content:flex-start;padding-top:2px}
+.settings-page .hosting-success-body{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:14px}
+.settings-page .hosting-success-body>div{display:grid;gap:5px;min-width:0}
+.settings-page .hosting-success-body code{overflow:hidden;color:var(--ds-accent-hover);font:11px "Cascadia Mono","Consolas",monospace;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .hosting-success-mark{display:grid;place-items:center;width:36px;height:36px;border:1px solid color-mix(in srgb,var(--ds-success) 45%,var(--ds-border-subtle));border-radius:50%;background:color-mix(in srgb,var(--ds-success) 10%,transparent);color:var(--ds-success);font-size:17px;font-weight:700}
+</style>)CSS"));
+    html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
 .settings-page .hosting-list-section{display:grid;gap:13px}
 .settings-page .hosting-list-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
 .settings-page .hosting-list-heading h3{margin:0 0 4px;color:var(--ds-text);font-size:15px}
@@ -664,7 +681,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-status{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;min-height:24px;padding:3px 8px;border:1px solid var(--ds-border-subtle);border-radius:999px;color:var(--ds-text-secondary);font-size:10px;font-weight:650}
 .settings-page .hosting-status i{width:7px;height:7px;border-radius:50%;background:var(--ds-text-muted)}
 .settings-page .hosting-status.online i{background:var(--ds-success);box-shadow:0 0 0 3px color-mix(in srgb,var(--ds-success) 13%,transparent)}
-.settings-page .hosting-status.starting i{background:var(--ds-warning);animation:hostingPulse 1.1s ease-in-out infinite}
+.settings-page .hosting-status.starting i,.settings-page .hosting-status.stopping i{background:var(--ds-warning);animation:hostingPulse 1.1s ease-in-out infinite}
 .settings-page .hosting-status.error i{background:var(--ds-danger)}
 .settings-page .hosting-address{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-control)}
 .settings-page .hosting-address code{min-width:0;overflow:hidden;color:var(--ds-text-secondary);font:11px "Cascadia Mono","Consolas",monospace;text-overflow:ellipsis;white-space:nowrap}
@@ -678,6 +695,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-service-actions .button{justify-content:flex-start;width:100%;min-height:32px;padding:6px 9px;font-size:11px}
 @keyframes hostingPanelIn{from{opacity:.72;transform:translateY(3px)}to{opacity:1;transform:none}}
 @keyframes hostingPulse{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes hostingSpin{to{transform:rotate(360deg)}}
 @keyframes dsPopupIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
 @media(max-width:920px){
 .settings-page .settings-shell{grid-template-columns:194px minmax(0,1fr);gap:26px}
@@ -721,6 +739,8 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .hosting-source-row>.button{width:100%}
 .settings-page .hosting-publish-form,.settings-page .hosting-app-form{grid-template-columns:1fr}
 .settings-page .hosting-publish-form button,.settings-page .hosting-app-form button{width:100%}
+.settings-page .hosting-success-body{grid-template-columns:38px minmax(0,1fr)}
+.settings-page .hosting-success-body>.button{grid-column:1/-1;width:100%}
 .settings-page .hosting-meta{grid-template-columns:1fr}
 .settings-page .hosting-service-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
@@ -738,7 +758,7 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .hosting-service-actions{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){
-.settings-page .container-menu-popover,.settings-page .settings-panel,.settings-page .hosting-wizard,.settings-page .hosting-status.starting i{animation:none}
+.settings-page .container-menu-popover,.settings-page .settings-panel,.settings-page .hosting-wizard,.settings-page .hosting-status.starting i,.settings-page .hosting-status.stopping i,.settings-page .hosting-progress-indicator{animation:none}
 .settings-page .container-row,.settings-page .settings-nav a,.settings-page .support-wallet,.settings-page .support-copy,.settings-page .hosting-type-card,.settings-page .hosting-close{transition:none!important}
 }
 body.settings-page.reduced-motion .settings-panel,body.settings-page.reduced-motion .container-menu-popover{animation:none}

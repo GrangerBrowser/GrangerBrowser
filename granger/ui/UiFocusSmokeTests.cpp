@@ -2724,7 +2724,8 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     const QVector<int> requestedWidths{1440, 1280, 1024, 800, 560};
     const QStringList settingsCategories{QStringLiteral("general"), QStringLiteral("search"),
                                          QStringLiteral("privacy"), QStringLiteral("connection"),
-                                          QStringLiteral("containers"), QStringLiteral("isolated"),
+                                          QStringLiteral("hosting"), QStringLiteral("containers"),
+                                          QStringLiteral("isolated"),
                                           QStringLiteral("pamp"), QStringLiteral("downloads"),
                                           QStringLiteral("advanced"), QStringLiteral("reports"),
                                           QStringLiteral("danger"), QStringLiteral("support"),
@@ -2767,7 +2768,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                     const controls=[...document.querySelectorAll('.settings-nav a,input:not(.ds-native-select),textarea,.ds-select-trigger,button,a.button')].filter(visible);
                     const selects=[...document.querySelectorAll('.settings-shell select')];
                     const surfaces=panel?[...panel.querySelectorAll(
-                        ':scope>form,:scope>.settings-surface,:scope>.info-list,:scope>.settings-detail,:scope>.reports-page>form,:scope>.reports-page>.section')]
+                        ':scope>form,:scope>.settings-surface,:scope>.info-list,:scope>.settings-detail,:scope>.reports-page>form,:scope>.reports-page>.section,:scope>.hosting-page>.hosting-intro,:scope>.hosting-page>.hosting-wizard,:scope>.hosting-page>.hosting-list-section')]
                         .filter(visible):[];
                     const surfaceRects=surfaces.map(surface=>surface.getBoundingClientRect());
                     const controlStarts=panel?[...panel.querySelectorAll('.setting-row .control')]
