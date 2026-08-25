@@ -301,12 +301,13 @@ print(json.dumps({
     if ($LASTEXITCODE -ne 0) { throw "Packaged Granger Network Python runtime failed validation." }
     $runtimeValidation = $validationText | ConvertFrom-Json
     if (-not [bool]$runtimeValidation.app_local -or [int]$runtimeValidation.bits -ne 64 -or
-        [int]$runtimeValidation.protocol -ne 1 -or [int]$runtimeValidation.dns_requests -ne 0 -or
+        [int]$runtimeValidation.protocol -ne 2 -or [int]$runtimeValidation.dns_requests -ne 0 -or
         [string]$runtimeValidation.granger_network -ne [string]$sourceNetworkIdentity.Version -or
         [int]$runtimeValidation.wire -ne 3 -or [int]$runtimeValidation.suite -ne 1 -or
         -not [bool]$runtimeValidation.mlkem768 -or
         -not [bool]$runtimeValidation.distributed_overlay) {
-        throw "Packaged Granger Network Python runtime reported unexpected state."
+        $runtimeState = $runtimeValidation | ConvertTo-Json -Compress
+        throw "Packaged Granger Network Python runtime reported unexpected state: $runtimeState"
     }
 } finally {
     $env:PYTHONHOME = $oldPythonHome
