@@ -1,126 +1,124 @@
-# Browser integration
+# Browser Integration
 
-## Status and scope
+## Scope
 
-The current repository integrates Granger Network v0.2 into the browser and the
-canonical local Windows build. It is not present in a public installer,
-AppImage, release ZIP, tag, or GitHub release.
+Granger Browser integrates the Granger Network v0.4 WAN runtime through the
+private `granger-network` Qt WebEngine scheme. This path owns only `.granger`.
+It does not replace or modify ordinary, Tor, Onion, or I2P routing.
 
-This layer does not route ordinary, `.onion`, or `.i2p` browsing. It only owns
-the `.granger` namespace and fails closed when its runtime, registry,
-descriptor, rendezvous, service identity, handshake, or encrypted channel is
-unavailable.
+The browser requires an explicit valid WAN configuration for normal `.granger`
+use. Missing or invalid configuration leaves the namespace unavailable. It does
+not select the old local compatibility path or any direct network fallback.
 
-## URL semantics
+## URL handling
 
-Users enter an alias or canonical identity address directly:
+Accepted address-bar forms are:
 
 ```text
-test.granger
+forum.granger
 <52-character-base32-service-id>.granger
+http://forum.granger/path
+https://forum.granger/path
 ```
 
-`http://` and `https://` spellings are accepted only as input compatibility.
-They are intercepted before standard resolution and do not mean HTTP or HTTPS
-transport. The browser converts them to this non-user-facing URL:
+The HTTP/HTTPS spellings are input compatibility only. They are intercepted
+before WebEngine performs ordinary resolution and rewritten internally to:
 
 ```text
-granger-network://test.granger/path?query
+granger-network://forum.granger/path
 ```
 
-The scheme is registered before `QApplication` with host syntax, secure-context,
-Fetch API, and service-worker flags. It is deliberately separate from the
-existing `granger:` internal-action scheme. Ports, credentials, multiple host
-labels, malformed names, and methods other than GET/HEAD are rejected.
+The private scheme is registered before `QApplication` with host syntax and a
+secure origin model. It is separate from the `granger:` internal-action scheme.
+Ports, credentials, multiple labels, Unicode names, malformed paths, and
+unsupported methods are rejected.
 
-## WebEngine bridge
+## Runtime process
 
-Every normal, private, Tor, Onion, Space, isolated, and internal WebEngine
-profile receives the same scheme-handler implementation. A request carries only:
+The Qt scheme handler starts `granger_network.browser_gateway` as a child
+`QProcess` on first use. Communication is bounded newline-delimited JSON over
+anonymous stdin/stdout pipes. The helper receives no service endpoint and
+exposes no loopback listener or generic proxy port.
 
-- a validated single-label `.granger` destination;
-- a bounded ASCII origin-form path and query;
-- GET or HEAD;
-- bounded `Accept`, `Accept-Language`, and `User-Agent` values;
+Normal WAN startup passes one explicit config path. The config references a
+signed bootstrap set, an authority-key pin, optional local alias pins, route
+attempt count, quorum policy, and timeout. Relative paths are resolved inside
+the config directory and may not escape it.
+
+The packaged browser uses its app-local Python and `cryptography` runtime.
+Source-tree runtime discovery and explicit test arguments are development-only
+paths. Browser shutdown closes the pipe, waits for active requests, closes
+cached WAN sessions, and terminates the helper. Acceptance checks for orphan
+gateway processes.
+
+## Request bridge
+
+The request envelope contains:
+
+- validated `.granger` destination;
+- bounded ASCII origin-form path/query;
+- `GET`, `HEAD`, or `POST`;
+- bounded selected headers;
+- a body of at most 2 MiB;
 - a random request identifier.
 
-The handler starts `granger_network.browser_gateway` as a child `QProcess` on
-first use. Communication uses the process's anonymous stdin/stdout pipes. There
-is no loopback port, LAN listener, capability exposed in a process argument, or
-general proxy API. The helper removes proxy environment variables, disables
-Python hostname-resolution APIs, and uses the existing numeric-endpoint Granger
-transport. Browser shutdown closes the pipe and terminates the helper; the
-acceptance harness also checks its PID after browser exit.
+The gateway resolves signed WAN records, builds a private route, and reuses a
+bounded service session where valid. It uses a bounded worker executor; no idle
+polling or direct HTTP client exists. The service-side bridge can connect only
+to a numeric loopback HTTP target.
 
-The canonical local package carries the required Python and `cryptography`
-runtime under `runtime/python`. The browser prefers that signed app-local
-runtime, starts it with isolated path handling, and removes Python environment
-overrides. Source-tree discovery and explicit runtime arguments remain available
-only for development and tests when the app-local runtime is absent.
+Responses are bounded to 2 MiB. Qt custom-scheme replies are surfaced with
+WebEngine status 200; the original backend status is preserved in
+`X-Granger-Status`. The browser acceptance uses this header to verify a real
+POST returning 201 and subsequent readback.
 
-For double-click verification, the app-local runtime exposes `test.granger` as
-an ephemeral demonstration service only when no explicit registry was supplied.
-It runs through the existing identity descriptor, encrypted handshake, and
-numeric-loopback service transport. The alias never enters DNS and its generated
-identity is intentionally not stable across helper restarts. Explicit registries
-used by real services and acceptance tests are never replaced by the demo.
+## Navigation and origin policy
 
-## Origin and storage model
-
-Host syntax preserves separate Chromium origins:
-
-```text
-granger-network://forum.granger
-granger-network://docs.granger
-```
-
-The Windows Qt 6.11.2 acceptance verifies isolation for localStorage and
-IndexedDB, same-origin fetches, relative resources, and service workers. The
-tested Qt build does not expose cookies or the Cache API for this custom scheme;
-those capabilities are reported as unsupported instead of being simulated on a
-shared localhost origin. WebEngine profile boundaries still provide the normal
-additional isolation for Spaces and isolated tabs.
-
-## Request policy
-
-| Source | Destination | Policy |
+| Source | Destination | Result |
 | --- | --- | --- |
-| Address bar or top-level navigation | valid `.granger` | Allow through Granger Network only |
-| Same `.granger` origin | relative/same-origin `.granger` resource | Allow |
-| One `.granger` origin | another `.granger` embedded resource, fetch, XHR, or frame | Block |
-| `.granger` document | clearnet, `.onion`, `.i2p`, WebSocket, file, or internal URL | Block |
-| Non-`.granger` document | embedded `.granger` resource or frame | Block |
-| `.granger` document | `data:`, `blob:`, or `about:` non-network content | Allow |
+| Address bar/top-level | Valid `.granger` | Allow through Granger Network |
+| `.granger` document | Same-origin GET/HEAD/POST | Allow |
+| `.granger` document | Another `.granger` subresource/fetch/form | Block |
+| `.granger` document | Clearnet, Onion, I2P, WebSocket, file, internal URL | Block |
+| Non-`.granger` document | Embedded `.granger` resource/frame | Block |
+| `.granger` document | Non-network `data:`, `blob:`, safe `about:` use | Allow under WebEngine policy |
 
-Top-level navigation between two `.granger` services is allowed as a visible
-origin change. GET forms remain inside the same service. POST forms fail closed
-because v0.2 carries no request body. CSP additionally limits connections and
-form actions to the current origin. No failed request falls back to DNS, Tor
-DNS, I2P naming, the system resolver, Direct, or clearnet.
+Top-level navigation between `.granger` services is an explicit origin change.
+Same-origin forms may use GET or POST. External and cross-service POST are
+blocked before their body can leave the origin. CSP limits connections and form
+actions to the current origin.
+
+Every normal, private, Tor, Onion, Space, isolated, and internal WebEngine
+profile receives the same `.granger` request interceptor and scheme handler.
+WebEngine profile boundaries add the existing Space/isolated-tab separation.
 
 ## Failures
 
-The browser shows a same-origin internal response with one safe category:
+The handler returns a same-origin error document with a bounded category such
+as service not found, identity verification failed, network unavailable,
+connection expired, or replay rejected. It does not include private keys,
+cookies, raw descriptors, local paths, session IDs, endpoints, or exception
+details.
 
-- Service not found;
-- Identity verification failed;
-- Network unavailable;
-- Connection expired;
-- Connection replay rejected.
+A failed `.granger` operation is terminal. It never retries through DNS, Direct,
+system proxy, Tor DNS, I2P naming, clearnet HTTP, or the compatibility
+rendezvous.
 
-Descriptor content, private keys, relay credentials, local paths, session IDs,
-and raw exception messages are never included in the page.
+## Verified behavior
 
-## Verified local behavior
+The local Qt 6.11.2 acceptance covers:
 
-The real Qt WebEngine acceptance covers alias and canonical address-bar input,
-`http://`/`https://` interception, HTML, CSS, JavaScript, image and fetch
-resources, links, GET forms, history, back/forward, reload, two-origin storage,
-service workers, cross-network blocking, error rendering, zero helper DNS calls,
-zero escape-probe connections, relay-wire plaintext markers, and zero orphan
-gateway processes.
+- alias and canonical address-bar input;
+- HTTP/HTTPS interception before ordinary resolution;
+- HTML, CSS, JavaScript, image, fetch, link, history, reload and same-origin
+  form behavior;
+- POST body delivery, backend status propagation, and readback;
+- origin storage behavior supported by the current custom scheme;
+- cross-service and cross-network blocking;
+- invalid/missing WAN config failure;
+- DNS/UDP counters and endpoint socket topology;
+- relay-capture plaintext markers;
+- gateway shutdown and zero orphan processes.
 
-This is local regression evidence. A physically independent WAN endpoint and a
-packet capture on a second machine remain unverified. The rendezvous still sees
-both peers' IP addresses, timing, sizes, and service/session metadata; browser
-integration does not provide anonymity.
+The physically independent WAN and packet-capture acceptance is **UNVERIFIED**.
+No anonymity claim follows from local browser tests.
