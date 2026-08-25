@@ -13,7 +13,7 @@ from .transport import SocketFactory
 
 MAX_HTTP_BODY = 2 * 1024 * 1024
 MAX_PATH_LENGTH = 4096
-_REQUEST_HEADERS = {"accept", "accept-language", "user-agent"}
+_REQUEST_HEADERS = {"accept", "accept-language", "content-type", "user-agent"}
 _RESPONSE_HEADERS = {"cache-control", "content-language", "content-type", "etag", "last-modified"}
 
 
@@ -91,12 +91,17 @@ class LoopbackHttpBridge:
         method: str,
         path: str,
         headers: Mapping[str, str] | None = None,
+        body: bytes = b"",
     ) -> HttpResult:
         if not isinstance(method, str):
             raise UpstreamPolicyError("request method must be text")
         normalized_method = method.upper()
-        if normalized_method not in {"GET", "HEAD"}:
-            raise UpstreamPolicyError("service bridge permits only GET and HEAD")
+        if normalized_method not in {"GET", "HEAD", "POST"}:
+            raise UpstreamPolicyError("service bridge permits only GET, HEAD and POST")
+        if not isinstance(body, bytes) or len(body) > MAX_HTTP_BODY:
+            raise UpstreamPolicyError("upstream request body exceeds the protocol limit")
+        if normalized_method in {"GET", "HEAD"} and body:
+            raise UpstreamPolicyError("GET and HEAD requests cannot carry a body")
         if (
             not isinstance(path, str)
             or not path.startswith("/")
@@ -134,8 +139,10 @@ class LoopbackHttpBridge:
             f"Host: {authority}",
             "Connection: close",
         ]
+        if normalized_method == "POST":
+            lines.append(f"Content-Length: {len(body)}")
         lines.extend(f"{name}: {value}" for name, value in sorted(forwarded_headers.items()))
-        request = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
+        request = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + body
 
         connection = self._socket_factory(self.target.family, socket.SOCK_STREAM)
         try:

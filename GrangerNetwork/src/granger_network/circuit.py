@@ -173,6 +173,7 @@ class CircuitBuilder:
                 self.role,
                 timeout=self.timeout,
             )
+            peer.channel.connection.settimeout(None)
             for index in range(len(normalized) - 1):
                 current, current_role = normalized[index]
                 next_node, next_role = normalized[index + 1]
@@ -208,6 +209,7 @@ class CircuitBuilder:
                     self.identity,
                     self.role,
                 )
+                stream.settimeout(None)
             return BuiltCircuit(
                 normalized,
                 peer,

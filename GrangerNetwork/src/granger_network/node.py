@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import queue
+import secrets
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
 from ._codec import atomic_write_text, parse_json_object
@@ -13,6 +16,7 @@ from .cells import CELL_PAYLOAD_SIZE, CellMultiplexer, MuxStream
 from .circuit import decode_extend_circuit, decode_open_circuit, encode_open_circuit
 from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, ProtocolError, ResourceLimitError
 from .identity import ServiceIdentity
+from .introduction import IntroductionRegistry
 from .peer import GrangerNode, NodeDescriptor, RelayPolicy
 from .peer_rpc import (
     PeerRole,
@@ -31,6 +35,15 @@ from .wan_discovery import (
     decode_record_envelope,
     encode_node_list,
     encode_optional_record,
+)
+from .wan_control import (
+    IntroductionRequest,
+    RendezvousGrant,
+    RendezvousJoin,
+    RendezvousRegistration,
+    decode_intro_registration,
+    decode_intro_request,
+    encode_intro_request,
 )
 
 
@@ -69,6 +82,45 @@ class WanCircuitObservation:
     def contains(self, marker: bytes) -> bool:
         with self._lock:
             return marker in self._sample
+
+
+class _IntroductionDelivery:
+    def __init__(self, request: IntroductionRequest) -> None:
+        self.request = request
+        self.result: bytes | None = None
+        self.error: BaseException | None = None
+        self.ready = threading.Event()
+
+
+class _IntroductionSession:
+    def __init__(self, service, introduction, upstream: str) -> None:
+        self.service = service
+        self.introduction = introduction
+        self.upstream = upstream
+        self.deliveries: queue.Queue[_IntroductionDelivery | None] = queue.Queue(maxsize=128)
+        self.closed = threading.Event()
+
+
+class _RendezvousSlot:
+    def __init__(
+        self,
+        registration: RendezvousRegistration,
+        upstream: str,
+        accounting_circuit_id: bytes | None,
+    ) -> None:
+        self.registration = registration
+        self.host_upstream = upstream
+        self.host_accounting_circuit_id = accounting_circuit_id
+        self.client_upstream = ""
+        self.client_accounting_circuit_id: bytes | None = None
+        self.host_mux: CellMultiplexer | None = None
+        self.client_mux: CellMultiplexer | None = None
+        self.host_stream: MuxStream | None = None
+        self.client_stream: MuxStream | None = None
+        self.host_ready = threading.Event()
+        self.client_ready = threading.Event()
+        self.done = threading.Event()
+        self.error: BaseException | None = None
 
 
 def _node_distance(node_id: str, target: bytes) -> int:
@@ -116,6 +168,10 @@ class WanNodeServer:
         self.rpc_requests = 0
         self.peer_addresses: list[tuple[str, int]] = []
         self.circuit_observations: list[WanCircuitObservation] = []
+        self._introduction_registry = IntroductionRegistry()
+        self._introduction_sessions: dict[str, _IntroductionSession] = {}
+        self._rendezvous_slots: dict[tuple[str, bytes], _RendezvousSlot] = {}
+        self._used_rendezvous_joins: set[tuple[str, bytes, bytes]] = set()
         self.records.store(self._record_for_descriptor(descriptor))
 
     @staticmethod
@@ -265,6 +321,7 @@ class WanNodeServer:
                 max_streams=self.policy.max_streams,
             )
             stream = multiplexer.accept_stream(self.policy.connection_timeout_seconds)
+            stream.settimeout(float(self.policy.idle_timeout_seconds))
             role = PeerRole.BOOTSTRAP if "bootstrap" in self.descriptor.capabilities else PeerRole.RELAY
             nested = authenticate_server_stream(
                 stream,
@@ -272,7 +329,7 @@ class WanNodeServer:
                 self.descriptor,
                 role=role,
             )
-            self._serve_peer(nested, upstream)
+            self._serve_peer(nested, upstream, opened.circuit_id)
         finally:
             if nested is not None:
                 nested.close()
@@ -303,6 +360,7 @@ class WanNodeServer:
                 local_descriptor=self.descriptor,
                 timeout=self.policy.connection_timeout_seconds,
             )
+            outbound.channel.connection.settimeout(float(self.policy.idle_timeout_seconds))
             created = outbound.rpc.request(
                 RpcType.OPEN_CIRCUIT,
                 encode_open_circuit(extension.outgoing_circuit_id, extension.next_role),
@@ -330,6 +388,8 @@ class WanNodeServer:
             )
             outgoing = outgoing_mux.open_stream(self.policy.connection_timeout_seconds)
             incoming = incoming_mux.accept_stream(self.policy.connection_timeout_seconds)
+            outgoing.settimeout(float(self.policy.idle_timeout_seconds))
+            incoming.settimeout(float(self.policy.idle_timeout_seconds))
             observation = WanCircuitObservation(
                 extension.incoming_circuit_id,
                 extension.current_role,
@@ -366,7 +426,283 @@ class WanNodeServer:
                 outbound.close()
             self.runtime.end_circuit(extension.incoming_circuit_id)
 
-    def _dispatch(self, peer, request: RpcFrame, upstream: str) -> bool:
+    def _handle_intro_register(self, peer, request: RpcFrame, upstream: str) -> None:
+        if "introduction" not in self.descriptor.capabilities:
+            raise ResourceLimitError("node did not advertise introduction capability")
+        if peer.remote.role is not PeerRole.SERVICE:
+            raise ProtocolError("introduction registration requires a service peer")
+        service, introduction = decode_intro_registration(request.payload)
+        if service.identity_public_key != peer.remote.public_key:
+            raise ProtocolError("introduction registration service identity was substituted")
+        if not any(point.node_id == self.descriptor.node_id for point in introduction.points):
+            raise ProtocolError("introduction descriptor does not authorize this node")
+        self._introduction_registry.install(introduction, service)
+        session = _IntroductionSession(service, introduction, upstream)
+        with self._lock:
+            previous = self._introduction_sessions.get(service.service_id)
+            if previous is not None and not previous.closed.is_set():
+                raise ResourceLimitError("service already has an active introduction circuit")
+            self._introduction_sessions[service.service_id] = session
+        peer.rpc.send(
+            RpcType.INTRO_REGISTER,
+            b"",
+            request_id=request.request_id,
+            response=True,
+        )
+        try:
+            while not self._stop.is_set() and int(time.time()) < introduction.expires_at:
+                try:
+                    delivery = session.deliveries.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                if delivery is None:
+                    return
+                try:
+                    delivery_id = peer.rpc.send(
+                        RpcType.INTRO_DELIVER,
+                        encode_intro_request(delivery.request),
+                    )
+                    response = peer.rpc.receive()
+                    if (
+                        response.message_type is not RpcType.INTRO_DELIVER
+                        or not response.is_response
+                        or response.request_id != delivery_id
+                    ):
+                        raise ProtocolError("introduction delivery response is invalid")
+                    RendezvousGrant.decode(
+                        response.payload,
+                        service,
+                        request_nonce=delivery.request.nonce,
+                    )
+                    delivery.result = response.payload
+                except BaseException as error:
+                    delivery.error = error
+                finally:
+                    delivery.ready.set()
+        finally:
+            session.closed.set()
+            while True:
+                try:
+                    pending = session.deliveries.get_nowait()
+                except queue.Empty:
+                    break
+                if pending is not None:
+                    pending.error = ProtocolError("introduction circuit closed")
+                    pending.ready.set()
+            with self._lock:
+                if self._introduction_sessions.get(service.service_id) is session:
+                    del self._introduction_sessions[service.service_id]
+
+    def _handle_intro_request(self, peer, request: RpcFrame) -> None:
+        if "introduction" not in self.descriptor.capabilities:
+            raise ResourceLimitError("node did not advertise introduction capability")
+        introduced = decode_intro_request(request.payload)
+        self._introduction_registry.authorize(
+            introduced.service_id,
+            self.descriptor.node_id,
+            introduced.token,
+            introduced.nonce,
+        )
+        with self._lock:
+            session = self._introduction_sessions.get(introduced.service_id)
+        if session is None or session.closed.is_set():
+            self._send_error(peer, request, "SERVICE_OFFLINE")
+            return
+        delivery = _IntroductionDelivery(introduced)
+        try:
+            session.deliveries.put(delivery, timeout=0.5)
+        except queue.Full:
+            self._send_error(peer, request, "INTRODUCTION_BUSY")
+            return
+        if not delivery.ready.wait(self.policy.connection_timeout_seconds):
+            self._send_error(peer, request, "INTRODUCTION_TIMEOUT")
+            return
+        if delivery.error is not None or delivery.result is None:
+            self._send_error(peer, request, "INTRODUCTION_FAILED")
+            return
+        peer.rpc.send(
+            RpcType.INTRO_REQUEST,
+            delivery.result,
+            request_id=request.request_id,
+            response=True,
+        )
+
+    def _bridge_rendezvous(self, slot: _RendezvousSlot) -> None:
+        assert slot.host_stream is not None and slot.client_stream is not None
+        stop = threading.Event()
+        failures: list[BaseException] = []
+        observation = WanCircuitObservation(
+            slot.registration.cell_circuit_id,
+            "rendezvous",
+            slot.host_upstream,
+            slot.client_upstream,
+        )
+        with self._lock:
+            if len(self.circuit_observations) < 4096:
+                self.circuit_observations.append(observation)
+
+        def pump(
+            source: MuxStream,
+            destination: MuxStream,
+            accounting_circuit_id: bytes | None,
+        ) -> None:
+            try:
+                while not stop.is_set() and not self._stop.is_set():
+                    payload = source.recv(CELL_PAYLOAD_SIZE * 8)
+                    if not payload:
+                        break
+                    if accounting_circuit_id is not None:
+                        self.runtime.account_bytes(accounting_circuit_id, len(payload))
+                    observation.record(payload)
+                    destination.sendall(payload)
+            except (GrangerNetworkError, OSError, TimeoutError) as error:
+                if not stop.is_set() and not self._stop.is_set():
+                    failures.append(error)
+            finally:
+                stop.set()
+                destination.close()
+
+        threads = [
+            threading.Thread(
+                target=pump,
+                args=(slot.host_stream, slot.client_stream, slot.host_accounting_circuit_id),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=pump,
+                args=(slot.client_stream, slot.host_stream, slot.client_accounting_circuit_id),
+                daemon=True,
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=self.policy.idle_timeout_seconds + 2)
+        if any(thread.is_alive() for thread in threads):
+            slot.host_stream.reset()
+            slot.client_stream.reset()
+            for thread in threads:
+                thread.join(timeout=2.0)
+        if failures and not self._stop.is_set():
+            raise ProtocolError(f"rendezvous forwarding failed: {type(failures[0]).__name__}")
+
+    def _handle_rendezvous_register(
+        self,
+        peer,
+        request: RpcFrame,
+        upstream: str,
+        accounting_circuit_id: bytes | None,
+    ) -> None:
+        if "rendezvous" not in self.descriptor.capabilities:
+            raise ResourceLimitError("node did not advertise rendezvous capability")
+        if peer.remote.role is not PeerRole.SERVICE:
+            raise ProtocolError("rendezvous registration requires a service peer")
+        registration = RendezvousRegistration.decode(request.payload)
+        if registration.identity_public_key != peer.remote.public_key:
+            raise ProtocolError("rendezvous registration service identity was substituted")
+        key = (registration.service_id, registration.cookie)
+        slot = _RendezvousSlot(registration, upstream, accounting_circuit_id)
+        with self._lock:
+            previous = self._rendezvous_slots.get(key)
+            if previous is not None and not previous.done.is_set():
+                raise ResourceLimitError("rendezvous cookie is already registered")
+            if len(self._rendezvous_slots) >= self.policy.max_circuits:
+                raise ResourceLimitError("rendezvous slot limit is exhausted")
+            self._rendezvous_slots[key] = slot
+        try:
+            peer.rpc.send(
+                RpcType.RENDEZVOUS_REGISTER,
+                b"",
+                request_id=request.request_id,
+                response=True,
+            )
+            slot.host_mux = CellMultiplexer(
+                peer.channel,
+                registration.cell_circuit_id,
+                initiator=False,
+                max_streams=self.policy.max_streams,
+            )
+            slot.host_stream = slot.host_mux.accept_stream(self.policy.connection_timeout_seconds)
+            slot.host_ready.set()
+            remaining = max(0.0, registration.expires_at - time.time())
+            if not slot.client_ready.wait(remaining):
+                raise TimeoutError("rendezvous registration expired without a client")
+            if slot.error is not None:
+                raise ProtocolError("rendezvous client setup failed")
+            self._bridge_rendezvous(slot)
+        except BaseException as error:
+            slot.error = error
+            raise
+        finally:
+            slot.done.set()
+            if slot.host_mux is not None:
+                slot.host_mux.close()
+            if slot.client_mux is not None:
+                slot.client_mux.close()
+            with self._lock:
+                if self._rendezvous_slots.get(key) is slot:
+                    del self._rendezvous_slots[key]
+
+    def _handle_rendezvous_join(
+        self,
+        peer,
+        request: RpcFrame,
+        upstream: str,
+        accounting_circuit_id: bytes | None,
+    ) -> None:
+        if "rendezvous" not in self.descriptor.capabilities:
+            raise ResourceLimitError("node did not advertise rendezvous capability")
+        joined = RendezvousJoin.decode(request.payload)
+        replay_key = (joined.service_id, joined.cookie, joined.nonce)
+        with self._lock:
+            if replay_key in self._used_rendezvous_joins:
+                raise ProtocolError("rendezvous join nonce was replayed")
+            self._used_rendezvous_joins.add(replay_key)
+            if len(self._used_rendezvous_joins) > 16384:
+                self._used_rendezvous_joins = set(
+                    list(self._used_rendezvous_joins)[-8192:]
+                )
+            slot = self._rendezvous_slots.get((joined.service_id, joined.cookie))
+        if slot is None or slot.registration.expires_at <= int(time.time()):
+            self._send_error(peer, request, "RENDEZVOUS_UNAVAILABLE")
+            return
+        if not slot.host_ready.wait(self.policy.connection_timeout_seconds):
+            self._send_error(peer, request, "RENDEZVOUS_TIMEOUT")
+            return
+        try:
+            peer.rpc.send(
+                RpcType.RENDEZVOUS_JOIN,
+                b"",
+                request_id=request.request_id,
+                response=True,
+            )
+            slot.client_mux = CellMultiplexer(
+                peer.channel,
+                joined.cell_circuit_id,
+                initiator=False,
+                max_streams=self.policy.max_streams,
+            )
+            slot.client_stream = slot.client_mux.accept_stream(self.policy.connection_timeout_seconds)
+            slot.client_upstream = upstream
+            slot.client_accounting_circuit_id = accounting_circuit_id
+            slot.client_ready.set()
+            remaining = max(0.0, slot.registration.expires_at - time.time())
+            if not slot.done.wait(remaining + self.policy.idle_timeout_seconds):
+                raise TimeoutError("rendezvous forwarding did not finish")
+            if slot.error is not None and not isinstance(slot.error, TimeoutError):
+                raise ProtocolError("rendezvous forwarding failed")
+        except BaseException as error:
+            slot.error = error
+            slot.client_ready.set()
+            raise
+
+    def _dispatch(
+        self,
+        peer,
+        request: RpcFrame,
+        upstream: str,
+        accounting_circuit_id: bytes | None,
+    ) -> bool:
         if request.is_response or request.is_error:
             raise ProtocolError("WAN node received an unsolicited RPC response")
         self.rpc_requests += 1
@@ -440,13 +776,40 @@ class WanNodeServer:
         if request.message_type is RpcType.EXTEND_CIRCUIT:
             self._handle_extend_circuit(peer, request, upstream)
             return False
+        if request.message_type is RpcType.INTRO_REGISTER:
+            self._handle_intro_register(peer, request, upstream)
+            return False
+        if request.message_type is RpcType.INTRO_REQUEST:
+            self._handle_intro_request(peer, request)
+            return True
+        if request.message_type is RpcType.RENDEZVOUS_REGISTER:
+            self._handle_rendezvous_register(
+                peer,
+                request,
+                upstream,
+                accounting_circuit_id,
+            )
+            return False
+        if request.message_type is RpcType.RENDEZVOUS_JOIN:
+            self._handle_rendezvous_join(
+                peer,
+                request,
+                upstream,
+                accounting_circuit_id,
+            )
+            return False
         self._send_error(peer, request, "UNEXPECTED_STATE")
         return False
 
-    def _serve_peer(self, peer, upstream: str) -> None:
+    def _serve_peer(
+        self,
+        peer,
+        upstream: str,
+        accounting_circuit_id: bytes | None = None,
+    ) -> None:
         while not self._stop.is_set():
             request = peer.rpc.receive()
-            if not self._dispatch(peer, request, upstream):
+            if not self._dispatch(peer, request, upstream, accounting_circuit_id):
                 return
 
     def _handle_connection(self, connection: socket.socket, address: tuple[str, int]) -> None:
@@ -481,6 +844,20 @@ class WanNodeServer:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._lock:
+            introduction_sessions = tuple(self._introduction_sessions.values())
+            rendezvous_slots = tuple(self._rendezvous_slots.values())
+        for session in introduction_sessions:
+            session.closed.set()
+            try:
+                session.deliveries.put_nowait(None)
+            except queue.Full:
+                pass
+        for slot in rendezvous_slots:
+            slot.error = ProtocolError("WAN node is stopping")
+            slot.host_ready.set()
+            slot.client_ready.set()
+            slot.done.set()
         if self._listener is not None:
             self._listener.close()
             self._listener = None
