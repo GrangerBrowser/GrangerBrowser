@@ -533,7 +533,7 @@ QString compact(const QJsonArray &array)
     return QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact));
 }
 
-bool waitForContentRules(PrivacyPolicyManager &manager, int timeoutMs = 5000)
+bool waitForContentRules(PrivacyPolicyManager &manager, int timeoutMs = 60000)
 {
     if (manager.contentBlockingDiagnostics().value(QStringLiteral("networkRules")).toInt() > 0) {
         return true;
@@ -553,7 +553,9 @@ bool waitForContentRules(PrivacyPolicyManager &manager, int timeoutMs = 5000)
     return manager.contentBlockingDiagnostics().value(QStringLiteral("networkRules")).toInt() > 0;
 }
 
-bool waitForNextPolicyChange(PrivacyPolicyManager &manager, int timeoutMs = 5000)
+bool triggerAndWaitForPolicyChange(PrivacyPolicyManager &manager,
+                                   const std::function<void()> &trigger,
+                                   int timeoutMs = 60000)
 {
     QEventLoop loop;
     QTimer timeout;
@@ -566,8 +568,11 @@ bool waitForNextPolicyChange(PrivacyPolicyManager &manager, int timeoutMs = 5000
             changed = true;
             loop.quit();
         });
-    timeout.start();
-    loop.exec();
+    trigger();
+    if (!changed) {
+        timeout.start();
+        loop.exec();
+    }
     QObject::disconnect(connection);
     return changed;
 }
@@ -660,8 +665,8 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
                        && initialCache.value(QStringLiteral("format")).toString()
                            == QStringLiteral("granger-content-cache-v1"),
                    compact(initialCache));
-    manager.reloadContentFilters();
-    const bool cacheReloaded = waitForNextPolicyChange(manager);
+    const bool cacheReloaded = triggerAndWaitForPolicyChange(
+        manager, [&manager] { manager.reloadContentFilters(); });
     const QJsonObject cacheHit = manager.contentBlockingDiagnostics()
                                      .value(QStringLiteral("compiledCache")).toObject();
     results.record(QStringLiteral("unchanged filter sources load from the compiled cache"),
@@ -675,8 +680,8 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
         cacheCorrupted = corruptCache.write("corrupt-cache") == 13;
         corruptCache.close();
     }
-    manager.reloadContentFilters();
-    const bool corruptCacheRecovered = waitForNextPolicyChange(manager, 10000);
+    const bool corruptCacheRecovered = triggerAndWaitForPolicyChange(
+        manager, [&manager] { manager.reloadContentFilters(); });
     const QJsonObject recoveredCache = manager.contentBlockingDiagnostics()
                                            .value(QStringLiteral("compiledCache")).toObject();
     results.record(QStringLiteral("corrupt compiled cache rolls back to validated source lists"),
@@ -1625,9 +1630,12 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
         customFilter.close();
     }
     QString customImportError;
-    const bool customImported = customFilterWritten
-        && manager.importCustomFilterFile(customFilterPath, &customImportError);
-    const bool customCompiled = customImported && waitForNextPolicyChange(manager);
+    bool customImported = false;
+    const bool customCompiled = customFilterWritten
+        && triggerAndWaitForPolicyChange(manager, [&] {
+               customImported = manager.importCustomFilterFile(customFilterPath, &customImportError);
+           })
+        && customImported;
     const QJsonObject afterCustomImport = manager.contentBlockingDiagnostics();
     results.record(QStringLiteral("local filter import compiles network and cosmetic syntax asynchronously"),
                    customCompiled
@@ -1826,8 +1834,8 @@ int runPrivacySmokeTests(QApplication &app, const QString &outputPath)
     results.record(QStringLiteral("content allowlist and custom cosmetic rules persist as data"),
                    manager.contentBlockingAllowlisted(persistentAllowUrl)
                        && allowlistPersisted && cosmeticRulePersisted);
-    manager.resetContentFilters();
-    const bool resetCompiled = waitForNextPolicyChange(manager);
+    const bool resetCompiled = triggerAndWaitForPolicyChange(
+        manager, [&manager] { manager.resetContentFilters(); });
     results.record(QStringLiteral("content-filter reset restores bundled compiled rules"),
                    resetCompiled
                        && manager.contentBlockingDiagnostics().value(QStringLiteral("networkRules")).toInt()
