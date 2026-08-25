@@ -9,6 +9,7 @@ import unittest
 from granger_network.cells import (
     CELL_PAYLOAD_SIZE,
     CELL_SIZE,
+    MAX_CELLS_PER_BATCH,
     CellMultiplexer,
     CellType,
     RelayCell,
@@ -167,6 +168,61 @@ class RelayCellTests(unittest.TestCase):
         self.assertEqual(bytes(received), payload)
         client_mux.close()
         server_mux.close()
+
+    def test_data_cells_are_bounded_batches_and_malformed_batches_close_channel(self) -> None:
+        client_channel, server_channel = channel_pair()
+        sent_frames: list[int] = []
+        original_send = client_channel.send_bytes
+
+        def record_send(payload: bytes, *args, **kwargs) -> None:
+            sent_frames.append(len(payload))
+            original_send(payload, *args, **kwargs)
+
+        client_channel.send_bytes = record_send
+        circuit = secrets.token_bytes(16)
+        client_mux = CellMultiplexer(client_channel, circuit, initiator=True)
+        server_mux = CellMultiplexer(server_channel, circuit, initiator=False)
+        accepted: list = []
+        accept_thread = threading.Thread(
+            target=lambda: accepted.append(server_mux.accept_stream(3.0)),
+            daemon=True,
+        )
+        accept_thread.start()
+        sender = client_mux.open_stream(3.0)
+        accept_thread.join(timeout=3.0)
+        sent_frames.clear()
+        payload = secrets.token_bytes(CELL_PAYLOAD_SIZE * 10)
+        sender.sendall(payload)
+        receiver = accepted[0]
+        received = bytearray()
+        while len(received) < len(payload):
+            received.extend(receiver.recv(len(payload) - len(received)))
+        self.assertEqual(bytes(received), payload)
+        self.assertIn(CELL_SIZE * 10, sent_frames)
+        self.assertTrue(
+            all(
+                size % CELL_SIZE == 0
+                and CELL_SIZE <= size <= CELL_SIZE * MAX_CELLS_PER_BATCH
+                for size in sent_frames
+            )
+        )
+        client_mux.close()
+        server_mux.close()
+
+        attacker_channel, victim_channel = channel_pair()
+        victim_mux = CellMultiplexer(
+            victim_channel,
+            secrets.token_bytes(16),
+            initiator=False,
+        )
+        attacker_channel.send_bytes(b"x" * (CELL_SIZE + 1))
+        deadline = time.monotonic() + 3.0
+        while not victim_mux.failed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(victim_mux.failed)
+        attacker_channel.destroy()
+        attacker_channel.connection.close()
+        victim_mux.close()
 
 
 if __name__ == "__main__":

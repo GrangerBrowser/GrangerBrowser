@@ -22,6 +22,7 @@ DEFAULT_STREAM_WINDOW = 256 * 1024
 MAX_STREAM_WINDOW = 4 * 1024 * 1024
 MAX_STREAMS_PER_MULTIPLEXER = 1024
 MAX_CELL_SEQUENCE = 2**64 - 1
+MAX_CELLS_PER_BATCH = 64
 
 
 class CellType(IntEnum):
@@ -258,10 +259,14 @@ class MuxStream:
                 )
                 if self._local_closed or self._remote_closed:
                     raise ProtocolError("multiplexed stream is closed")
-                size = min(CELL_PAYLOAD_SIZE, self._send_credit, len(data) - offset)
+                size = min(
+                    CELL_PAYLOAD_SIZE * MAX_CELLS_PER_BATCH,
+                    self._send_credit,
+                    len(data) - offset,
+                )
                 chunk = data[offset : offset + size]
                 self._send_credit -= size
-            self.multiplexer._send(CellType.DATA, self.stream_id, chunk)
+            self.multiplexer._send_data_batch(self.stream_id, chunk)
             offset += size
 
     def recv(self, size: int) -> bytes:
@@ -371,23 +376,48 @@ class CellMultiplexer:
             return len(self._streams)
 
     def _send(self, cell_type: CellType, stream_id: int, payload: bytes, flags: int = 0) -> None:
+        self._send_batch(((cell_type, stream_id, payload, flags),))
+
+    def _send_data_batch(self, stream_id: int, payload: bytes) -> None:
+        if not isinstance(payload, bytes) or not payload:
+            raise ProtocolError("relay DATA batch is empty")
+        cells = tuple(
+            (
+                CellType.DATA,
+                stream_id,
+                payload[offset : offset + CELL_PAYLOAD_SIZE],
+                0,
+            )
+            for offset in range(0, len(payload), CELL_PAYLOAD_SIZE)
+        )
+        self._send_batch(cells)
+
+    def _send_batch(
+        self,
+        cells: tuple[tuple[CellType, int, bytes, int], ...],
+    ) -> None:
+        if not 1 <= len(cells) <= MAX_CELLS_PER_BATCH:
+            raise ProtocolError("relay cell batch count is invalid")
         with self._send_lock:
             if self._failed is not None or self._closed:
                 raise ProtocolError("relay multiplexer is closed")
-            if self._tx_sequence > MAX_CELL_SEQUENCE:
+            if self._tx_sequence > MAX_CELL_SEQUENCE - (len(cells) - 1):
                 raise ProtocolError("relay cell transmit sequence is exhausted")
-            encoded = encode_cell(
-                RelayCell(
-                    cell_type,
-                    flags,
-                    self.circuit_id,
-                    stream_id,
-                    self._tx_sequence,
-                    payload,
+            encoded = b"".join(
+                encode_cell(
+                    RelayCell(
+                        cell_type,
+                        flags,
+                        self.circuit_id,
+                        stream_id,
+                        self._tx_sequence + index,
+                        payload,
+                    )
                 )
+                for index, (cell_type, stream_id, payload, flags) in enumerate(cells)
             )
             self.channel.send_bytes(encoded)
-            self._tx_sequence += 1
+            self._tx_sequence += len(cells)
 
     def open_stream(self, timeout: float = 10.0) -> MuxStream:
         with self._condition:
@@ -438,13 +468,21 @@ class CellMultiplexer:
     def _read_loop(self) -> None:
         try:
             while True:
-                cell = decode_cell(self.channel.receive_bytes())
-                if cell.circuit_id != self.circuit_id:
-                    raise ProtocolError("relay cell belongs to a different circuit")
-                if cell.sequence != self._rx_sequence:
-                    raise ProtocolError("relay cell sequence is out of order")
-                self._rx_sequence += 1
-                self._handle_cell(cell)
+                batch = self.channel.receive_bytes()
+                if (
+                    not batch
+                    or len(batch) % CELL_SIZE
+                    or len(batch) > CELL_SIZE * MAX_CELLS_PER_BATCH
+                ):
+                    raise ProtocolError("relay cell batch framing is invalid")
+                for offset in range(0, len(batch), CELL_SIZE):
+                    cell = decode_cell(batch[offset : offset + CELL_SIZE])
+                    if cell.circuit_id != self.circuit_id:
+                        raise ProtocolError("relay cell belongs to a different circuit")
+                    if cell.sequence != self._rx_sequence:
+                        raise ProtocolError("relay cell sequence is out of order")
+                    self._rx_sequence += 1
+                    self._handle_cell(cell)
         except BaseException as error:
             if not self._closed:
                 self._fail(error)

@@ -53,6 +53,7 @@ class WanServiceSession:
     channel: SecureChannel
     application_mux: CellMultiplexer
     application: WanApplicationClient
+    timings: dict[str, float]
     _closed: bool = False
 
     def fetch(
@@ -111,6 +112,8 @@ class WanServiceClient:
         if point is None:
             raise OverlayRoutingError("selected introduction node is not authorized by the service")
         builder = CircuitBuilder(self.identity, PeerRole.CLIENT, timeout=self.timeout)
+        session_started = time.perf_counter_ns()
+        introduction_started = session_started
         intro_circuit = builder.open((*self.route_prefix, (introduction_node, "introduction")))
         request_nonce = secrets.token_bytes(16)
         try:
@@ -132,12 +135,14 @@ class WanServiceClient:
             )
         finally:
             intro_circuit.close()
+        introduction_finished = time.perf_counter_ns()
 
         rendezvous_circuit: BuiltCircuit | None = None
         rendezvous_mux: CellMultiplexer | None = None
         channel: SecureChannel | None = None
         application_mux: CellMultiplexer | None = None
         try:
+            rendezvous_started = time.perf_counter_ns()
             rendezvous_circuit = builder.open(
                 (*self.route_prefix, (grant.rendezvous, "rendezvous"))
             )
@@ -170,6 +175,7 @@ class WanServiceClient:
                 initiator=True,
             )
             application = WanApplicationClient(application_mux, timeout=self.timeout)
+            rendezvous_finished = time.perf_counter_ns()
             return WanServiceSession(
                 self.service,
                 grant,
@@ -178,6 +184,15 @@ class WanServiceClient:
                 channel,
                 application_mux,
                 application,
+                {
+                    "introductionMs": (
+                        introduction_finished - introduction_started
+                    )
+                    / 1_000_000,
+                    "rendezvousMs": (rendezvous_finished - rendezvous_started)
+                    / 1_000_000,
+                    "sessionMs": (rendezvous_finished - session_started) / 1_000_000,
+                },
             )
         except Exception:
             if application_mux is not None:

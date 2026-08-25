@@ -14,7 +14,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ._codec import atomic_write_text, parse_json_object
-from .cells import CELL_PAYLOAD_SIZE, CellMultiplexer, MuxStream
+from .cells import (
+    CELL_PAYLOAD_SIZE,
+    MAX_CELLS_PER_BATCH,
+    CellMultiplexer,
+    MuxStream,
+)
 from .circuit import decode_extend_circuit, decode_open_circuit, encode_open_circuit
 from .errors import (
     ConnectionClosedError,
@@ -343,7 +348,7 @@ class WanNodeServer:
         def pump(source: MuxStream, destination: MuxStream) -> None:
             try:
                 while not stop.is_set() and not self._stop.is_set():
-                    payload = source.recv(CELL_PAYLOAD_SIZE * 8)
+                    payload = source.recv(CELL_PAYLOAD_SIZE * MAX_CELLS_PER_BATCH)
                     if not payload:
                         break
                     self.runtime.account_bytes(circuit_id, len(payload))
@@ -626,7 +631,7 @@ class WanNodeServer:
         ) -> None:
             try:
                 while not stop.is_set() and not self._stop.is_set():
-                    payload = source.recv(CELL_PAYLOAD_SIZE * 8)
+                    payload = source.recv(CELL_PAYLOAD_SIZE * MAX_CELLS_PER_BATCH)
                     if not payload:
                         break
                     if accounting_circuit_id is not None:
