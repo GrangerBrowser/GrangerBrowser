@@ -601,6 +601,83 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .engine-list{border-color:var(--ds-border-subtle)}
 .settings-page .engine-option{min-height:46px;padding:8px 10px;border-color:var(--ds-border-subtle)}
 .settings-page .engine-option.selected{background:var(--ds-accent-soft)}
+</style>)CSS"));
+    html.replace(QStringLiteral("</style>"), QStringLiteral(R"CSS(
+.settings-page .hosting-page{gap:20px;min-width:0}
+.settings-page .hosting-intro{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding-bottom:20px;border-bottom:1px solid var(--ds-border-subtle)}
+.settings-page .hosting-intro p{max-width:650px;margin:0;color:var(--ds-text-secondary);font-size:13px;line-height:1.55}
+.settings-page .hosting-create{flex:0 0 auto;gap:8px}
+.settings-page .hosting-create>span{font-size:18px;font-weight:400;line-height:1}
+.settings-page .hosting-network-state{margin:0;border-radius:var(--ds-radius-md)}
+.settings-page .hosting-network-state p{margin:5px 0 0}
+.settings-page .hosting-wizard{overflow:hidden;animation:hostingPanelIn var(--ds-normal) ease}
+.settings-page .hosting-wizard-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.settings-page .hosting-wizard-head>div{display:grid;gap:5px}
+.settings-page .hosting-wizard-head h3{margin:0;color:var(--ds-text);font-size:17px}
+.settings-page .hosting-step{color:var(--ds-accent-hover);font-size:10px;font-weight:700;text-transform:uppercase}
+.settings-page .hosting-close{display:grid;place-items:center;width:32px;height:32px;flex:0 0 32px;border:1px solid transparent;border-radius:var(--ds-radius-md);color:var(--ds-text-secondary);font-size:22px;line-height:1;text-decoration:none;transition:background-color var(--ds-fast) ease,border-color var(--ds-fast) ease,color var(--ds-fast) ease}
+.settings-page .hosting-close:hover{border-color:var(--ds-border-subtle);background:var(--ds-bg-hover);color:var(--ds-text)}
+.settings-page .hosting-type-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.settings-page .hosting-type-card{display:grid;grid-template-columns:42px minmax(0,1fr);column-gap:13px;align-items:center;min-width:0;min-height:156px;padding:16px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-lg);background:var(--ds-bg-surface);color:var(--ds-text);text-decoration:none;transition:transform var(--ds-fast) ease,background-color var(--ds-fast) ease,border-color var(--ds-fast) ease}
+.settings-page .hosting-type-card:hover{transform:translateY(-1px);border-color:var(--ds-accent-border);background:var(--ds-bg-hover)}
+.settings-page .hosting-type-icon{display:grid;place-items:center;width:42px;height:42px;grid-row:1/4;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-control)}
+.settings-page .hosting-type-icon img{width:21px;height:21px;opacity:.86}
+.settings-page .hosting-type-card strong{font-size:14px;font-weight:650}
+.settings-page .hosting-type-card p{align-self:start;margin:4px 0 8px;color:var(--ds-text-secondary);font-size:12px;line-height:1.45}
+.settings-page .hosting-type-card>span:last-child{align-self:end;color:var(--ds-text-muted);font-size:10px;line-height:1.4}
+.settings-page .hosting-wizard-body{display:grid;gap:16px}
+.settings-page .hosting-source-row{display:flex;align-items:center;justify-content:space-between;gap:18px;min-width:0;padding:13px 14px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-control)}
+.settings-page .hosting-source-row>div{display:grid;gap:5px;min-width:0}
+.settings-page .hosting-source-row span{color:var(--ds-text-muted);font-size:10px;font-weight:650;text-transform:uppercase}
+.settings-page .hosting-source-row strong{display:block;min-width:0;overflow:hidden;color:var(--ds-text-secondary);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .hosting-source-row>.button{flex:0 0 auto}
+.settings-page .hosting-detected{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.settings-page .hosting-detected>div{display:grid;gap:4px;padding:11px 12px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:rgba(255,255,255,.018)}
+.settings-page .hosting-detected span{color:var(--ds-text-muted);font-size:10px}
+.settings-page .hosting-detected strong{color:var(--ds-text);font-size:14px}
+.settings-page .hosting-validation{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;margin:0;padding:0;list-style:none}
+.settings-page .hosting-validation li{position:relative;min-width:0;padding:5px 6px 5px 22px;color:var(--ds-text-secondary);font-size:11px;overflow-wrap:anywhere}
+.settings-page .hosting-validation li::before{content:"";position:absolute;left:6px;top:10px;width:7px;height:7px;border-radius:50%;background:var(--ds-text-muted)}
+.settings-page .hosting-validation li.pass::before{background:var(--ds-success)}
+.settings-page .hosting-validation li.fail::before{background:var(--ds-danger)}
+.settings-page .hosting-publish-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;padding-top:16px;border-top:1px solid var(--ds-border-subtle)}
+.settings-page .hosting-publish-form button{min-width:112px}
+.settings-page .hosting-app-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,180px);gap:14px}
+.settings-page .hosting-app-form .hosting-title-field,.settings-page .hosting-app-form .hosting-policy-note,.settings-page .hosting-app-form button{grid-column:1/-1}
+.settings-page .hosting-app-form button{justify-self:start;min-width:128px}
+.settings-page .hosting-policy-note{padding:11px 13px;border-left:2px solid var(--ds-accent);background:var(--ds-accent-soft);color:var(--ds-text-secondary);font-size:11px;line-height:1.45}
+.settings-page .hosting-list-section{display:grid;gap:13px}
+.settings-page .hosting-list-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.settings-page .hosting-list-heading h3{margin:0 0 4px;color:var(--ds-text);font-size:15px}
+.settings-page .hosting-list-heading p{margin:0;color:var(--ds-text-muted);font-size:11px}
+.settings-page .hosting-empty{display:grid;justify-items:center;gap:8px;padding:38px 24px;text-align:center}
+.settings-page .hosting-empty-mark{display:grid;place-items:center;min-height:38px;padding:0 12px;border:1px solid var(--ds-accent-border);border-radius:var(--ds-radius-md);background:var(--ds-accent-soft);color:var(--ds-accent-hover);font:12px "Cascadia Mono","Consolas",monospace}
+.settings-page .hosting-empty h3{margin:5px 0 0;font-size:16px}
+.settings-page .hosting-empty p{max-width:480px;margin:0 0 8px}
+.settings-page .hosting-service-list{display:grid;gap:10px}
+.settings-page .hosting-service-card{display:grid;grid-template-columns:minmax(0,1fr) 152px;min-width:0;overflow:hidden}
+.settings-page .hosting-service-main{display:grid;gap:13px;min-width:0;padding:16px}
+.settings-page .hosting-service-title{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;min-width:0}
+.settings-page .hosting-service-title>div{min-width:0}
+.settings-page .hosting-service-title h3{margin:0 0 3px;overflow:hidden;color:var(--ds-text);font-size:15px;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .hosting-service-title>div>span{color:var(--ds-text-muted);font-size:10px;font-weight:650;text-transform:uppercase}
+.settings-page .hosting-status{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;min-height:24px;padding:3px 8px;border:1px solid var(--ds-border-subtle);border-radius:999px;color:var(--ds-text-secondary);font-size:10px;font-weight:650}
+.settings-page .hosting-status i{width:7px;height:7px;border-radius:50%;background:var(--ds-text-muted)}
+.settings-page .hosting-status.online i{background:var(--ds-success);box-shadow:0 0 0 3px color-mix(in srgb,var(--ds-success) 13%,transparent)}
+.settings-page .hosting-status.starting i{background:var(--ds-warning);animation:hostingPulse 1.1s ease-in-out infinite}
+.settings-page .hosting-status.error i{background:var(--ds-danger)}
+.settings-page .hosting-address{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-control)}
+.settings-page .hosting-address code{min-width:0;overflow:hidden;color:var(--ds-text-secondary);font:11px "Cascadia Mono","Consolas",monospace;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .hosting-address a{flex:0 0 auto;color:var(--ds-accent-hover);font-size:10px;font-weight:650;text-decoration:none}
+.settings-page .hosting-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.settings-page .hosting-meta>div{display:grid;gap:3px;min-width:0}
+.settings-page .hosting-meta span{color:var(--ds-text-muted);font-size:9px;font-weight:650;text-transform:uppercase}
+.settings-page .hosting-meta strong{overflow:hidden;color:var(--ds-text-secondary);font-size:11px;font-weight:550;text-overflow:ellipsis;white-space:nowrap}
+.settings-page .hosting-error{margin:0;padding:9px 11px;border-left:2px solid var(--ds-danger);background:color-mix(in srgb,var(--ds-danger) 8%,transparent);color:#ffadb4;font-size:10px;overflow-wrap:anywhere}
+.settings-page .hosting-service-actions{display:flex;flex-direction:column;gap:5px;padding:12px;border-left:1px solid var(--ds-border-subtle);background:rgba(255,255,255,.012)}
+.settings-page .hosting-service-actions .button{justify-content:flex-start;width:100%;min-height:32px;padding:6px 9px;font-size:11px}
+@keyframes hostingPanelIn{from{opacity:.72;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes hostingPulse{0%,100%{opacity:.55}50%{opacity:1}}
 @keyframes dsPopupIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
 @media(max-width:920px){
 .settings-page .settings-shell{grid-template-columns:194px minmax(0,1fr);gap:26px}
@@ -610,6 +687,8 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .settings-strategy-grid{grid-template-columns:1fr}
 .settings-page .settings-upstream-grid{grid-template-columns:1fr}
 .settings-page .settings-upstream-grid .upstream-url{grid-column:1}
+.settings-page .hosting-service-card{grid-template-columns:1fr}
+.settings-page .hosting-service-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--ds-border-subtle);border-left:0}
 }
 @media(max-width:600px){.settings-page .privacy-network-options{grid-template-columns:1fr}}
 @media(max-width:760px){
@@ -636,6 +715,14 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .support-qr img{width:100%;height:auto;aspect-ratio:1}
 .settings-page .site-rule-grid{grid-template-columns:1fr}
 .settings-page .site-rule-grid .rule-target{grid-column:1}
+.settings-page .hosting-intro{flex-direction:column;gap:14px}
+.settings-page .hosting-type-grid,.settings-page .hosting-detected,.settings-page .hosting-validation{grid-template-columns:1fr}
+.settings-page .hosting-source-row{align-items:stretch;flex-direction:column}
+.settings-page .hosting-source-row>.button{width:100%}
+.settings-page .hosting-publish-form,.settings-page .hosting-app-form{grid-template-columns:1fr}
+.settings-page .hosting-publish-form button,.settings-page .hosting-app-form button{width:100%}
+.settings-page .hosting-meta{grid-template-columns:1fr}
+.settings-page .hosting-service-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:480px){
 .settings-page .settings-nav{grid-template-columns:1fr}
@@ -646,10 +733,13 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .support-page{gap:20px}
 .settings-page .support-wallet{padding:14px}
 .settings-page .support-copy,.settings-page .support-cryptobot-open{width:100%}
+.settings-page .hosting-service-title,.settings-page .hosting-list-heading{align-items:stretch;flex-direction:column}
+.settings-page .hosting-status{align-self:flex-start}
+.settings-page .hosting-service-actions{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){
-.settings-page .container-menu-popover,.settings-page .settings-panel{animation:none}
-.settings-page .container-row,.settings-page .settings-nav a,.settings-page .support-wallet,.settings-page .support-copy{transition:none!important}
+.settings-page .container-menu-popover,.settings-page .settings-panel,.settings-page .hosting-wizard,.settings-page .hosting-status.starting i{animation:none}
+.settings-page .container-row,.settings-page .settings-nav a,.settings-page .support-wallet,.settings-page .support-copy,.settings-page .hosting-type-card,.settings-page .hosting-close{transition:none!important}
 }
 body.settings-page.reduced-motion .settings-panel,body.settings-page.reduced-motion .container-menu-popover{animation:none}
 body.settings-page.reduced-motion *,body.settings-page.reduced-motion *::before,body.settings-page.reduced-motion *::after{transition-duration:0s!important;animation-duration:0s!important}
@@ -1199,6 +1289,8 @@ QString InternalPages::settings(const InternalPageContext &context)
     QString networkLinks;
     networkLinks += categoryLink(QStringLiteral("connection"), t("settings.category.connection"), category,
                                  QStringLiteral(":/settings-icons/tor-connection.png"));
+    networkLinks += categoryLink(QStringLiteral("hosting"), t("settings.category.hosting"), category,
+                                 QStringLiteral(":/icons/site-onion.svg"));
     QString systemLinks;
     systemLinks += categoryLink(QStringLiteral("reports"), t("settings.category.reports"), category,
                                 QStringLiteral(":/icons/reports.svg"));
@@ -1597,6 +1689,9 @@ QString InternalPages::settings(const InternalPageContext &context)
     } else if (category == QStringLiteral("downloads")) {
         panel = QStringLiteral("<h2>%1</h2><p>%2</p><a class=\"button primary\" href=\"https://granger.local/__action/open?page=about:downloads\">%3</a>")
                     .arg(e(t("page.downloads.title")), e(t("settings.downloads_description")), e(t("settings.open_downloads")));
+    } else if (category == QStringLiteral("hosting")) {
+        panel = QStringLiteral("<h2>%1</h2>%2")
+                    .arg(e(t("settings.category.hosting")), context.hostingHtml);
     } else if (category == QStringLiteral("reports")) {
         panel = QStringLiteral("<h2>%1</h2><div class=\"reports-page ds-page-stack\">%2</div>")
                     .arg(e(t("settings.category.reports")), context.reportsLogsHtml);

@@ -69,6 +69,8 @@ qt_add_executable(granger_browser
     granger/network/GrangerNetworkUrl.h
     granger/network/GrangerNetworkRuntime.cpp
     granger/network/GrangerNetworkRuntime.h
+    granger/network/GrangerHostingManager.cpp
+    granger/network/GrangerHostingManager.h
     granger/network/GrangerNetworkBrowserSmokeTests.cpp
     granger/network/GrangerNetworkBrowserSmokeTests.h
     granger/network/PrivacyNetworkTypes.cpp

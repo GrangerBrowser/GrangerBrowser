@@ -15,5 +15,8 @@ int runGrangerNetworkLocalDemoSmoke(QApplication &app, const QString &outputPath
 int runGrangerNetworkWanSmoke(QApplication &app,
                               const QString &outputPath,
                               const QString &canonicalAddress);
+int runGrangerHostingSmoke(QApplication &app,
+                           const QString &outputPath,
+                           const QString &sourceDirectory);
 
 }

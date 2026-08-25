@@ -6317,6 +6317,14 @@ int main(int argc, char *argv[])
                 ? QStringLiteral("output/granger-network-wan-smoke.json") : smokeOutput,
             argumentValue(arguments, QStringLiteral("--granger-network-canonical=")));
     }
+    if (arguments.contains(QStringLiteral("--smoke-granger-hosting"))) {
+        const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runGrangerHostingSmoke(
+            app,
+            smokeOutput.isEmpty()
+                ? QStringLiteral("output/granger-hosting-smoke.json") : smokeOutput,
+            argumentValue(arguments, QStringLiteral("--granger-hosting-source=")));
+    }
     if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
         const int requestedTimeout = argumentValue(

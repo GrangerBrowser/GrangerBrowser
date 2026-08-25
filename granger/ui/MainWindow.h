@@ -22,6 +22,7 @@
 #include "granger/browser/InternalPages.h"
 #include "granger/containers/ContainerManager.h"
 #include "granger/network/NetworkManager.h"
+#include "granger/network/GrangerHostingManager.h"
 #include "granger/network/GrangerNetworkRuntime.h"
 #include "granger/network/PrivacyNetworkTypes.h"
 #include "granger/pamp_lite/network/PampRoutedEnricher.h"
@@ -117,6 +118,15 @@ public:
     void toggleDeveloperToolsForDiagnostics(bool inspectElement = false);
     QJsonObject developerToolsDiagnostics() const;
     QJsonObject grangerNetworkDiagnosticsForDiagnostics() const;
+    QJsonObject grangerHostingDiagnosticsForDiagnostics() const;
+    bool createHostedStaticForDiagnostics(const QString &title,
+                                          const QString &source,
+                                          HostedServiceRecord *created,
+                                          QString *error);
+    bool startHostedServiceForDiagnostics(const QString &id, QString *error);
+    bool stopHostedServiceForDiagnostics(const QString &id, QString *error);
+    bool removeHostedServiceForDiagnostics(const QString &id, QString *error);
+    HostedServiceRecord hostedServiceForDiagnostics(const QString &id) const;
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -352,6 +362,7 @@ private:
     QString privacyDiagnosticsHtml() const;
     QString containersSettingsHtml() const;
     QString containerSiteRulesHtml() const;
+    QString hostingSettingsHtml() const;
     QString contentBlockingAllowlistHtml() const;
     QString contentBlockingDomainPoliciesHtml() const;
     QString contentBlockingRecentEventsHtml(const QUrl &origin = QUrl()) const;
@@ -433,6 +444,10 @@ private:
     struct SettingsUiState {
         QString activeCategory = QStringLiteral("general");
         QString qrReturnAddress;
+        QString hostingWizard;
+        QString hostingSelectedPath;
+        QString hostingEditId;
+        HostingInspection hostingInspection;
         bool bridgeSavePending = false;
         bool bridgeApplyPending = false;
         bool wipeConfirmationStage = false;
@@ -447,6 +462,7 @@ private:
     BridgeManager m_bridges;
     NetworkManager m_network;
     GrangerNetworkRuntime m_grangerNetwork;
+    GrangerHostingManager m_hosting;
     PrivacyPolicyManager m_privacy;
     ContainerManager m_containers;
     PermissionManager m_permissions;

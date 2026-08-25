@@ -24,6 +24,14 @@
 
 #include <functional>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#endif
+
 namespace granger {
 namespace {
 
@@ -32,6 +40,32 @@ struct LoadResult {
     bool loaded = false;
     QString address;
 };
+
+qint64 processWorkingSetBytes(qint64 pid)
+{
+    if (pid <= 0) return -1;
+#ifdef Q_OS_WIN
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                                 FALSE, DWORD(pid));
+    if (!process) return -1;
+    PROCESS_MEMORY_COUNTERS counters{};
+    counters.cb = sizeof(counters);
+    const bool read = GetProcessMemoryInfo(process, &counters, sizeof(counters)) != FALSE;
+    CloseHandle(process);
+    return read ? qint64(counters.WorkingSetSize) : -1;
+#elif defined(Q_OS_LINUX)
+    QFile status(QStringLiteral("/proc/%1/status").arg(pid));
+    if (!status.open(QIODevice::ReadOnly)) return -1;
+    for (const QByteArray &line : status.readAll().split('\n')) {
+        if (!line.startsWith("VmRSS:")) continue;
+        const QList<QByteArray> fields = line.simplified().split(' ');
+        bool ok = false;
+        const qint64 kib = fields.size() >= 2 ? fields.at(1).toLongLong(&ok) : -1;
+        return ok ? kib * 1024 : -1;
+    }
+#endif
+    return -1;
+}
 
 LoadResult waitForLoad(BrowserTab *tab, const std::function<void()> &action, int timeoutMs = 30000)
 {
@@ -121,6 +155,41 @@ QVariant evaluateJavaScript(QWebEnginePage *page, const QString &source, int tim
     });
     loop.exec();
     return result;
+}
+
+QString pageHtml(QWebEnginePage *page, int timeoutMs = 5000)
+{
+    QString result;
+    if (!page) return result;
+    QEventLoop loop;
+    QPointer<QEventLoop> guardedLoop(&loop);
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(timeoutMs);
+    page->toHtml([guardedLoop, &result](const QString &html) {
+        if (!guardedLoop) return;
+        result = html;
+        guardedLoop->quit();
+    });
+    loop.exec();
+    return result;
+}
+
+bool waitForHostedStatus(MainWindow &window,
+                         const QString &serviceId,
+                         const QString &expected,
+                         int timeoutMs = 120000)
+{
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < timeoutMs) {
+        if (window.hostedServiceForDiagnostics(serviceId).status == expected) return true;
+        QEventLoop delay;
+        QTimer::singleShot(100, &delay, &QEventLoop::quit);
+        delay.exec();
+    }
+    return false;
 }
 
 QJsonObject pageSnapshot(BrowserTab *tab, bool waitForReady = true, int timeoutMs = 15000)
@@ -525,6 +594,204 @@ int runGrangerNetworkWanSmoke(QApplication &app,
         };
         window.close();
     }
+    if (!writeResult(outputPath, result)) return 2;
+    return passed ? 0 : 1;
+}
+
+int runGrangerHostingSmoke(QApplication &app,
+                           const QString &outputPath,
+                           const QString &sourceDirectory)
+{
+    Q_UNUSED(app)
+    QJsonObject result;
+    bool passed = false;
+    QString cleanupError;
+    {
+        SettingsManager settings;
+        settings.setTorConnectionMode(QStringLiteral("disabled"));
+        ThemeManager theme;
+        theme.apply(*qApp);
+        MainWindow window(settings, theme);
+        window.show();
+        BrowserTab *tab = window.currentTabForDiagnostics();
+
+        window.openAddressForDiagnostics(QStringLiteral("about:settings?category=hosting"));
+        tab = window.currentTabForDiagnostics();
+        const LoadResult settingsAddress = waitForAddress(
+            tab, QStringLiteral("about:settings?category=hosting"), [] {}, 30000);
+        bool settingsDom = false;
+        QElapsedTimer settingsWait;
+        settingsWait.start();
+        do {
+            settingsDom = pageHtml(tab ? tab->page() : nullptr, 10000)
+                .contains(QStringLiteral("hosting-page"));
+            if (settingsDom) break;
+            QEventLoop delay;
+            QTimer::singleShot(50, &delay, &QEventLoop::quit);
+            delay.exec();
+        } while (settingsWait.elapsed() < 10000);
+        const bool settingsPage = settingsAddress.signaled && settingsDom;
+        window.openNewTabForDiagnostics();
+        tab = window.currentTabForDiagnostics();
+
+        HostedServiceRecord created;
+        QString createError;
+        QElapsedTimer publishTimer;
+        publishTimer.start();
+        const bool createdOk = window.createHostedStaticForDiagnostics(
+            QStringLiteral("Granger hosting acceptance"), sourceDirectory,
+            &created, &createError);
+        const qint64 createMs = publishTimer.elapsed();
+        const bool identityBound = createdOk
+            && GrangerNetworkUrl::isCanonicalHost(created.address);
+        const bool online = createdOk
+            && waitForHostedStatus(window, created.id, QStringLiteral("online"));
+        const qint64 publishMs = online ? publishTimer.elapsed() : -1;
+        const qint64 hostWorkingSetBytes = online
+            ? processWorkingSetBytes(created.pid) : -1;
+
+        LoadResult firstLoad;
+        QJsonObject first;
+        qint64 firstRequestMs = -1;
+        qint64 assetReadyMs = -1;
+        if (online) {
+            QElapsedTimer firstRequestTimer;
+            firstRequestTimer.start();
+            firstLoad = waitForLoad(tab, [&] {
+                window.openAddressForDiagnostics(created.address);
+            }, 120000);
+            firstRequestMs = firstRequestTimer.elapsed();
+            bool asyncAssetsReady = false;
+            QElapsedTimer assetWait;
+            assetWait.start();
+            do {
+                asyncAssetsReady = evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral(
+                        "document.documentElement.dataset.hostingJson === 'ok'"
+                        " && document.querySelector('img')?.complete"
+                        " && document.querySelector('img')?.naturalWidth > 0"),
+                    10000).toBool();
+                if (asyncAssetsReady) break;
+                QEventLoop delay;
+                QTimer::singleShot(100, &delay, &QEventLoop::quit);
+                delay.exec();
+            } while (assetWait.elapsed() < 120000);
+            assetReadyMs = firstRequestTimer.elapsed();
+            first = {
+                {QStringLiteral("heading"), QJsonValue::fromVariant(evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("document.querySelector('h1')?.textContent || ''"),
+                    10000))},
+                {QStringLiteral("css"), QJsonValue::fromVariant(evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("getComputedStyle(document.body).backgroundColor"),
+                    10000))},
+                {QStringLiteral("script"), QJsonValue::fromVariant(evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("document.documentElement.dataset.granger === 'hosted'"),
+                    10000))},
+                {QStringLiteral("json"), QJsonValue::fromVariant(evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("document.documentElement.dataset.hostingJson || ''"),
+                    10000))},
+                {QStringLiteral("image"), QJsonValue::fromVariant(evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("document.querySelector('img')?.complete && document.querySelector('img')?.naturalWidth > 0"),
+                    10000))}
+            };
+        }
+        const bool assets = firstLoad.loaded
+            && first.value(QStringLiteral("heading")).toString()
+                == QStringLiteral("Granger hosted site")
+            && first.value(QStringLiteral("css")).toString() == QStringLiteral("rgb(16, 18, 22)")
+            && first.value(QStringLiteral("script")).toBool()
+            && first.value(QStringLiteral("json")).toString() == QStringLiteral("ok")
+            && first.value(QStringLiteral("image")).toBool();
+
+        QString stopError;
+        const bool stopped = createdOk
+            && window.stopHostedServiceForDiagnostics(created.id, &stopError)
+            && waitForHostedStatus(window, created.id, QStringLiteral("offline"), 10000);
+        LoadResult offlineLoad;
+        QString offlineText;
+        if (stopped) {
+            offlineLoad = waitForLoad(tab, [&] {
+                window.openAddressForDiagnostics(created.address + QStringLiteral("/offline-check"));
+            }, 120000);
+            offlineText = evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.body?.innerText || ''"), 10000).toString();
+        }
+        const bool failClosed = stopped && offlineLoad.signaled
+            && offlineText.contains(QStringLiteral("Unable to reach this service"));
+
+        QString restartError;
+        const bool restarted = createdOk
+            && window.startHostedServiceForDiagnostics(created.id, &restartError)
+            && waitForHostedStatus(window, created.id, QStringLiteral("online"));
+        LoadResult recoveryLoad;
+        QString recoveryHeading;
+        if (restarted) {
+            recoveryLoad = waitForLoad(tab, [&] {
+                window.openAddressForDiagnostics(created.address + QStringLiteral("/"));
+            }, 120000);
+            recoveryHeading = evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.querySelector('h1')?.textContent || ''"),
+                10000).toString();
+        }
+        const bool recovery = recoveryLoad.loaded
+            && recoveryHeading == QStringLiteral("Granger hosted site");
+        const HostedServiceRecord recoveryRecord = createdOk
+            ? window.hostedServiceForDiagnostics(created.id) : HostedServiceRecord();
+        const qint64 recoveryWorkingSetBytes = recovery
+            ? processWorkingSetBytes(recoveryRecord.pid) : -1;
+        const QJsonObject browserRuntime = window.grangerNetworkDiagnosticsForDiagnostics();
+        const QJsonObject hostingRuntime = window.grangerHostingDiagnosticsForDiagnostics();
+        const bool privacy = browserRuntime.value(QStringLiteral("dnsRequests")).toInt(-1) == 0
+            && !hostingRuntime.value(QStringLiteral("directFallback")).toBool(true)
+            && !hostingRuntime.value(QStringLiteral("dnsFallback")).toBool(true);
+        const bool removed = !createdOk
+            || window.removeHostedServiceForDiagnostics(created.id, &cleanupError);
+        passed = settingsPage && createdOk && identityBound && online && assets
+            && stopped && failClosed && restarted && recovery && privacy && removed;
+        result = {
+            {QStringLiteral("ok"), passed},
+            {QStringLiteral("settingsPage"), settingsPage},
+            {QStringLiteral("settingsAddress"), settingsAddress.address},
+            {QStringLiteral("settingsDom"), settingsDom},
+            {QStringLiteral("created"), createdOk},
+            {QStringLiteral("createError"), createError},
+            {QStringLiteral("serviceId"), created.id},
+            {QStringLiteral("address"), created.address},
+            {QStringLiteral("hostProcessPid"), created.pid},
+            {QStringLiteral("recoveryProcessPid"), recoveryRecord.pid},
+            {QStringLiteral("identityBound"), identityBound},
+            {QStringLiteral("online"), online},
+            {QStringLiteral("createMs"), createMs},
+            {QStringLiteral("publishMs"), publishMs},
+            {QStringLiteral("firstRequestMs"), firstRequestMs},
+            {QStringLiteral("assetReadyMs"), assetReadyMs},
+            {QStringLiteral("hostWorkingSetBytes"), hostWorkingSetBytes},
+            {QStringLiteral("recoveryWorkingSetBytes"), recoveryWorkingSetBytes},
+            {QStringLiteral("staticAssets"), assets},
+            {QStringLiteral("stopped"), stopped},
+            {QStringLiteral("stopError"), stopError},
+            {QStringLiteral("failClosedWhileOffline"), failClosed},
+            {QStringLiteral("restarted"), restarted},
+            {QStringLiteral("restartError"), restartError},
+            {QStringLiteral("recovery"), recovery},
+            {QStringLiteral("removed"), removed},
+            {QStringLiteral("dnsRequests"), browserRuntime.value(QStringLiteral("dnsRequests"))},
+            {QStringLiteral("directFallback"), hostingRuntime.value(QStringLiteral("directFallback"))},
+            {QStringLiteral("first"), first},
+            {QStringLiteral("hostingRuntime"), hostingRuntime},
+            {QStringLiteral("browserRuntime"), browserRuntime}
+        };
+        window.close();
+    }
+    result.insert(QStringLiteral("cleanupError"), cleanupError);
     if (!writeResult(outputPath, result)) return 2;
     return passed ? 0 : 1;
 }

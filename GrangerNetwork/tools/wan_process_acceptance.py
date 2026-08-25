@@ -36,6 +36,7 @@ PLAINTEXT_MARKERS = (
     b"GET / HTTP/1.1",
     b"POST /message HTTP/1.1",
     b"Granger test forum",
+    b"Granger hosted site",
 )
 
 
@@ -285,9 +286,14 @@ def run_acceptance(
     browser: Path | None = None,
     qt_bin: Path | None = None,
     expect_packaged_runtime: bool = False,
+    hosting_source: Path | None = None,
 ) -> dict:
     root = Path(root).resolve()
     report_path = Path(report_path).resolve()
+    if hosting_source is not None:
+        hosting_source = Path(hosting_source).resolve()
+        if not (hosting_source / "index.html").is_file():
+            raise AcceptanceError("hosting source does not contain index.html")
     root.mkdir(parents=True, exist_ok=False)
     children: list[ChildProcess] = []
     report: dict = {
@@ -529,6 +535,7 @@ def run_acceptance(
             raise AcceptanceError("unrestricted client did not receive the forum message")
 
         browser_result: dict = {}
+        hosting_browser_result: dict = {}
         if browser is not None:
             browser_config_path = root / "browser-wan.json"
             atomic_write_text(
@@ -558,6 +565,8 @@ def run_acceptance(
             )
             browser_environment["GRANGER_DATA_ROOT"] = str(root / "browser-data")
             browser_environment["GRANGER_CACHE_ROOT"] = str(root / "browser-cache")
+            browser_environment["GRANGER_SETTINGS_ROOT"] = str(root / "browser-settings")
+            browser_environment["GRANGER_DOWNLOAD_ROOT"] = str(root / "browser-downloads")
             if expect_packaged_runtime:
                 system_root = Path(browser_environment.get("SystemRoot", r"C:\Windows"))
                 browser_environment["PATH"] = os.pathsep.join(
@@ -629,6 +638,95 @@ def run_acceptance(
                 or browser_result["harness"]["orphanGateway"]
             ):
                 raise AcceptanceError("real Qt WebEngine WAN browser smoke failed")
+
+            if hosting_source is not None:
+                hosting_output = root / "browser-hosting-smoke.json"
+                hosting_environment = child_environment(
+                    root / "audit" / "browser-hosting.jsonl",
+                    "browser-hosting",
+                )
+                hosting_environment["GRANGER_DATA_ROOT"] = str(root / "browser-hosting-data")
+                hosting_environment["GRANGER_CACHE_ROOT"] = str(root / "browser-hosting-cache")
+                hosting_environment["GRANGER_SETTINGS_ROOT"] = str(root / "browser-hosting-settings")
+                hosting_environment["GRANGER_DOWNLOAD_ROOT"] = str(root / "browser-hosting-downloads")
+                if expect_packaged_runtime:
+                    system_root = Path(hosting_environment.get("SystemRoot", r"C:\Windows"))
+                    hosting_environment["PATH"] = os.pathsep.join(
+                        (str(system_root / "System32"), str(system_root))
+                    )
+                    for name in (
+                        "PYTHONHOME",
+                        "PYTHONPATH",
+                        "PYTHONUSERBASE",
+                        "QTDIR",
+                        "CMAKE_PREFIX_PATH",
+                        "QT_PLUGIN_PATH",
+                        "QT_QPA_PLATFORM_PLUGIN_PATH",
+                    ):
+                        hosting_environment.pop(name, None)
+                elif qt_bin is not None:
+                    hosting_environment["PATH"] = (
+                        str(qt_bin) + os.pathsep + hosting_environment.get("PATH", "")
+                    )
+                hosting_command = [
+                    str(browser),
+                    "--smoke-granger-hosting",
+                    f"--smoke-output={hosting_output}",
+                    f"--granger-network-wan-config={browser_config_path}",
+                    f"--granger-hosting-source={hosting_source}",
+                ]
+                if not expect_packaged_runtime:
+                    hosting_command.extend(
+                        (
+                            f"--granger-network-source={NETWORK_ROOT}",
+                            f"--granger-network-python={sys.executable}",
+                        )
+                    )
+                hosting_completed = subprocess.run(
+                    hosting_command,
+                    cwd=root,
+                    env=hosting_environment,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                if hosting_output.is_file():
+                    hosting_browser_result = json.loads(
+                        hosting_output.read_text(encoding="utf-8")
+                    )
+                hosting_pids = {
+                    int(hosting_browser_result.get("hostProcessPid", 0)),
+                    int(hosting_browser_result.get("recoveryProcessPid", 0)),
+                }
+                hosting_pids.discard(0)
+                time.sleep(0.25)
+                hosting_browser_result["harness"] = {
+                    "exitCode": hosting_completed.returncode,
+                    "hostProcessOrphan": any(process_is_running(pid) for pid in hosting_pids),
+                    "hostProcessPids": sorted(hosting_pids),
+                    "packagedRuntimeRequested": expect_packaged_runtime,
+                    "stderr": hosting_completed.stderr[-4000:],
+                    "stdout": hosting_completed.stdout[-4000:],
+                }
+                atomic_write_text(
+                    root / "browser-hosting-process.json",
+                    json.dumps(
+                        hosting_browser_result,
+                        ensure_ascii=True,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    mode=0o644,
+                )
+                if (
+                    hosting_completed.returncode != 0
+                    or hosting_browser_result.get("ok") is not True
+                    or hosting_browser_result["harness"]["hostProcessOrphan"]
+                ):
+                    raise AcceptanceError("real Qt WebEngine hosting smoke failed")
 
         initial_host_ready = host_ready
         terminate_child(host)
@@ -779,6 +877,7 @@ def run_acceptance(
         host_ports = destination_ports(
             audit_events.get("host", []) + audit_events.get("host-restarted", [])
         )
+        hosting_browser_ports = destination_ports(audit_events.get("browser-hosting", []))
         discovery_ports = {
             descriptor.endpoint.port
             for descriptor in descriptors_by_name.values()
@@ -805,6 +904,7 @@ def run_acceptance(
         backend_port = int(backend_ready["port"])
         allowed_client_ports = discovery_ports | all_client_entry_ports
         allowed_host_ports = discovery_ports | host_entry_ports | {backend_port}
+        all_overlay_ports = {descriptor.endpoint.port for descriptor in descriptors}
 
         captures = sorted((root / "capture").glob("*.bin"))
         marker_hits: list[dict[str, str]] = []
@@ -843,6 +943,19 @@ def run_acceptance(
                 and browser_result.get("runtime", {}).get("gatewayMode") == "wan"
                 and browser_result.get("runtime", {}).get("dnsRequests") == 0
             ),
+            "browserHostingIntegration": browser is None
+            or hosting_source is None
+            or (
+                hosting_browser_result.get("ok") is True
+                and hosting_browser_result.get("settingsPage") is True
+                and hosting_browser_result.get("staticAssets") is True
+                and hosting_browser_result.get("failClosedWhileOffline") is True
+                and hosting_browser_result.get("recovery") is True
+                and hosting_browser_result.get("removed") is True
+                and hosting_browser_result.get("dnsRequests") == 0
+                and hosting_browser_result.get("directFallback") is False
+                and not hosting_browser_result.get("harness", {}).get("hostProcessOrphan", True)
+            ),
             "clientConnectedOnlyToBootstrapAndEntry": bool(client_ports)
             and client_ports.issubset(allowed_client_ports),
             "clientDidNotConnectToHostBackend": backend_port not in client_ports,
@@ -871,6 +984,11 @@ def run_acceptance(
             and host_ports.issubset(allowed_host_ports),
             "hostDidNotConnectToClientEntry": host_ports.isdisjoint(
                 all_client_entry_ports
+            ),
+            "hostingConnectedOnlyToOverlayNodes": hosting_source is None
+            or (
+                bool(hosting_browser_ports)
+                and hosting_browser_ports.issubset(all_overlay_ports)
             ),
             "independentProcesses": len(process_ids) == len(set(process_ids)),
             "middleFailureRecovered": client_c_report["clientMiddleNodeId"]
@@ -905,6 +1023,7 @@ def run_acceptance(
             {
                 "canonicalName": canonical_name,
                 "browser": browser_result,
+                "hostingBrowser": hosting_browser_result,
                 "checks": checks,
                 "clientDestinationPorts": sorted(client_ports),
                 "clientRoutes": [
@@ -936,6 +1055,7 @@ def run_acceptance(
                 ],
                 "eventCount": len(all_events),
                 "hostDestinationPorts": sorted(host_ports),
+                "hostingBrowserDestinationPorts": sorted(hosting_browser_ports),
                 "hostRoutes": {
                     "initialIntroductions": initial_host_ready["introductionRoutes"],
                     "initialRendezvous": initial_host_ready["rendezvousRoute"],
@@ -992,16 +1112,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--qt-bin", type=Path)
     parser.add_argument("--expect-packaged-runtime", action="store_true")
+    parser.add_argument("--hosting-source", type=Path)
     options = parser.parse_args(argv)
     try:
         if options.browser is not None and not options.expect_packaged_runtime and options.qt_bin is None:
             parser.error("--qt-bin is required for a non-packaged browser")
+        if options.hosting_source is not None and options.browser is None:
+            parser.error("--hosting-source requires --browser")
         report = run_acceptance(
             options.work_dir,
             options.report,
             browser=options.browser.resolve() if options.browser is not None else None,
             qt_bin=options.qt_bin.resolve() if options.qt_bin is not None else None,
             expect_packaged_runtime=options.expect_packaged_runtime,
+            hosting_source=(
+                options.hosting_source.resolve() if options.hosting_source is not None else None
+            ),
         )
     except Exception as error:
         print(f"wan-process-acceptance: {type(error).__name__}: {error}", file=sys.stderr)

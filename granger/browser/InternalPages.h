@@ -111,6 +111,7 @@ struct InternalPageContext {
     QString privacyImportPreviewHtml;
     QString privacyDiagnosticsHtml;
     QString reportsLogsHtml;
+    QString hostingHtml;
     QString contentBlockingMode;
     QString contentBlockingAllowlistHtml;
     QString contentBlockingDomainPoliciesHtml;

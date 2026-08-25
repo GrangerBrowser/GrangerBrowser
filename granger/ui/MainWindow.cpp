@@ -1418,6 +1418,14 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
     setupDownloads();
     setupCookies();
     applyRuntimePrivacySettings();
+    connect(&m_hosting, &GrangerHostingManager::servicesChanged,
+            this, [this] {
+        BrowserTab *tab = currentTab();
+        if (tab && tab->displayAddress().startsWith(
+                QStringLiteral("about:settings?category=hosting"))) {
+            loadInternalPage(tab, QStringLiteral("about:settings?category=hosting"));
+        }
+    }, Qt::QueuedConnection);
     if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
         routes && qApp->property("granger.usePrivacyGateway").toBool()) {
         routes->start(m_settings.preferredPrivacyNetwork());
@@ -1436,11 +1444,13 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
     if (!restoreSession()) {
         openHomeTab();
     }
+    QTimer::singleShot(0, this, [this] { m_hosting.restoreEnabledServices(); });
 }
 
 MainWindow::~MainWindow()
 {
     if (qApp) qApp->removeEventFilter(this);
+    m_hosting.shutdown();
     m_grangerNetwork.stop();
 
     // Member managers outlive this destructor body. Stop their callbacks before
@@ -2103,6 +2113,39 @@ QJsonObject MainWindow::developerToolsDiagnostics() const
 QJsonObject MainWindow::grangerNetworkDiagnosticsForDiagnostics() const
 {
     return m_grangerNetwork.diagnostics();
+}
+
+QJsonObject MainWindow::grangerHostingDiagnosticsForDiagnostics() const
+{
+    return m_hosting.diagnostics();
+}
+
+bool MainWindow::createHostedStaticForDiagnostics(const QString &title,
+                                                  const QString &source,
+                                                  HostedServiceRecord *created,
+                                                  QString *error)
+{
+    return m_hosting.createStaticSite(title, source, created, error);
+}
+
+bool MainWindow::startHostedServiceForDiagnostics(const QString &id, QString *error)
+{
+    return m_hosting.startService(id, error);
+}
+
+bool MainWindow::stopHostedServiceForDiagnostics(const QString &id, QString *error)
+{
+    return m_hosting.stopService(id, error);
+}
+
+bool MainWindow::removeHostedServiceForDiagnostics(const QString &id, QString *error)
+{
+    return m_hosting.removeService(id, error);
+}
+
+HostedServiceRecord MainWindow::hostedServiceForDiagnostics(const QString &id) const
+{
+    return m_hosting.service(id);
 }
 
 bool MainWindow::developerToolsAllowedForTab(BrowserTab *tab) const
@@ -5563,8 +5606,8 @@ void MainWindow::loadInternalPage(BrowserTab *tab,
                                             QStringLiteral("containers"), QStringLiteral("isolated"),
                                             QStringLiteral("pamp"), QStringLiteral("danger"),
                                             QStringLiteral("downloads"), QStringLiteral("reports"),
-                                            QStringLiteral("advanced"), QStringLiteral("support"),
-                                            QStringLiteral("about")};
+                                            QStringLiteral("hosting"), QStringLiteral("advanced"),
+                                            QStringLiteral("support"), QStringLiteral("about")};
         if (!categories.contains(settingsCategory)) settingsCategory = m_settingsUi.activeCategory;
         if (!categories.contains(settingsCategory)) settingsCategory = QStringLiteral("general");
         m_settingsUi.activeCategory = settingsCategory;
@@ -5878,6 +5921,209 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
     }
     if (path == QStringLiteral("/pamp/close")) {
         if (m_tabs && m_tabs->indexOf(tab) >= 0) m_tabs->closePage(tab);
+        return;
+    }
+
+    const auto refreshHosting = [this, tab](const QString &message = QString()) {
+        loadInternalPage(tab, QStringLiteral("about:settings?category=hosting"), QString(), message);
+    };
+    const auto formValue = [&query](const QString &name) {
+        return SearchManager::decodeFormQueryValue(
+            query.queryItemValue(name, QUrl::FullyEncoded)).trimmed();
+    };
+    if (path == QStringLiteral("/hosting/create")) {
+        m_settingsUi.hostingWizard = QStringLiteral("choose");
+        m_settingsUi.hostingSelectedPath.clear();
+        m_settingsUi.hostingEditId.clear();
+        m_settingsUi.hostingInspection = {};
+        refreshHosting();
+        return;
+    }
+    if (path == QStringLiteral("/hosting/begin")) {
+        const QString type = query.queryItemValue(QStringLiteral("type")).trimmed();
+        if (type != QStringLiteral("static") && type != QStringLiteral("local-application")) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.invalid_type")));
+            return;
+        }
+        m_settingsUi.hostingWizard = type;
+        m_settingsUi.hostingSelectedPath.clear();
+        m_settingsUi.hostingEditId.clear();
+        m_settingsUi.hostingInspection = {};
+        refreshHosting();
+        return;
+    }
+    if (path == QStringLiteral("/hosting/cancel")) {
+        m_settingsUi.hostingWizard.clear();
+        m_settingsUi.hostingSelectedPath.clear();
+        m_settingsUi.hostingEditId.clear();
+        m_settingsUi.hostingInspection = {};
+        refreshHosting();
+        return;
+    }
+    if (path == QStringLiteral("/hosting/select-folder")) {
+        const QString editId = query.queryItemValue(QStringLiteral("id")).trimmed();
+        const HostedServiceRecord editing = m_hosting.service(editId);
+        QString initial = m_settingsUi.hostingSelectedPath;
+        if (initial.isEmpty() && !editing.id.isEmpty()) initial = editing.source;
+        if (initial.isEmpty()) {
+            initial = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+        }
+        const QString selected = QFileDialog::getExistingDirectory(
+            this, Localization::text(QStringLiteral("hosting.select_folder")), initial,
+            QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+        if (selected.isEmpty()) return;
+        QString error;
+        const HostingInspection inspection = m_hosting.inspectStaticSite(selected, &error);
+        m_settingsUi.hostingSelectedPath = selected;
+        m_settingsUi.hostingInspection = inspection;
+        if (!editing.id.isEmpty()) {
+            m_settingsUi.hostingWizard = QStringLiteral("edit");
+            m_settingsUi.hostingEditId = editing.id;
+        } else {
+            m_settingsUi.hostingWizard = QStringLiteral("static");
+        }
+        refreshHosting(inspection.ok ? Localization::text(
+                           QStringLiteral("hosting.validation.pass")) : error);
+        return;
+    }
+    if (path == QStringLiteral("/hosting/publish-static")) {
+        if (!m_settingsUi.hostingInspection.ok
+            || m_settingsUi.hostingSelectedPath.isEmpty()) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.select_valid_folder")));
+            return;
+        }
+        HostedServiceRecord created;
+        QString error;
+        if (!m_hosting.createStaticSite(formValue(QStringLiteral("title")),
+                                        m_settingsUi.hostingSelectedPath,
+                                        &created, &error)) {
+            refreshHosting(error);
+            return;
+        }
+        m_settingsUi.hostingWizard.clear();
+        m_settingsUi.hostingSelectedPath.clear();
+        m_settingsUi.hostingInspection = {};
+        refreshHosting(Localization::text(QStringLiteral("hosting.created")).arg(
+            created.address));
+        return;
+    }
+    if (path == QStringLiteral("/hosting/publish-application")) {
+        bool portOk = false;
+        const int port = query.queryItemValue(QStringLiteral("port")).toInt(&portOk);
+        if (!portOk || port < 1 || port > 65535) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.invalid_port")));
+            return;
+        }
+        HostedServiceRecord created;
+        QString error;
+        if (!m_hosting.createLocalApplication(formValue(QStringLiteral("title")),
+                                              formValue(QStringLiteral("host")), port,
+                                              &created, &error)) {
+            refreshHosting(error);
+            return;
+        }
+        m_settingsUi.hostingWizard.clear();
+        refreshHosting(Localization::text(QStringLiteral("hosting.created")).arg(
+            created.address));
+        return;
+    }
+    if (path == QStringLiteral("/hosting/open")) {
+        const HostedServiceRecord record = m_hosting.service(
+            query.queryItemValue(QStringLiteral("id")));
+        if (!record.address.isEmpty()) openNewTab(record.address);
+        return;
+    }
+    if (path == QStringLiteral("/hosting/copy")) {
+        const HostedServiceRecord record = m_hosting.service(
+            query.queryItemValue(QStringLiteral("id")));
+        if (!record.address.isEmpty()) {
+            if (QClipboard *clipboard = QApplication::clipboard()) {
+                clipboard->setText(record.address);
+            }
+            refreshHosting(Localization::text(QStringLiteral("hosting.address_copied")));
+        }
+        return;
+    }
+    if (path == QStringLiteral("/hosting/start")
+        || path == QStringLiteral("/hosting/restart")
+        || path == QStringLiteral("/hosting/stop")) {
+        const QString id = query.queryItemValue(QStringLiteral("id"));
+        QString error;
+        bool ok = false;
+        if (path == QStringLiteral("/hosting/start")) ok = m_hosting.startService(id, &error);
+        else if (path == QStringLiteral("/hosting/restart")) ok = m_hosting.restartService(id, &error);
+        else ok = m_hosting.stopService(id, &error);
+        refreshHosting(ok ? Localization::text(path == QStringLiteral("/hosting/stop")
+                            ? QStringLiteral("hosting.stopped")
+                            : QStringLiteral("hosting.starting")) : error);
+        return;
+    }
+    if (path == QStringLiteral("/hosting/edit")) {
+        const HostedServiceRecord record = m_hosting.service(
+            query.queryItemValue(QStringLiteral("id")));
+        if (record.id.isEmpty()) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.not_found")));
+            return;
+        }
+        m_settingsUi.hostingWizard = QStringLiteral("edit");
+        m_settingsUi.hostingEditId = record.id;
+        m_settingsUi.hostingSelectedPath = record.source;
+        m_settingsUi.hostingInspection = record.type == QStringLiteral("static")
+            ? m_hosting.inspectStaticSite(record.source) : HostingInspection();
+        refreshHosting();
+        return;
+    }
+    if (path == QStringLiteral("/hosting/update")) {
+        const QString id = query.queryItemValue(QStringLiteral("id"));
+        const HostedServiceRecord record = m_hosting.service(id);
+        if (record.id.isEmpty()) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.not_found")));
+            return;
+        }
+        bool portOk = false;
+        int port = query.queryItemValue(QStringLiteral("port")).toInt(&portOk);
+        QString host = formValue(QStringLiteral("host"));
+        if (record.type == QStringLiteral("static")) {
+            port = 1;
+            portOk = true;
+        }
+        if (!portOk || port < 1 || port > 65535) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.invalid_port")));
+            return;
+        }
+        QString error;
+        if (!m_hosting.updateService(id, formValue(QStringLiteral("title")),
+                                     m_settingsUi.hostingSelectedPath,
+                                     host, port, &error)) {
+            refreshHosting(error);
+            return;
+        }
+        m_settingsUi.hostingWizard.clear();
+        m_settingsUi.hostingEditId.clear();
+        m_settingsUi.hostingSelectedPath.clear();
+        m_settingsUi.hostingInspection = {};
+        refreshHosting(Localization::text(QStringLiteral("hosting.updated")));
+        return;
+    }
+    if (path == QStringLiteral("/hosting/delete")) {
+        const QString id = query.queryItemValue(QStringLiteral("id"));
+        const HostedServiceRecord record = m_hosting.service(id);
+        if (record.id.isEmpty()) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.not_found")));
+            return;
+        }
+        const auto answer = QMessageBox::warning(
+            this, Localization::text(QStringLiteral("hosting.delete.title")),
+            Localization::text(QStringLiteral("hosting.delete.confirm")).arg(record.title),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) return;
+        QString error;
+        refreshHosting(m_hosting.removeService(id, &error)
+            ? Localization::text(QStringLiteral("hosting.deleted")) : error);
+        return;
+    }
+    if (path == QStringLiteral("/hosting/refresh")) {
+        refreshHosting();
         return;
     }
 
@@ -8268,6 +8514,9 @@ InternalPageContext MainWindow::pageContext(const QString &message,
                            .arg(container.id.toHtmlEscaped(), containerDisplayName(container).toHtmlEscaped());
         }
         context.containerOptionsHtml = options;
+    } else if (page == QStringLiteral("about:settings")
+               && settingsCategory == QStringLiteral("hosting")) {
+        context.hostingHtml = hostingSettingsHtml();
     } else if (page == QStringLiteral("about:settings")
                && settingsCategory == QStringLiteral("danger")) {
         context.wipeConfirmationPhrase = EmergencyWipeManager::confirmationPhrase();
@@ -10839,6 +11088,276 @@ QString MainWindow::containerSiteRulesHtml() const
                          Localization::text(QStringLiteral("common.delete")).toHtmlEscaped());
     }
     return html + QStringLiteral("</div>");
+}
+
+QString MainWindow::hostingSettingsHtml() const
+{
+    const auto text = [](const char *key) {
+        return Localization::text(QString::fromLatin1(key));
+    };
+    const auto action = [](const QString &path, const QString &id = QString()) {
+        QUrlQuery query;
+        if (!id.isEmpty()) query.addQueryItem(QStringLiteral("id"), id);
+        return actionUrl(path, query);
+    };
+    const auto statusText = [&text](const QString &status) {
+        const QString key = QStringLiteral("hosting.status.%1").arg(status);
+        const QString translated = Localization::text(key);
+        return translated == key ? status : translated;
+    };
+    const auto uptimeText = [](qint64 seconds) {
+        if (seconds < 60) return QStringLiteral("%1s").arg(seconds);
+        if (seconds < 3600) return QStringLiteral("%1m").arg(seconds / 60);
+        return QStringLiteral("%1h %2m").arg(seconds / 3600).arg((seconds % 3600) / 60);
+    };
+
+    QString html = QStringLiteral(
+        "<div class=\"hosting-page ds-page-stack\"><section class=\"hosting-intro\">"
+        "<div><p>%1</p></div><a class=\"button primary hosting-create\" href=\"%2\">"
+        "<span aria-hidden=\"true\">+</span>%3</a></section>")
+                       .arg(text("hosting.description").toHtmlEscaped(),
+                            action(QStringLiteral("hosting/create")),
+                            text("hosting.create_site").toHtmlEscaped());
+
+    if (!m_hosting.networkAvailable()) {
+        html += QStringLiteral(
+            "<section class=\"hosting-network-state warning\"><strong>%1</strong><p>%2</p></section>")
+                    .arg(text("hosting.network_unavailable").toHtmlEscaped(),
+                         text("hosting.network_unavailable.description").toHtmlEscaped());
+    }
+
+    if (m_settingsUi.hostingWizard == QStringLiteral("choose")) {
+        const QString websiteIcon = embeddedImageDataUrl(
+            QStringLiteral(":/icons/browser.svg"), QByteArrayLiteral("image/svg+xml"));
+        const QString applicationIcon = embeddedImageDataUrl(
+            QStringLiteral(":/icons/site-controls.svg"), QByteArrayLiteral("image/svg+xml"));
+        QUrlQuery staticQuery;
+        staticQuery.addQueryItem(QStringLiteral("type"), QStringLiteral("static"));
+        QUrlQuery applicationQuery;
+        applicationQuery.addQueryItem(QStringLiteral("type"), QStringLiteral("local-application"));
+        html += QStringLiteral(
+            "<section class=\"hosting-wizard ds-card\"><div class=\"ds-card-header hosting-wizard-head\">"
+            "<div><span class=\"hosting-step\">%1</span><h3>%2</h3></div>"
+            "<a class=\"hosting-close\" href=\"%3\" aria-label=\"%4\" title=\"%4\">&times;</a>"
+            "</div><div class=\"ds-card-body\"><div class=\"hosting-type-grid\">"
+            "<a class=\"hosting-type-card\" href=\"%5\"><span class=\"hosting-type-icon\"><img src=\"%6\" alt=\"\"></span>"
+            "<strong>%7</strong><p>%8</p><span>%9</span></a>"
+            "<a class=\"hosting-type-card\" href=\"%10\"><span class=\"hosting-type-icon\"><img src=\"%11\" alt=\"\"></span>"
+            "<strong>%12</strong><p>%13</p><span>%14</span></a></div></div></section>")
+                    .arg(text("hosting.step.1").toHtmlEscaped(),
+                         text("hosting.choose_type").toHtmlEscaped(),
+                         action(QStringLiteral("hosting/cancel")),
+                         text("common.cancel").toHtmlEscaped(),
+                         actionUrl(QStringLiteral("hosting/begin"), staticQuery),
+                         websiteIcon.toHtmlEscaped(),
+                         text("hosting.static.title").toHtmlEscaped(),
+                         text("hosting.static.description").toHtmlEscaped(),
+                         text("hosting.static.support").toHtmlEscaped(),
+                         actionUrl(QStringLiteral("hosting/begin"), applicationQuery),
+                         applicationIcon.toHtmlEscaped(),
+                         text("hosting.application.title").toHtmlEscaped(),
+                         text("hosting.application.description").toHtmlEscaped(),
+                         text("hosting.application.support").toHtmlEscaped());
+    } else if (m_settingsUi.hostingWizard == QStringLiteral("static")) {
+        const HostingInspection &inspection = m_settingsUi.hostingInspection;
+        QString validation;
+        if (!m_settingsUi.hostingSelectedPath.isEmpty()) {
+            QString checks;
+            if (inspection.ok) {
+                checks = QStringLiteral(
+                    "<li class=\"pass\">%1</li><li class=\"pass\">%2</li>"
+                    "<li class=\"pass\">%3</li><li class=\"pass\">%4</li>")
+                             .arg(text("hosting.validation.index").toHtmlEscaped(),
+                                  text("hosting.validation.path").toHtmlEscaped(),
+                                  text("hosting.validation.traversal").toHtmlEscaped(),
+                                  text("hosting.validation.files").toHtmlEscaped());
+            } else {
+                for (const QString &error : inspection.errors) {
+                    checks += QStringLiteral("<li class=\"fail\">%1</li>")
+                                  .arg(error.toHtmlEscaped());
+                }
+            }
+            validation = QStringLiteral(
+                "<div class=\"hosting-detected\"><div><span>%1</span><strong>%2</strong></div>"
+                "<div><span>%3</span><strong>%4</strong></div><div><span>%5</span><strong>%6</strong></div>"
+                "<div><span>%7</span><strong>%8</strong></div></div>"
+                "<ul class=\"hosting-validation\">%9</ul>")
+                             .arg(text("hosting.detected.index").toHtmlEscaped(),
+                                  inspection.indexFound ? text("common.yes").toHtmlEscaped()
+                                                        : text("common.no").toHtmlEscaped(),
+                                  text("hosting.detected.css").toHtmlEscaped(),
+                                  QString::number(inspection.cssFiles),
+                                  text("hosting.detected.js").toHtmlEscaped(),
+                                  QString::number(inspection.jsFiles),
+                                  text("hosting.detected.assets").toHtmlEscaped(),
+                                  QString::number(inspection.assets), checks);
+        }
+        html += QStringLiteral(
+            "<section class=\"hosting-wizard ds-card\"><div class=\"ds-card-header hosting-wizard-head\">"
+            "<div><span class=\"hosting-step\">%1</span><h3>%2</h3></div>"
+            "<a class=\"hosting-close\" href=\"%3\" aria-label=\"%4\" title=\"%4\">&times;</a>"
+            "</div><div class=\"ds-card-body hosting-wizard-body\">"
+            "<div class=\"hosting-source-row\"><div><span>%5</span><strong class=\"mono\">%6</strong></div>"
+            "<a class=\"button secondary\" href=\"%7\">%8</a></div>%9"
+            "<form class=\"hosting-publish-form\" action=\"%10\" method=\"get\">"
+            "<label class=\"field\"><span>%11</span><input type=\"text\" name=\"title\" maxlength=\"80\" "
+            "placeholder=\"%12\" required></label><button class=\"primary\" type=\"submit\"%13>%14</button>"
+            "</form></div></section>")
+                    .arg(text("hosting.step.2").toHtmlEscaped(),
+                         text("hosting.static.configure").toHtmlEscaped(),
+                         action(QStringLiteral("hosting/cancel")),
+                         text("common.cancel").toHtmlEscaped(),
+                         text("hosting.local_source").toHtmlEscaped(),
+                         (m_settingsUi.hostingSelectedPath.isEmpty()
+                              ? text("hosting.no_folder") : m_settingsUi.hostingSelectedPath).toHtmlEscaped(),
+                         action(QStringLiteral("hosting/select-folder")),
+                         text("hosting.select_folder").toHtmlEscaped(), validation,
+                         action(QStringLiteral("hosting/publish-static")),
+                         text("hosting.name").toHtmlEscaped(),
+                         text("hosting.name.placeholder").toHtmlEscaped(),
+                         inspection.ok ? QString() : QStringLiteral(" disabled"),
+                         text("hosting.publish").toHtmlEscaped());
+    } else if (m_settingsUi.hostingWizard == QStringLiteral("local-application")) {
+        html += QStringLiteral(
+            "<section class=\"hosting-wizard ds-card\"><div class=\"ds-card-header hosting-wizard-head\">"
+            "<div><span class=\"hosting-step\">%1</span><h3>%2</h3></div>"
+            "<a class=\"hosting-close\" href=\"%3\" aria-label=\"%4\" title=\"%4\">&times;</a>"
+            "</div><div class=\"ds-card-body\"><form class=\"hosting-app-form\" action=\"%5\" method=\"get\">"
+            "<label class=\"field hosting-title-field\"><span>%6</span><input type=\"text\" name=\"title\" "
+            "maxlength=\"80\" placeholder=\"%7\" required></label>"
+            "<label class=\"field\"><span>%8</span><input type=\"text\" name=\"host\" value=\"127.0.0.1\" required></label>"
+            "<label class=\"field\"><span>%9</span><input type=\"number\" name=\"port\" min=\"1\" max=\"65535\" value=\"8080\" required></label>"
+            "<div class=\"hosting-policy-note\">%10</div><button class=\"primary\" type=\"submit\">%11</button>"
+            "</form></div></section>")
+                    .arg(text("hosting.step.2").toHtmlEscaped(),
+                         text("hosting.application.configure").toHtmlEscaped(),
+                         action(QStringLiteral("hosting/cancel")),
+                         text("common.cancel").toHtmlEscaped(),
+                         action(QStringLiteral("hosting/publish-application")),
+                         text("hosting.name").toHtmlEscaped(),
+                         text("hosting.application.name.placeholder").toHtmlEscaped(),
+                         text("hosting.application.host").toHtmlEscaped(),
+                         text("hosting.application.port").toHtmlEscaped(),
+                         text("hosting.application.loopback_note").toHtmlEscaped(),
+                         text("hosting.publish").toHtmlEscaped());
+    } else if (m_settingsUi.hostingWizard == QStringLiteral("edit")) {
+        const HostedServiceRecord record = m_hosting.service(m_settingsUi.hostingEditId);
+        if (!record.id.isEmpty()) {
+            QUrl upstream(record.upstream);
+            const QString selectedSource = m_settingsUi.hostingSelectedPath.isEmpty()
+                ? record.source : m_settingsUi.hostingSelectedPath;
+            QString sourceFields;
+            if (record.type == QStringLiteral("static")) {
+                QUrlQuery selectQuery;
+                selectQuery.addQueryItem(QStringLiteral("id"), record.id);
+                sourceFields = QStringLiteral(
+                    "<div class=\"hosting-source-row hosting-title-field\"><div><span>%1</span>"
+                    "<strong class=\"mono\">%2</strong></div><a class=\"button secondary\" href=\"%3\">%4</a></div>")
+                                   .arg(text("hosting.local_source").toHtmlEscaped(),
+                                        selectedSource.toHtmlEscaped(),
+                                        actionUrl(QStringLiteral("hosting/select-folder"), selectQuery),
+                                        text("hosting.select_folder").toHtmlEscaped());
+            } else {
+                sourceFields = QStringLiteral(
+                    "<label class=\"field\"><span>%1</span><input type=\"text\" name=\"host\" value=\"%2\" required></label>"
+                    "<label class=\"field\"><span>%3</span><input type=\"number\" name=\"port\" min=\"1\" max=\"65535\" value=\"%4\" required></label>")
+                                   .arg(text("hosting.application.host").toHtmlEscaped(),
+                                        upstream.host().toHtmlEscaped(),
+                                        text("hosting.application.port").toHtmlEscaped())
+                                   .arg(upstream.port(8080));
+            }
+            html += QStringLiteral(
+                "<section class=\"hosting-wizard ds-card\"><div class=\"ds-card-header hosting-wizard-head\">"
+                "<div><span class=\"hosting-step\">%1</span><h3>%2</h3></div>"
+                "<a class=\"hosting-close\" href=\"%3\" aria-label=\"%4\" title=\"%4\">&times;</a>"
+                "</div><div class=\"ds-card-body\"><form class=\"hosting-app-form\" action=\"%5\" method=\"get\">"
+                "<input type=\"hidden\" name=\"id\" value=\"%6\"><label class=\"field hosting-title-field\">"
+                "<span>%7</span><input type=\"text\" name=\"title\" maxlength=\"80\" value=\"%8\" required></label>"
+                "%9<button class=\"primary\" type=\"submit\">%10</button></form></div></section>")
+                        .arg(text("hosting.settings").toHtmlEscaped(), record.title.toHtmlEscaped(),
+                             action(QStringLiteral("hosting/cancel")),
+                             text("common.cancel").toHtmlEscaped(),
+                             action(QStringLiteral("hosting/update")), record.id.toHtmlEscaped(),
+                             text("hosting.name").toHtmlEscaped(), record.title.toHtmlEscaped(),
+                             sourceFields, text("common.save").toHtmlEscaped());
+        }
+    }
+
+    const QList<HostedServiceRecord> services = m_hosting.services();
+    html += QStringLiteral("<section class=\"hosting-list-section\"><div class=\"hosting-list-heading\"><div><h3>%1</h3><p>%2</p></div>"
+                           "<a class=\"button secondary compact\" href=\"%3\">%4</a></div>")
+                .arg(text("hosting.your_sites").toHtmlEscaped(),
+                     text("hosting.your_sites.description").toHtmlEscaped(),
+                     action(QStringLiteral("hosting/refresh")),
+                     text("common.refresh").toHtmlEscaped());
+    if (services.isEmpty()) {
+        html += QStringLiteral(
+            "<div class=\"hosting-empty ds-card\"><span class=\"hosting-empty-mark\">.granger</span>"
+            "<h3>%1</h3><p>%2</p><a class=\"button primary\" href=\"%3\">%4</a></div>")
+                    .arg(text("hosting.empty.title").toHtmlEscaped(),
+                         text("hosting.empty.description").toHtmlEscaped(),
+                         action(QStringLiteral("hosting/create")),
+                         text("hosting.create_site").toHtmlEscaped());
+    } else {
+        html += QStringLiteral("<div class=\"hosting-service-list\" role=\"list\">");
+        for (const HostedServiceRecord &service : services) {
+            QUrlQuery idQuery;
+            idQuery.addQueryItem(QStringLiteral("id"), service.id);
+            const auto serviceAction = [&idQuery](const QString &path) {
+                return actionUrl(path, idQuery);
+            };
+            const bool running = service.status == QStringLiteral("online")
+                || service.status == QStringLiteral("starting");
+            const QString typeLabel = text(service.type == QStringLiteral("static")
+                ? "hosting.static.title" : "hosting.application.title");
+            QString actions;
+            actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
+                           .arg(serviceAction(QStringLiteral("hosting/open")),
+                                text("common.open").toHtmlEscaped());
+            actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
+                           .arg(serviceAction(QStringLiteral("hosting/copy")),
+                                text("common.copy").toHtmlEscaped());
+            actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
+                           .arg(serviceAction(QStringLiteral("hosting/restart")),
+                                text("hosting.restart").toHtmlEscaped());
+            actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
+                           .arg(serviceAction(running ? QStringLiteral("hosting/stop")
+                                                     : QStringLiteral("hosting/start")),
+                                text(running ? "hosting.stop" : "hosting.start").toHtmlEscaped());
+            actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
+                           .arg(serviceAction(QStringLiteral("hosting/edit")),
+                                text("hosting.settings").toHtmlEscaped());
+            actions += QStringLiteral("<a class=\"button danger\" href=\"%1\">%2</a>")
+                           .arg(serviceAction(QStringLiteral("hosting/delete")),
+                                text("common.delete").toHtmlEscaped());
+            html += QStringLiteral(
+                "<article class=\"hosting-service-card ds-card\" role=\"listitem\"><div class=\"hosting-service-main\">"
+                "<div class=\"hosting-service-title\"><div><h3>%1</h3><span>%2</span></div>"
+                "<span class=\"hosting-status %3\"><i></i>%4</span></div>"
+                "<div class=\"hosting-address\"><code>%5</code><a href=\"%6\" title=\"%7\">%8</a></div>"
+                "<div class=\"hosting-meta\"><div><span>%9</span><strong>%10</strong></div>"
+                "<div><span>%11</span><strong>%12</strong></div><div><span>%13</span><strong>%14</strong></div></div>"
+                "%15</div><div class=\"hosting-service-actions\">%16</div></article>")
+                    .arg(service.title.toHtmlEscaped(), typeLabel.toHtmlEscaped(),
+                         service.status.toHtmlEscaped(), statusText(service.status).toHtmlEscaped(),
+                         service.address.toHtmlEscaped(),
+                         serviceAction(QStringLiteral("hosting/copy")),
+                         text("hosting.copy_address").toHtmlEscaped(),
+                         text("common.copy").toHtmlEscaped(),
+                         text("hosting.traffic").toHtmlEscaped(),
+                         text("hosting.traffic.private").toHtmlEscaped(),
+                         text("hosting.uptime").toHtmlEscaped(),
+                         running ? uptimeText(service.uptimeSeconds).toHtmlEscaped() : QStringLiteral("--"),
+                         text("hosting.autostart").toHtmlEscaped(),
+                         (service.autoStart ? text("common.yes") : text("common.no")).toHtmlEscaped(),
+                         service.error.isEmpty()
+                             ? QString() : QStringLiteral("<p class=\"hosting-error\">%1</p>")
+                                                   .arg(service.error.toHtmlEscaped()),
+                         actions);
+        }
+        html += QStringLiteral("</div>");
+    }
+    return html + QStringLiteral("</section></div>");
 }
 
 QString MainWindow::privacyProfileOptionsHtml() const
