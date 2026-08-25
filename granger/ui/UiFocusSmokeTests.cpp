@@ -533,6 +533,7 @@ int runUiFocusSmoke(QApplication &app,
         {QStringLiteral("search"), QStringLiteral(":/icons/search.svg")},
         {QStringLiteral("downloads"), QStringLiteral(":/icons/downloads.svg")},
         {QStringLiteral("reports"), QStringLiteral(":/icons/reports.svg")},
+        {QStringLiteral("hosting"), QStringLiteral(":/icons/site-onion.svg")},
         {QStringLiteral("advanced"), QStringLiteral(":/icons/site-controls.svg")},
         {QStringLiteral("support"), QStringLiteral(":/icons/container-star.svg")},
         {QStringLiteral("about"), QStringLiteral(":/icons/browser.svg")}
@@ -550,7 +551,7 @@ int runUiFocusSmoke(QApplication &app,
     }
     results.record(QStringLiteral("six owner Settings PNG resources are compiled without replacing other icons"),
                    settingsIconResourcesValid && unchangedSettingsIconsValid
-                       && expectedSettingsNavigationIconSources.size() == 13,
+                       && expectedSettingsNavigationIconSources.size() == 14,
                    QString::number(settingsIconAssets.size()), QStringLiteral("6"));
 
     struct BrowserIconExpectation {
@@ -2122,9 +2123,9 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                  }),
                  navigationGroups:document.querySelectorAll('.settings-nav-group').length,
                  navigationLinks:document.querySelectorAll('.settings-nav a').length,
-                  navigationIcons:[...document.querySelectorAll('.settings-nav a img')].length===13
+                  navigationIcons:[...document.querySelectorAll('.settings-nav a img')].length===14
                       &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/png;base64,')).length===6
-                      &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/svg+xml;base64,')).length===7,
+                      &&[...document.querySelectorAll('.settings-nav a img')].filter(icon=>icon.src.startsWith('data:image/svg+xml;base64,')).length===8,
                  navigationIconSources:Object.fromEntries(
                      [...document.querySelectorAll('.settings-nav a')].map(link=>[
                          new URL(link.href).searchParams.get('id')||'',
@@ -2134,7 +2135,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                      const icons=[...document.querySelectorAll('.settings-nav-icon img')];
                      const spread=values=>Math.max(...values)-Math.min(...values);
                      const rects=icons.map(icon=>icon.getBoundingClientRect());
-                     return icons.length===13
+                     return icons.length===14
                          &&icons.every(icon=>{
                              const image=icon.getBoundingClientRect();
                              const box=icon.parentElement.getBoundingClientRect();
@@ -2187,7 +2188,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             settingsIconMappingMismatches.append(it.key());
         }
     }
-    const bool settingsIconMappingExact = settingsNavigationIconSources.size() == 13
+    const bool settingsIconMappingExact = settingsNavigationIconSources.size() == 14
         && settingsIconMappingMismatches.isEmpty();
     results.record(QStringLiteral("Settings UI migration preserves profile and site-rule controls"),
                    settingsLayout.value(QStringLiteral("profileSection")).toBool()
@@ -2210,10 +2211,10 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        && settingsLayout.value(QStringLiteral("enhanced")).toBool()
                        && settingsLayout.value(QStringLiteral("nativeHidden")).toBool()
                        && settingsLayout.value(QStringLiteral("accessible")).toBool());
-    results.record(QStringLiteral("Settings navigation maps six owner PNGs and preserves seven existing SVGs"),
+    results.record(QStringLiteral("Settings navigation maps six owner PNGs and preserves eight existing SVGs"),
                    settingsIconMappingExact,
                    settingsIconMappingMismatches.join(QStringLiteral(", ")),
-                   QStringLiteral("exact 13-category resource mapping"));
+                   QStringLiteral("exact 14-category resource mapping"));
     const QJsonObject settingsNavigationDetails{
         {QStringLiteral("groups"), settingsLayout.value(QStringLiteral("navigationGroups")).toInt()},
         {QStringLiteral("links"), settingsLayout.value(QStringLiteral("navigationLinks")).toInt()},
@@ -2229,7 +2230,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
     };
     results.record(QStringLiteral("Settings navigation is grouped, local, and exposes the active category"),
                    settingsNavigationDetails.value(QStringLiteral("groups")).toInt() == 4
-                       && settingsNavigationDetails.value(QStringLiteral("links")).toInt() == 13
+                       && settingsNavigationDetails.value(QStringLiteral("links")).toInt() == 14
                        && settingsNavigationDetails.value(QStringLiteral("icons")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("iconGeometry")).toBool()
                        && settingsNavigationDetails.value(QStringLiteral("current")).toBool()
