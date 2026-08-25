@@ -175,6 +175,16 @@ class MuxStream:
     def _wait_deadline(self) -> float | None:
         return None if self._timeout is None else time.monotonic() + self._timeout
 
+    @property
+    def closed(self) -> bool:
+        with self._condition:
+            stream_closed = (
+                self._local_closed
+                or self._remote_closed
+                or self._error is not None
+            )
+        return stream_closed or self.multiplexer.failed
+
     def _wait(self, predicate, deadline: float | None) -> None:
         while not predicate():
             if self._error is not None:

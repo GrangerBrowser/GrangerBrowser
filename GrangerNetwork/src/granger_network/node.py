@@ -3,18 +3,27 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import queue
 import secrets
 import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from ._codec import atomic_write_text, parse_json_object
 from .cells import CELL_PAYLOAD_SIZE, CellMultiplexer, MuxStream
 from .circuit import decode_extend_circuit, decode_open_circuit, encode_open_circuit
-from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, ProtocolError, ResourceLimitError
+from .errors import (
+    ConnectionClosedError,
+    DescriptorError,
+    DiscoveryError,
+    GrangerNetworkError,
+    ProtocolError,
+    ResourceLimitError,
+)
 from .identity import ServiceIdentity
 from .introduction import IntroductionRegistry
 from .peer import GrangerNode, NodeDescriptor, RelayPolicy
@@ -62,12 +71,14 @@ class WanCircuitObservation:
         downstream: str,
         *,
         sample_limit: int = 2 * 1024 * 1024,
+        capture: Callable[[bytes], None] | None = None,
     ) -> None:
         self.circuit_id = circuit_id
         self.role = role
         self.upstream = upstream
         self.downstream = downstream
         self.sample_limit = sample_limit
+        self._capture = capture
         self.bytes_forwarded = 0
         self._sample = bytearray()
         self._lock = threading.Lock()
@@ -78,6 +89,8 @@ class WanCircuitObservation:
             remaining = self.sample_limit - len(self._sample)
             if remaining > 0:
                 self._sample.extend(payload[:remaining])
+        if self._capture is not None:
+            self._capture(payload)
 
     def contains(self, marker: bytes) -> bool:
         with self._lock:
@@ -139,6 +152,8 @@ class WanNodeServer:
         state_dir: Path,
         *,
         known_peers: list[NodeDescriptor] | tuple[NodeDescriptor, ...] = (),
+        capture_path: Path | None = None,
+        diagnostics_path: Path | None = None,
     ) -> None:
         descriptor.verify()
         if descriptor.identity_public_key != identity.public_key_bytes:
@@ -150,6 +165,20 @@ class WanNodeServer:
         self.policy = descriptor.relay_policy
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.capture_path = Path(capture_path) if capture_path is not None else None
+        self._capture_bytes = 0
+        self._capture_limit = 8 * 1024 * 1024
+        if self.capture_path is not None:
+            self.capture_path.parent.mkdir(parents=True, exist_ok=True)
+            self.capture_path.write_bytes(b"")
+        self.diagnostics_path = (
+            Path(diagnostics_path) if diagnostics_path is not None else None
+        )
+        if self.diagnostics_path is not None:
+            self.diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+            self.diagnostics_path.write_text("", encoding="ascii")
+        self._diagnostics_bytes = 0
+        self._diagnostics_limit = 2 * 1024 * 1024
         self.records = PersistentRecordStore(self.state_dir / NODE_RECORDS_FILE)
         self.runtime = GrangerNode(identity, descriptor, self.policy)
         self._known: dict[str, NodeDescriptor] = {descriptor.node_id: descriptor}
@@ -173,6 +202,51 @@ class WanNodeServer:
         self._rendezvous_slots: dict[tuple[str, bytes], _RendezvousSlot] = {}
         self._used_rendezvous_joins: set[tuple[str, bytes, bytes]] = set()
         self.records.store(self._record_for_descriptor(descriptor))
+
+    def _capture_relay_payload(self, payload: bytes) -> None:
+        if self.capture_path is None:
+            return
+        with self._lock:
+            remaining = self._capture_limit - self._capture_bytes
+            if remaining <= 0:
+                return
+            content = payload[:remaining]
+            with self.capture_path.open("ab") as output:
+                output.write(content)
+            self._capture_bytes += len(content)
+
+    def _record_runtime_error(self, error: BaseException) -> None:
+        entry = f"{type(error).__name__}:{error}"
+        with self._lock:
+            if len(self.errors) < 1024:
+                self.errors.append(entry)
+            if (
+                self.diagnostics_path is not None
+                and self._diagnostics_bytes < self._diagnostics_limit
+            ):
+                document = {
+                    "error": str(error),
+                    "errorType": type(error).__name__,
+                    "nodeId": self.descriptor.node_id,
+                    "timeNs": time.time_ns(),
+                    "version": 1,
+                }
+                encoded = (
+                    json.dumps(
+                        document,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                remaining = self._diagnostics_limit - self._diagnostics_bytes
+                if len(encoded) <= remaining:
+                    with self.diagnostics_path.open(
+                        "a", encoding="ascii", newline="\n"
+                    ) as output:
+                        output.write(encoded)
+                    self._diagnostics_bytes += len(encoded)
 
     @staticmethod
     def _record_for_descriptor(descriptor: NodeDescriptor):
@@ -395,6 +469,7 @@ class WanNodeServer:
                 extension.current_role,
                 upstream,
                 extension.next_node.node_id,
+                capture=self._capture_relay_payload,
             )
             with self._lock:
                 if len(self.circuit_observations) < 4096:
@@ -451,6 +526,8 @@ class WanNodeServer:
         )
         try:
             while not self._stop.is_set() and int(time.time()) < introduction.expires_at:
+                if getattr(peer.channel.connection, "closed", False):
+                    return
                 try:
                     delivery = session.deliveries.get(timeout=0.25)
                 except queue.Empty:
@@ -536,6 +613,7 @@ class WanNodeServer:
             "rendezvous",
             slot.host_upstream,
             slot.client_upstream,
+            capture=self._capture_relay_payload,
         )
         with self._lock:
             if len(self.circuit_observations) < 4096:
@@ -827,11 +905,11 @@ class WanNodeServer:
             if peer.remote.descriptor is not None:
                 self.add_known_peer(peer.remote.descriptor)
             self._serve_peer(peer, f"{address[0]}:{address[1]}")
+        except ConnectionClosedError:
+            pass
         except (GrangerNetworkError, OSError, ValueError) as error:
             if not self._stop.is_set():
-                with self._lock:
-                    if len(self.errors) < 1024:
-                        self.errors.append(type(error).__name__)
+                self._record_runtime_error(error)
         finally:
             if peer is not None:
                 peer.close()
@@ -903,11 +981,24 @@ def initialize_node(
     return descriptor
 
 
-def load_node(state_dir: Path, peers: tuple[NodeDescriptor, ...] = ()) -> WanNodeServer:
+def load_node(
+    state_dir: Path,
+    peers: tuple[NodeDescriptor, ...] = (),
+    *,
+    capture_path: Path | None = None,
+    diagnostics_path: Path | None = None,
+) -> WanNodeServer:
     root = Path(state_dir)
     identity = ServiceIdentity.load(root / NODE_IDENTITY_FILE)
     descriptor = NodeDescriptor.from_json((root / NODE_DESCRIPTOR_FILE).read_text(encoding="utf-8"))
-    return WanNodeServer(identity, descriptor, root, known_peers=peers)
+    return WanNodeServer(
+        identity,
+        descriptor,
+        root,
+        known_peers=peers,
+        capture_path=capture_path,
+        diagnostics_path=diagnostics_path,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -924,10 +1015,16 @@ def _build_parser() -> argparse.ArgumentParser:
     run = subcommands.add_parser("run")
     run.add_argument("--state-dir", type=Path, required=True)
     run.add_argument("--ready-file", type=Path)
+    run.add_argument("--peer-descriptor", type=Path, action="append", default=[])
+    run.add_argument("--capture", type=Path)
+    run.add_argument("--diagnostics", type=Path)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .network_audit import install_from_environment
+
+    install_from_environment("node")
     options = _build_parser().parse_args(argv)
     try:
         if options.command == "init":
@@ -946,7 +1043,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(descriptor.node_id)
             return 0
-        node = load_node(options.state_dir)
+        peers = tuple(
+            NodeDescriptor.from_json(path.read_text(encoding="utf-8"))
+            for path in options.peer_descriptor
+        )
+        node = load_node(
+            options.state_dir,
+            peers,
+            capture_path=options.capture,
+            diagnostics_path=options.diagnostics,
+        )
         node.start_background()
         if options.ready_file is not None:
             atomic_write_text(
@@ -958,6 +1064,7 @@ def main(argv: list[str] | None = None) -> int:
                             "port": node.descriptor.endpoint.port,
                         },
                         "nodeId": node.descriptor.node_id,
+                        "pid": os.getpid(),
                         "version": 1,
                     },
                     ensure_ascii=True,

@@ -11,8 +11,12 @@ from ._codec import atomic_write_text, decode_base64url, encode_base64url, parse
 from .binary import BinaryReader, BinaryWriter
 from .bootstrap import BootstrapPool, PeerCache
 from .distributed import (
+    ALIAS_RECORD,
+    INTRODUCTION_RECORD,
     MAX_DISTRIBUTED_RECORD_SIZE,
+    NODE_RECORD,
     RECORD_KINDS,
+    SERVICE_RECORD,
     DistributedRecord,
     RecordEnvelope,
     decode_record,
@@ -22,6 +26,10 @@ from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, Protoc
 from .identity import ServiceIdentity
 from .peer import NodeDescriptor, validate_node_id
 from .peer_rpc import PeerRole, RpcType, connect_authenticated_peer
+from .address import is_canonical_name, normalize_name, service_id_from_name
+from .descriptor import ServiceDescriptor
+from .introduction import AliasRecord, IntroductionDescriptor
+from .rendezvous_control import validate_service_id
 
 
 WAN_DISCOVERY_VERSION = 1
@@ -329,7 +337,7 @@ class WanDiscoveryClient:
     def publish(self, record: DistributedRecord, now: int | None = None) -> int:
         envelope = encode_record(record, now=now)
         target = wan_routing_key(envelope.kind, envelope.key)
-        peers = self.find_nodes(target, "discovery")[: self.replication_factor]
+        peers = self.find_nodes(target, "discovery")
         if len(peers) < self.minimum_replicas:
             raise DiscoveryError("WAN discovery found too few storage peers")
         stored = 0
@@ -342,6 +350,8 @@ class WanDiscoveryClient:
                     RpcType.STORE_RECORD,
                 )
                 stored += 1
+                if stored >= self.replication_factor:
+                    break
             except (GrangerNetworkError, OSError):
                 continue
         if stored < self.minimum_replicas:
@@ -352,7 +362,7 @@ class WanDiscoveryClient:
 
     def lookup(self, kind: str, key: str, now: int | None = None) -> DistributedRecord:
         target = wan_routing_key(kind, key)
-        peers = self.find_nodes(target, "discovery")[: max(self.replication_factor, self.minimum_replicas)]
+        peers = self.find_nodes(target, "discovery")
         candidates: list[RecordEnvelope] = []
         for peer in peers:
             try:
@@ -382,3 +392,61 @@ class WanDiscoveryClient:
         with self._lock:
             self._highest_seen[(kind, key)] = highest
         return result
+
+
+class WanDistributedResolver:
+    """WAN signed-record resolver with no DNS or compatibility fallback."""
+
+    def __init__(
+        self,
+        discovery: WanDiscoveryClient,
+        alias_pins: dict[str, str] | None = None,
+    ) -> None:
+        self.discovery = discovery
+        self._alias_pins: dict[str, str] = {}
+        for alias, service_id in (alias_pins or {}).items():
+            normalized = normalize_name(alias)
+            self._alias_pins[normalized] = validate_service_id(service_id)
+
+    def resolve(self, name: str, now: int | None = None) -> ServiceDescriptor:
+        normalized = normalize_name(name)
+        if is_canonical_name(normalized):
+            service_id = service_id_from_name(normalized)
+        else:
+            expected = self._alias_pins.get(normalized)
+            if expected is None:
+                raise ResolutionError(
+                    f"WAN alias requires a local identity pin: {normalized}"
+                )
+            alias = self.discovery.lookup(ALIAS_RECORD, normalized, now=now)
+            if not isinstance(alias, AliasRecord) or alias.service_id != expected:
+                raise ResolutionError("WAN alias does not match its local identity pin")
+            service_id = expected
+        record = self.discovery.lookup(SERVICE_RECORD, service_id, now=now)
+        if not isinstance(record, ServiceDescriptor):
+            raise ResolutionError("WAN service record has the wrong type")
+        if record.endpoint is not None:
+            raise ResolutionError("WAN service record disclosed a service endpoint")
+        return record
+
+    def resolve_introduction(
+        self,
+        service: ServiceDescriptor,
+        now: int | None = None,
+    ) -> IntroductionDescriptor:
+        service.verify(now=now)
+        record = self.discovery.lookup(
+            INTRODUCTION_RECORD,
+            service.service_id,
+            now=now,
+        )
+        if not isinstance(record, IntroductionDescriptor):
+            raise ResolutionError("WAN introduction record has the wrong type")
+        record.verify_for(service, now=now)
+        return record
+
+    def resolve_node(self, node_id: str, now: int | None = None) -> NodeDescriptor:
+        record = self.discovery.lookup(NODE_RECORD, validate_node_id(node_id), now=now)
+        if not isinstance(record, NodeDescriptor):
+            raise ResolutionError("WAN node record has the wrong type")
+        return record

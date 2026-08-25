@@ -26,6 +26,10 @@ class ProtocolError(GrangerNetworkError):
     """Raised for malformed or unauthenticated protocol traffic."""
 
 
+class ConnectionClosedError(ProtocolError):
+    """Raised when a peer closes cleanly between protocol frames."""
+
+
 class IdentityVerificationError(ProtocolError):
     """Raised when the connected service does not own the expected identity."""
 

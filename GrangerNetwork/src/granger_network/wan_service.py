@@ -232,8 +232,10 @@ class WanServiceHost:
         self._channel: SecureChannel | None = None
         self._application_mux: CellMultiplexer | None = None
         self._application_server: WanApplicationServer | None = None
-        self._cookie: bytes | None = None
+        self._grant_condition = threading.Condition()
+        self._grant_slot: tuple[bytes, int] | None = None
         self.errors: list[str] = []
+        self.session_failures: list[str] = []
 
     @property
     def ready(self) -> bool:
@@ -261,14 +263,48 @@ class WanServiceHost:
     def _run(self) -> None:
         try:
             builder = CircuitBuilder(self.identity, PeerRole.SERVICE, timeout=self.timeout)
+            self._intro_circuit = builder.open(self.introduction_route)
+            self._intro_circuit.endpoint.rpc.request(
+                RpcType.INTRO_REGISTER,
+                encode_intro_registration(self.service, self.introduction),
+                expected=RpcType.INTRO_REGISTER,
+            )
+            self._intro_circuit.endpoint.channel.connection.settimeout(None)
+            self._intro_thread = threading.Thread(
+                target=self._answer_introductions,
+                daemon=True,
+            )
+            self._intro_thread.start()
+
+            while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
+                try:
+                    self._serve_rendezvous_session(builder)
+                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                    if self._stop.is_set():
+                        break
+                    if not self._ready.is_set():
+                        raise
+                    if len(self.session_failures) < 1024:
+                        self.session_failures.append(f"{type(error).__name__}:{error}")
+                    self._stop.wait(0.1)
+            if not self._stop.is_set() and int(time.time()) >= self.introduction.expires_at:
+                raise ProtocolError("service introduction descriptor expired")
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            if not self._stop.is_set():
+                self.errors.append(f"service-session:{type(error).__name__}:{error}")
+        finally:
+            self._ready.set()
+
+    def _serve_rendezvous_session(self, builder: CircuitBuilder) -> None:
+        cookie = secrets.token_bytes(32)
+        expires_at = int(time.time()) + self.rendezvous_lifetime
+        cell_circuit_id = secrets.token_bytes(16)
+        try:
             self._rendezvous_circuit = builder.open(self.rendezvous_route)
-            self._cookie = secrets.token_bytes(32)
-            expires_at = int(time.time()) + self.rendezvous_lifetime
-            cell_circuit_id = secrets.token_bytes(16)
             registration = RendezvousRegistration.create(
                 self.identity,
                 self.service.service_id,
-                self._cookie,
+                cookie,
                 expires_at,
                 cell_circuit_id,
             )
@@ -284,31 +320,23 @@ class WanServiceHost:
             )
             rendezvous_stream = self._rendezvous_mux.open_stream(self.timeout)
             rendezvous_stream.settimeout(float(self.rendezvous_lifetime))
-
-            self._intro_circuit = builder.open(self.introduction_route)
-            self._intro_circuit.endpoint.rpc.request(
-                RpcType.INTRO_REGISTER,
-                encode_intro_registration(self.service, self.introduction),
-                expected=RpcType.INTRO_REGISTER,
-            )
-            self._intro_circuit.endpoint.channel.connection.settimeout(None)
-            self._intro_thread = threading.Thread(
-                target=self._answer_introductions,
-                args=(expires_at,),
-                daemon=True,
-            )
-            self._intro_thread.start()
+            with self._grant_condition:
+                self._grant_slot = (cookie, expires_at)
+                self._grant_condition.notify_all()
             self._ready.set()
 
             self._channel = server_handshake(
                 rendezvous_stream,
                 self.identity,
-                expected_session_id=rendezvous_session_id(self._cookie),
+                expected_session_id=rendezvous_session_id(cookie),
                 protocol_version=VERSION_3,
             )
+            with self._grant_condition:
+                if self._grant_slot is not None and self._grant_slot[0] == cookie:
+                    self._grant_slot = None
             self._application_mux = CellMultiplexer(
                 self._channel,
-                application_circuit_id(self._cookie),
+                application_circuit_id(cookie),
                 initiator=False,
             )
             self._application_server = WanApplicationServer(
@@ -317,16 +345,17 @@ class WanServiceHost:
                 timeout=self.timeout,
             )
             self._application_server.serve_forever()
-        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-            if not self._stop.is_set():
-                self.errors.append(f"service-session:{type(error).__name__}")
         finally:
-            self._ready.set()
+            with self._grant_condition:
+                if self._grant_slot is not None and self._grant_slot[0] == cookie:
+                    self._grant_slot = None
+                self._grant_condition.notify_all()
+            self._close_rendezvous_session()
 
-    def _answer_introductions(self, expires_at: int) -> None:
-        assert self._intro_circuit is not None and self._cookie is not None
+    def _answer_introductions(self) -> None:
+        assert self._intro_circuit is not None
         rendezvous = self.rendezvous_route[-1][0]
-        while not self._stop.is_set() and int(time.time()) < expires_at:
+        while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
             try:
                 request = self._intro_circuit.endpoint.rpc.receive()
                 if request.message_type is not RpcType.INTRO_DELIVER or request.is_response:
@@ -334,13 +363,24 @@ class WanServiceHost:
                 introduced = decode_intro_request(request.payload)
                 if introduced.service_id != self.service.service_id:
                     raise ProtocolError("introduction delivery service identity is invalid")
+                deadline = time.monotonic() + self.timeout
+                with self._grant_condition:
+                    while self._grant_slot is None and not self._stop.is_set():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("service has no available rendezvous slot")
+                        self._grant_condition.wait(min(0.25, remaining))
+                    if self._grant_slot is None:
+                        raise ProtocolError("service is stopping")
+                    cookie, expires_at = self._grant_slot
+                    self._grant_slot = None
                 lifetime = max(1, min(120, expires_at - int(time.time())))
                 grant = RendezvousGrant.create(
                     self.identity,
                     self.service,
                     introduced.nonce,
                     rendezvous,
-                    cookie=self._cookie,
+                    cookie=cookie,
                     lifetime=lifetime,
                 )
                 self._intro_circuit.endpoint.rpc.send(
@@ -351,11 +391,10 @@ class WanServiceHost:
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 if not self._stop.is_set():
-                    self.errors.append(f"introduction:{type(error).__name__}")
+                    self.errors.append(f"introduction:{type(error).__name__}:{error}")
                 return
 
-    def stop(self) -> None:
-        self._stop.set()
+    def _close_rendezvous_session(self) -> None:
         if self._application_server is not None:
             self._application_server.stop()
             self._application_server = None
@@ -368,15 +407,29 @@ class WanServiceHost:
         if self._rendezvous_mux is not None:
             self._rendezvous_mux.close()
             self._rendezvous_mux = None
-        if self._intro_circuit is not None:
-            self._intro_circuit.close()
-            self._intro_circuit = None
         if self._rendezvous_circuit is not None:
             self._rendezvous_circuit.close()
             self._rendezvous_circuit = None
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._grant_condition:
+            self._grant_slot = None
+            self._grant_condition.notify_all()
+        self._close_rendezvous_session()
+        if self._intro_circuit is not None:
+            self._intro_circuit.close()
+            self._intro_circuit = None
         if self._intro_thread is not None and self._intro_thread is not threading.current_thread():
             self._intro_thread.join(timeout=2.0)
             self._intro_thread = None
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=3.0)
             self._thread = None
+
+    def wait(self, timeout: float | None = None) -> bool:
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout=timeout)
+        return not thread.is_alive()

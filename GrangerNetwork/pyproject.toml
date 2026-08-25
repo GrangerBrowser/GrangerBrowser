@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "granger-network-prototype"
-version = "0.3.0"
+version = "0.4.0"
 description = "Experimental private .granger namespace and distributed overlay"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,6 +16,9 @@ granger-host = "granger_network.host:main"
 granger-client = "granger_network.client:main"
 granger-rendezvous = "granger_network.rendezvous:main"
 granger-browser-gateway = "granger_network.browser_gateway:main"
+granger-node = "granger_network.node:main"
+granger-wan-host = "granger_network.wan_host:main"
+granger-wan-client = "granger_network.wan_client:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

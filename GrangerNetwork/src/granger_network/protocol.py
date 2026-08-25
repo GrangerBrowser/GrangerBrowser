@@ -36,7 +36,7 @@ from .crypto import (
     suite_is_offered,
     validate_suite_mask,
 )
-from .errors import IdentityVerificationError, ProtocolError, ReplayError
+from .errors import ConnectionClosedError, IdentityVerificationError, ProtocolError, ReplayError
 from .identity import ServiceIdentity
 
 
@@ -92,6 +92,8 @@ def _recv_exact(connection: socket.socket, size: int) -> bytes:
     while len(chunks) < size:
         chunk = connection.recv(size - len(chunks))
         if not chunk:
+            if not chunks:
+                raise ConnectionClosedError("peer closed the protocol channel")
             raise ProtocolError("connection closed before the protocol frame was complete")
         chunks.extend(chunk)
     return bytes(chunks)
