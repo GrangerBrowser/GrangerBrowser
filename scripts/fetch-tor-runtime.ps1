@@ -92,18 +92,26 @@ if (Test-Path -LiteralPath $gpgHome) { Remove-Item -LiteralPath $gpgHome -Recurs
 New-Item -ItemType Directory -Path $gpgHome | Out-Null
 Push-Location $downloadRoot
 try {
-    $importOutput = (& $gpg --batch --no-autostart --homedir "./$gpgHomeName" `
-        --import "./$(Split-Path -Leaf $signingKey)" 2>&1 | Out-String)
-    $fingerprints = (& $gpg --batch --no-autostart --homedir "./$gpgHomeName" `
-        --with-colons --fingerprint 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $fingerprints -notmatch "fpr:::::::::${signingKeyFingerprint}:") {
-        throw "The imported Tor signing key fingerprint did not match $signingKeyFingerprint. Import output: $importOutput"
-    }
-    $verifyOutput = (& $gpg --batch --no-autostart --homedir "./$gpgHomeName" --status-fd 1 --verify `
-        "./$(Split-Path -Leaf $signature)" "./$(Split-Path -Leaf $archive)" 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $verifyOutput -notmatch '\[GNUPG:\] VALIDSIG ' -or
-        $verifyOutput -notmatch $signingKeyFingerprint) {
-        throw "Tor archive signature validation failed: $verifyOutput"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # GnuPG writes normal status messages to stderr. Capture them and rely on
+        # its exit code and machine-readable status records for validation.
+        $ErrorActionPreference = "Continue"
+        $importOutput = (& $gpg --batch --no-autostart --homedir "./$gpgHomeName" `
+            --import "./$(Split-Path -Leaf $signingKey)" 2>&1 | Out-String)
+        $fingerprints = (& $gpg --batch --no-autostart --homedir "./$gpgHomeName" `
+            --with-colons --fingerprint 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $fingerprints -notmatch "fpr:::::::::${signingKeyFingerprint}:") {
+            throw "The imported Tor signing key fingerprint did not match $signingKeyFingerprint. Import output: $importOutput"
+        }
+        $verifyOutput = (& $gpg --batch --no-autostart --homedir "./$gpgHomeName" --status-fd 1 --verify `
+            "./$(Split-Path -Leaf $signature)" "./$(Split-Path -Leaf $archive)" 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $verifyOutput -notmatch '\[GNUPG:\] VALIDSIG ' -or
+            $verifyOutput -notmatch $signingKeyFingerprint) {
+            throw "Tor archive signature validation failed: $verifyOutput"
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 } finally {
     Pop-Location
