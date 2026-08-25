@@ -127,6 +127,11 @@ public:
         const QString &title,
         const QString &source,
         GrangerHostingManager::CreationCompletion completion);
+    quint64 createHostedLocalApplicationAsyncForDiagnostics(
+        const QString &title,
+        const QString &host,
+        int port,
+        GrangerHostingManager::CreationCompletion completion);
     bool createHostedLocalApplicationForDiagnostics(const QString &title,
                                                      const QString &host,
                                                      int port,

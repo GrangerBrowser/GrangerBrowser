@@ -33,6 +33,7 @@ MESSAGE = "GRANGER_TEST_MESSAGE_123"
 PLAINTEXT_MARKERS = (
     MESSAGE.encode("ascii"),
     b"GRANGER_BROWSER_WAN_MESSAGE_456",
+    b"GRANGER_BROWSER_HOSTING_MESSAGE_789",
     b"GET / HTTP/1.1",
     b"POST /message HTTP/1.1",
     b"Granger test forum",
@@ -685,6 +686,7 @@ def run_acceptance(
                     f"--smoke-output={hosting_output}",
                     f"--granger-network-wan-config={browser_config_path}",
                     f"--granger-hosting-source={hosting_source}",
+                    f"--granger-hosting-backend-port={int(backend_ready['port'])}",
                 ]
                 if not expect_packaged_runtime:
                     hosting_command.extend(
@@ -710,6 +712,7 @@ def run_acceptance(
                 hosting_pids = {
                     int(hosting_browser_result.get("hostProcessPid", 0)),
                     int(hosting_browser_result.get("recoveryProcessPid", 0)),
+                    int(hosting_browser_result.get("localApplicationProcessPid", 0)),
                 }
                 hosting_pids.discard(0)
                 time.sleep(0.25)
@@ -924,9 +927,14 @@ def run_acceptance(
             for descriptor in descriptors
         }
         offline_backend_port = int(hosting_browser_result.get("offlineBackendPort", 0))
+        local_application_backend_port = int(
+            hosting_browser_result.get("localApplicationBackendPort", 0)
+        )
         allowed_hosting_endpoints = set(all_overlay_endpoints)
         if offline_backend_port > 0:
             allowed_hosting_endpoints.add(("127.0.0.1", offline_backend_port))
+        if local_application_backend_port > 0:
+            allowed_hosting_endpoints.add(("127.0.0.1", local_application_backend_port))
 
         captures = sorted((root / "capture").glob("*.bin"))
         marker_hits: list[dict[str, str]] = []
@@ -971,6 +979,7 @@ def run_acceptance(
                 hosting_browser_result.get("ok") is True
                 and hosting_browser_result.get("settingsPage") is True
                 and hosting_browser_result.get("staticAssets") is True
+                and hosting_browser_result.get("localApplication") is True
                 and hosting_browser_result.get("failClosedWhileOffline") is True
                 and hosting_browser_result.get("recovery") is True
                 and hosting_browser_result.get("removed") is True
@@ -1084,6 +1093,11 @@ def run_acceptance(
                 "hostingOfflineProbeEndpoint": (
                     f"127.0.0.1:{offline_backend_port}"
                     if offline_backend_port > 0
+                    else ""
+                ),
+                "hostingLocalApplicationBackendEndpoint": (
+                    f"127.0.0.1:{local_application_backend_port}"
+                    if local_application_backend_port > 0
                     else ""
                 ),
                 "hostRoutes": {

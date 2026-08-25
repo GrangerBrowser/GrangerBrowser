@@ -602,9 +602,12 @@ int runGrangerNetworkWanSmoke(QApplication &app,
 
 int runGrangerHostingSmoke(QApplication &app,
                            const QString &outputPath,
-                           const QString &sourceDirectory)
+                           const QString &sourceDirectory,
+                           int localApplicationPort)
 {
     Q_UNUSED(app)
+    static const QString localApplicationMessage =
+        QStringLiteral("GRANGER_BROWSER_HOSTING_MESSAGE_789");
     QJsonObject result;
     bool passed = false;
     QString cleanupError;
@@ -818,6 +821,92 @@ int runGrangerHostingSmoke(QApplication &app,
             && !hostingRuntime.value(QStringLiteral("dnsFallback")).toBool(true);
         const bool removed = !createdOk
             || window.removeHostedServiceForDiagnostics(created.id, &cleanupError);
+
+        HostedServiceRecord localCreated;
+        QString localCreateError;
+        bool localCreateCompleted = false;
+        bool localCreatedOk = false;
+        quint64 localCreateOperationId = 0;
+        if (removed && localApplicationPort > 0) {
+            QEventLoop localCreateLoop;
+            QTimer localCreateTimeout;
+            localCreateTimeout.setSingleShot(true);
+            QObject::connect(&localCreateTimeout, &QTimer::timeout,
+                             &localCreateLoop, &QEventLoop::quit);
+            localCreateOperationId = window.createHostedLocalApplicationAsyncForDiagnostics(
+                QStringLiteral("Granger local application acceptance"),
+                QStringLiteral("127.0.0.1"), localApplicationPort,
+                [&](bool ok, const HostedServiceRecord &record, const QString &error) {
+                    localCreateCompleted = true;
+                    localCreatedOk = ok;
+                    localCreated = record;
+                    localCreateError = error;
+                    localCreateLoop.quit();
+                });
+            localCreateTimeout.start(180000);
+            if (!localCreateCompleted) localCreateLoop.exec();
+        }
+        const bool localIdentityBound = localCreatedOk
+            && GrangerNetworkUrl::isCanonicalHost(localCreated.address);
+        const bool localOnline = localCreatedOk
+            && waitForHostedStatus(window, localCreated.id, QStringLiteral("online"));
+        const qint64 localApplicationProcessPid = localOnline ? localCreated.pid : 0;
+        LoadResult localLoad;
+        QString localHeading;
+        QString localPostStatus;
+        if (localOnline) {
+            localLoad = waitForLoad(tab, [&] {
+                window.openAddressForDiagnostics(localCreated.address);
+            }, 120000);
+            localHeading = evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.querySelector('h1')?.textContent || ''"),
+                10000).toString();
+            const QString postScript = QStringLiteral(R"JS(
+                (() => {
+                  document.body.dataset.hostingPost = 'pending';
+                  fetch('/message', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'text/plain'},
+                    body: %1
+                  }).then(async response => {
+                    const messages = await (await fetch('/messages')).text();
+                    document.body.dataset.hostingPost =
+                      response.status + ':'
+                        + (response.headers.get('x-granger-status') || '') + ':'
+                        + (messages.includes(%1) ? 'present' : 'missing');
+                  }).catch(error => {
+                    document.body.dataset.hostingPost =
+                      'failed:' + String(error).slice(0, 160);
+                  });
+                })()
+            )JS").arg(QStringLiteral("'%1'").arg(localApplicationMessage));
+            evaluateJavaScript(tab ? tab->page() : nullptr, postScript, 10000);
+            QElapsedTimer localPostWait;
+            localPostWait.start();
+            do {
+                localPostStatus = evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("document.body?.dataset.hostingPost || ''"),
+                    10000).toString();
+                if (localPostStatus != QStringLiteral("pending")
+                    && !localPostStatus.isEmpty()) {
+                    break;
+                }
+                QEventLoop delay;
+                QTimer::singleShot(100, &delay, &QEventLoop::quit);
+                delay.exec();
+            } while (localPostWait.elapsed() < 120000);
+        }
+        const bool localGet = localLoad.loaded
+            && localHeading == QStringLiteral("Granger test forum");
+        const bool localPost = localPostStatus == QStringLiteral("200:201:present");
+        QString localRemoveError;
+        const bool localRemoved = !localCreatedOk
+            || window.removeHostedServiceForDiagnostics(localCreated.id, &localRemoveError);
+        const bool localApplication = localCreateCompleted && localCreatedOk
+            && localIdentityBound && localOnline && localGet && localPost && localRemoved;
+
         const int servicesBeforeFailureChecks = window.grangerHostingDiagnosticsForDiagnostics()
             .value(QStringLiteral("services")).toInt(-1);
         const QVariant configuredWan = qApp->property("granger.networkWanConfig");
@@ -850,7 +939,7 @@ int runGrangerHostingSmoke(QApplication &app,
 
         passed = settingsPage && uiActions && createdOk && identityBound && online
             && idempotentStart && assets && stopped && failClosed && restarted && recovery
-            && privacy && removed && noUnavailableGhost && noOfflineGhost;
+            && privacy && removed && localApplication && noUnavailableGhost && noOfflineGhost;
         result = {
             {QStringLiteral("ok"), passed},
             {QStringLiteral("settingsPage"), settingsPage},
@@ -888,6 +977,21 @@ int runGrangerHostingSmoke(QApplication &app,
             {QStringLiteral("restartError"), restartError},
             {QStringLiteral("recovery"), recovery},
             {QStringLiteral("removed"), removed},
+            {QStringLiteral("localApplication"), localApplication},
+            {QStringLiteral("localApplicationCreateCompleted"), localCreateCompleted},
+            {QStringLiteral("localApplicationCreateOperationId"),
+             qint64(localCreateOperationId)},
+            {QStringLiteral("localApplicationCreateError"), localCreateError},
+            {QStringLiteral("localApplicationBackendPort"), localApplicationPort},
+            {QStringLiteral("localApplicationAddress"), localCreated.address},
+            {QStringLiteral("localApplicationIdentityBound"), localIdentityBound},
+            {QStringLiteral("localApplicationOnline"), localOnline},
+            {QStringLiteral("localApplicationProcessPid"), localApplicationProcessPid},
+            {QStringLiteral("localApplicationGet"), localGet},
+            {QStringLiteral("localApplicationPost"), localPost},
+            {QStringLiteral("localApplicationPostStatus"), localPostStatus},
+            {QStringLiteral("localApplicationRemoved"), localRemoved},
+            {QStringLiteral("localApplicationRemoveError"), localRemoveError},
             {QStringLiteral("networkUnavailableRejected"), unavailableRejected},
             {QStringLiteral("networkUnavailableError"), blockedError},
             {QStringLiteral("noNetworkUnavailableGhost"), noUnavailableGhost},

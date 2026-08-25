@@ -2176,6 +2176,15 @@ quint64 MainWindow::createHostedStaticAsyncForDiagnostics(
     return m_hosting.createStaticSiteAsync(title, source, std::move(completion));
 }
 
+quint64 MainWindow::createHostedLocalApplicationAsyncForDiagnostics(
+    const QString &title,
+    const QString &host,
+    int port,
+    GrangerHostingManager::CreationCompletion completion)
+{
+    return m_hosting.createLocalApplicationAsync(title, host, port, std::move(completion));
+}
+
 bool MainWindow::createHostedLocalApplicationForDiagnostics(
     const QString &title,
     const QString &host,
