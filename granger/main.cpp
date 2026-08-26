@@ -2973,6 +2973,7 @@ int runQrImportFlowSmoke(QApplication &app, const QString &outputPath, const QSt
     QTimer timeout;
     timeout.setSingleShot(true);
     bool finished = false;
+    bool notSavedBeforePreview = false;
     QJsonObject checks;
 
     auto finish = [&](bool ok, const QString &reason) {
@@ -3006,7 +3007,7 @@ int runQrImportFlowSmoke(QApplication &app, const QString &outputPath, const QSt
     });
     QTimer::singleShot(300, &app, [&] {
         const QStringList before = window->savedBridgeLines();
-        bool notSavedBeforePreview = !expectedLines.isEmpty() && fixtureDecode.errors.isEmpty()
+        notSavedBeforePreview = !expectedLines.isEmpty() && fixtureDecode.errors.isEmpty()
             && before == QStringList{staleLine};
         for (const QString &line : expectedLines) {
             notSavedBeforePreview = notSavedBeforePreview && !before.contains(line);
