@@ -1174,6 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--qt-bin", type=Path)
     parser.add_argument("--expect-packaged-runtime", action="store_true")
     parser.add_argument("--hosting-source", type=Path)
+    parser.add_argument("--keep-work-dir", action="store_true")
     options = parser.parse_args(argv)
     try:
         if options.browser is not None and not options.expect_packaged_runtime and options.qt_bin is None:
@@ -1193,6 +1194,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as error:
         print(f"wan-process-acceptance: {type(error).__name__}: {error}", file=sys.stderr)
         return 2
+    work_dir = options.work_dir.resolve()
+    report_path = options.report.resolve()
+    if not options.keep_work_dir and not report_path.is_relative_to(work_dir):
+        shutil.rmtree(work_dir)
+        report["workDirectoryRemoved"] = True
+        atomic_write_text(
+            report_path,
+            json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            mode=0o644,
+        )
     print(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True))
     return 0
 
