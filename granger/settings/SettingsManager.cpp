@@ -33,8 +33,7 @@ QString decodedLegacyValue(QString value)
 SettingsManager::SettingsManager(QObject *parent)
     : QObject(parent)
 {
-    const QString root = Brand::environmentValue(
-        "GRANGER_SETTINGS_ROOT", "DARKSEARCH_SETTINGS_ROOT");
+    const QString root = Brand::environmentValue("GRANGER_SETTINGS_ROOT");
     if (root.isEmpty()) {
         m_settings = std::make_unique<QSettings>(Brand::organizationName(),
                                                  Brand::applicationName());
@@ -48,8 +47,7 @@ SettingsManager::SettingsManager(QObject *parent)
 
 bool SettingsManager::clearStoredSettings(QString *error)
 {
-    const QString root = Brand::environmentValue(
-        "GRANGER_SETTINGS_ROOT", "DARKSEARCH_SETTINGS_ROOT");
+    const QString root = Brand::environmentValue("GRANGER_SETTINGS_ROOT");
     std::unique_ptr<QSettings> settings;
     if (root.isEmpty()) {
         settings = std::make_unique<QSettings>(Brand::organizationName(),

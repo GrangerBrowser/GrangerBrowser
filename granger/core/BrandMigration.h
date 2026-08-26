@@ -19,6 +19,14 @@ struct BrandMigrationResult {
 
 class BrandMigration final {
 public:
+    static QString legacyOrganizationName();
+    static QString legacyApplicationName();
+    static QString legacySettingsFileName();
+    static QString legacyCredentialTarget();
+    static bool isLegacyInternalHost(const QString &host);
+    static bool isLegacyInternalScheme(const QString &scheme);
+    static QString canonicalInternalUrl(const QString &input);
+
     static BrandMigrationResult migrateAtStartup();
     static BrandMigrationResult migrateFixture(
         const QString &legacyDataRoot,

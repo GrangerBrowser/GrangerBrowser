@@ -20,8 +20,7 @@ public:
     static QString startPageUrl();
     static QString resultsPageUrl();
 
-    static QString environmentValue(const char *currentName, const char *legacyName);
-    static void promoteLegacyEnvironment();
+    static QString environmentValue(const char *currentName);
 
     static bool isInternalHost(const QString &host);
     static bool isInternalScheme(const QString &scheme);

@@ -167,11 +167,7 @@ $developmentEnvironmentVariables = @(
     "GRANGER_RUNTIME_ROOT",
     "GRANGER_TOR_PATH",
     "GRANGER_LYREBIRD_PATH",
-    "GRANGER_TRANSPORT_PATH",
-    "DARKSEARCH_RUNTIME_ROOT",
-    "DARKSEARCH_TOR_PATH",
-    "DARKSEARCH_LYREBIRD_PATH",
-    "DARKSEARCH_TRANSPORT_PATH"
+    "GRANGER_TRANSPORT_PATH"
 )
 $oldDevelopmentEnvironment = @{}
 foreach ($name in $developmentEnvironmentVariables) {

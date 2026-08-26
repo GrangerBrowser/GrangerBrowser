@@ -116,8 +116,7 @@ namespace {
 
 void configureSettingsStorageOverride()
 {
-    const QString root = granger::Brand::environmentValue(
-        "GRANGER_SETTINGS_ROOT", "DARKSEARCH_SETTINGS_ROOT");
+    const QString root = granger::Brand::environmentValue("GRANGER_SETTINGS_ROOT");
     if (root.isEmpty()) return;
     QDir().mkpath(root);
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -126,8 +125,7 @@ void configureSettingsStorageOverride()
 
 std::unique_ptr<QSettings> openApplicationSettings()
 {
-    const QString root = granger::Brand::environmentValue(
-        "GRANGER_SETTINGS_ROOT", "DARKSEARCH_SETTINGS_ROOT");
+    const QString root = granger::Brand::environmentValue("GRANGER_SETTINGS_ROOT");
     if (root.isEmpty()) {
         return std::make_unique<QSettings>(granger::Brand::organizationName(),
                                            granger::Brand::applicationName());
@@ -6124,7 +6122,6 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationDomain(granger::Brand::organizationDomain());
     QCoreApplication::setApplicationName(granger::Brand::applicationName());
     QCoreApplication::setApplicationVersion("0.4.4");
-    granger::Brand::promoteLegacyEnvironment();
     configureSettingsStorageOverride();
     const granger::BrandMigrationResult brandMigration =
         granger::BrandMigration::migrateAtStartup();

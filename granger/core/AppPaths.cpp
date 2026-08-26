@@ -11,9 +11,9 @@
 
 namespace granger {
 namespace {
-QString configuredRoot(const char *currentName, const char *legacyName)
+QString configuredRoot(const char *currentName)
 {
-    const QString value = Brand::environmentValue(currentName, legacyName);
+    const QString value = Brand::environmentValue(currentName);
     return value.isEmpty() ? QString() : QDir(value).absolutePath();
 }
 }
@@ -25,7 +25,7 @@ QString AppPaths::applicationRoot()
 
 QString AppPaths::runtimeRoot()
 {
-    const QString configured = configuredRoot("GRANGER_RUNTIME_ROOT", "DARKSEARCH_RUNTIME_ROOT");
+    const QString configured = configuredRoot("GRANGER_RUNTIME_ROOT");
     return configured.isEmpty()
         ? QDir(applicationRoot()).filePath(QStringLiteral("runtime"))
         : configured;
@@ -33,7 +33,7 @@ QString AppPaths::runtimeRoot()
 
 QString AppPaths::dataRoot()
 {
-    const QString configured = configuredRoot("GRANGER_DATA_ROOT", "DARKSEARCH_DATA_ROOT");
+    const QString configured = configuredRoot("GRANGER_DATA_ROOT");
     if (!configured.isEmpty()) {
         return configured;
     }
@@ -167,9 +167,9 @@ QString AppPaths::webEngineProfileRoot()
 
 QString AppPaths::webEngineCacheRoot()
 {
-    QString root = configuredRoot("GRANGER_CACHE_ROOT", "DARKSEARCH_CACHE_ROOT");
+    QString root = configuredRoot("GRANGER_CACHE_ROOT");
     if (root.isEmpty()
-        && !configuredRoot("GRANGER_DATA_ROOT", "DARKSEARCH_DATA_ROOT").isEmpty()) {
+        && !configuredRoot("GRANGER_DATA_ROOT").isEmpty()) {
         root = QDir(dataRoot()).filePath(QStringLiteral("cache"));
     }
     if (root.isEmpty()) {

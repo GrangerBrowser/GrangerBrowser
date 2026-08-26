@@ -191,22 +191,14 @@ int runBrandSmokeTests(QApplication &app, const QString &outputPath)
                    catalogsPassed, catalogFailure);
 
     const char currentTestVariable[] = "GRANGER_BRAND_TEST_CURRENT";
-    const char legacyTestVariable[] = "GRANGER_BRAND_TEST_COMPAT";
     const QByteArray previousCurrent = qgetenv(currentTestVariable);
-    const QByteArray previousLegacy = qgetenv(legacyTestVariable);
     qputenv(currentTestVariable, QByteArrayLiteral("current"));
-    qputenv(legacyTestVariable, QByteArrayLiteral("compat"));
-    const bool currentWins = Brand::environmentValue(
-        currentTestVariable, legacyTestVariable) == QStringLiteral("current");
-    qunsetenv(currentTestVariable);
-    const bool fallbackWorks = Brand::environmentValue(
-        currentTestVariable, legacyTestVariable) == QStringLiteral("compat");
+    const bool currentVariableWorks = Brand::environmentValue(currentTestVariable)
+        == QStringLiteral("current");
     if (previousCurrent.isNull()) qunsetenv(currentTestVariable);
     else qputenv(currentTestVariable, previousCurrent);
-    if (previousLegacy.isNull()) qunsetenv(legacyTestVariable);
-    else qputenv(legacyTestVariable, previousLegacy);
-    results.record(QStringLiteral("current environment variables take priority over compatibility aliases"),
-                   currentWins && fallbackWorks);
+    results.record(QStringLiteral("current environment variables are read without obsolete aliases"),
+                   currentVariableWorks);
 
     const QString settingsRoot = qEnvironmentVariable("GRANGER_SETTINGS_ROOT").trimmed();
     if (!settingsRoot.isEmpty()) {

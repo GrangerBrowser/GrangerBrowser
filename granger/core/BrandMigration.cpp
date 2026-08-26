@@ -15,6 +15,7 @@
 #include <QSaveFile>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QUrl>
 #include <QUuid>
 
 #ifdef Q_OS_WIN
@@ -29,6 +30,14 @@ namespace granger {
 namespace {
 constexpr auto kMigrationMarker = "state/brand-migration.json";
 constexpr auto kLegacyConsumedMarker = ".granger-migration-v1.json";
+constexpr auto kLegacyOrganizationName = "DarkSearch";
+constexpr auto kLegacyApplicationName = "DarkSearch Browser";
+constexpr auto kLegacySettingsFileName = "DarkSearch.ini";
+constexpr auto kLegacyCredentialTarget = "DarkSearch/UpstreamProxyPassword";
+constexpr auto kLegacyInternalHost = "darksearch.local";
+constexpr auto kLegacyInternalScheme = "darksearch";
+constexpr auto kLegacyStartPage = "about:darksearch";
+constexpr auto kLegacyResultsPage = "about:darksearch-results";
 
 bool legacyBrowserIsRunning()
 {
@@ -491,6 +500,73 @@ BrandMigrationResult migrateData(const QString &legacyDataRoot,
 }
 }
 
+QString BrandMigration::legacyOrganizationName()
+{
+    return QString::fromLatin1(kLegacyOrganizationName);
+}
+
+QString BrandMigration::legacyApplicationName()
+{
+    return QString::fromLatin1(kLegacyApplicationName);
+}
+
+QString BrandMigration::legacySettingsFileName()
+{
+    return QString::fromLatin1(kLegacySettingsFileName);
+}
+
+QString BrandMigration::legacyCredentialTarget()
+{
+    return QString::fromLatin1(kLegacyCredentialTarget);
+}
+
+bool BrandMigration::isLegacyInternalHost(const QString &host)
+{
+    return host.compare(QString::fromLatin1(kLegacyInternalHost), Qt::CaseInsensitive) == 0;
+}
+
+bool BrandMigration::isLegacyInternalScheme(const QString &scheme)
+{
+    return scheme.compare(QString::fromLatin1(kLegacyInternalScheme), Qt::CaseInsensitive) == 0;
+}
+
+QString BrandMigration::canonicalInternalUrl(const QString &input)
+{
+    const QString clean = input.trimmed();
+    if (clean.compare(QString::fromLatin1(kLegacyStartPage), Qt::CaseInsensitive) == 0) {
+        return Brand::startPageUrl();
+    }
+    if (clean.compare(QString::fromLatin1(kLegacyResultsPage), Qt::CaseInsensitive) == 0) {
+        return Brand::resultsPageUrl();
+    }
+
+    QUrl url(clean, QUrl::StrictMode);
+    if (!url.isValid()) return clean;
+    bool changed = false;
+    if (url.scheme().compare(QStringLiteral("about"), Qt::CaseInsensitive) == 0) {
+        const QString legacyStartPath = QString::fromLatin1(kLegacyStartPage).section(
+            QLatin1Char(':'), 1);
+        const QString legacyResultsPath = QString::fromLatin1(kLegacyResultsPage).section(
+            QLatin1Char(':'), 1);
+        if (url.path().compare(legacyStartPath, Qt::CaseInsensitive) == 0) {
+            url.setPath(Brand::startPageUrl().section(QLatin1Char(':'), 1));
+            changed = true;
+        } else if (url.path().compare(legacyResultsPath, Qt::CaseInsensitive) == 0) {
+            url.setPath(Brand::resultsPageUrl().section(QLatin1Char(':'), 1));
+            changed = true;
+        }
+    }
+    if (isLegacyInternalScheme(url.scheme())) {
+        url.setScheme(Brand::internalScheme());
+        changed = true;
+    }
+    if (isLegacyInternalHost(url.host())) {
+        url.setHost(Brand::internalHost());
+        changed = true;
+    }
+    return changed ? url.toString(QUrl::FullyEncoded) : clean;
+}
+
 QString BrandMigration::defaultLegacyDataRoot()
 {
     const QString generic = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
@@ -519,8 +595,7 @@ BrandMigrationResult BrandMigration::migrateFixture(
 
 BrandMigrationResult BrandMigration::migrateAtStartup()
 {
-    const QString configuredData = Brand::environmentValue(
-        "GRANGER_DATA_ROOT", "DARKSEARCH_DATA_ROOT");
+    const QString configuredData = Brand::environmentValue("GRANGER_DATA_ROOT");
     BrandMigrationResult result;
     if (configuredData.isEmpty()) {
         const QString legacyRoot = defaultLegacyDataRoot();
@@ -536,8 +611,7 @@ BrandMigrationResult BrandMigration::migrateAtStartup()
         result.message = QStringLiteral("explicit profile root; production migration was not inspected");
     }
 
-    const QString settingsRoot = Brand::environmentValue(
-        "GRANGER_SETTINGS_ROOT", "DARKSEARCH_SETTINGS_ROOT");
+    const QString settingsRoot = Brand::environmentValue("GRANGER_SETTINGS_ROOT");
     QString settingsError;
     if (settingsRoot.isEmpty()) {
         if (!migrateNativeSettings(&result, &settingsError)) {
