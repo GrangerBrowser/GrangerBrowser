@@ -151,11 +151,54 @@ print(json.dumps({
 PY
 )" || fail "app-local Python validation failed"
 [[ "$(jq -r '.bits' <<<"$validation")" == "64" \
-   && "$(jq -r '.hosting' <<<"$validation")" == "1" \
+   && "$(jq -r '.hosting' <<<"$validation")" == "2" \
    && "$(jq -r '.hostingBridge' <<<"$validation")" == "true" \
    && "$(jq -r '.protocol' <<<"$validation")" == "2" \
    && "$(jq -r '.wire' <<<"$validation")" == "3" ]] \
     || fail "app-local Python reported unexpected protocol state"
+
+wan_metadata='{"bundled":false,"configSha256":"","expiresAt":0,"generation":0,"networkId":"","protocolVersion":0}'
+wan_source_root="${GRANGER_NETWORK_RELEASE_BUNDLE:-}"
+if [[ -n "$wan_source_root" ]]; then
+    wan_source_root="$(realpath -m "$wan_source_root")"
+    wan_source_config="$wan_source_root/browser-wan.json"
+    wan_source_trust="$wan_source_root/config-authority.pin"
+    [[ -f "$wan_source_config" && -f "$wan_source_trust" ]] \
+        || fail "signed WAN bundle requires browser-wan.json and config-authority.pin"
+    wan_validation_code='import json,pathlib,sys
+from granger_network.wan_config import load_browser_wan_config
+p=pathlib.Path(sys.argv[1]).resolve(); t=pathlib.Path(sys.argv[2]).resolve()
+c=load_browser_wan_config(p,trust_anchor_path=t,allow_legacy=False); r=p.parent
+print(json.dumps({"authorityPin":c.authority_pin_path.relative_to(r).as_posix(),"bootstrap":c.bootstrap_path.relative_to(r).as_posix(),"configSha256":c.sha256,"expiresAt":c.expires_at,"generation":c.generation,"networkId":c.network_id,"protocolVersion":c.protocol_version},separators=(",",":"),sort_keys=True))'
+    source_wan="$($runtime_python -I -B -c "$wan_validation_code" \
+        "$wan_source_config" "$wan_source_trust")" \
+        || fail "signed WAN release bundle validation failed"
+    packaged_wan_bundle="$appdir/usr/bin/runtime/granger-network/bundle"
+    packaged_wan_trust="$appdir/usr/bin/runtime/granger-network/trust"
+    mkdir -p "$packaged_wan_bundle" "$packaged_wan_trust"
+    cp -a -- "$wan_source_config" "$packaged_wan_bundle/browser-wan.json"
+    cp -a -- "$wan_source_trust" "$packaged_wan_trust/config-authority.pin"
+    for relative in "$(jq -r '.bootstrap' <<<"$source_wan")" \
+                    "$(jq -r '.authorityPin' <<<"$source_wan")"; do
+        source_member="$(realpath -m "$wan_source_root/$relative")"
+        case "$source_member" in
+            "$wan_source_root"/*) ;;
+            *) fail "signed WAN bundle member escaped its source root: $relative" ;;
+        esac
+        [[ -f "$source_member" ]] || fail "signed WAN bundle member is missing: $relative"
+        mkdir -p "$(dirname "$packaged_wan_bundle/$relative")"
+        cp -a -- "$source_member" "$packaged_wan_bundle/$relative"
+    done
+    packaged_wan="$($runtime_python -I -B -c "$wan_validation_code" \
+        "$packaged_wan_bundle/browser-wan.json" \
+        "$packaged_wan_trust/config-authority.pin")" \
+        || fail "packaged signed WAN bundle validation failed"
+    [[ "$(jq -r '.configSha256' <<<"$packaged_wan")" \
+        == "$(jq -r '.configSha256' <<<"$source_wan")" ]] \
+        || fail "packaged signed WAN bundle does not match its validated source"
+    wan_metadata="$(jq -c '{bundled:true,configSha256,expiresAt,generation,networkId,protocolVersion}' \
+        <<<"$packaged_wan")"
+fi
 
 jq -n \
     --arg pythonVersion "$(jq -r '.version' <<<"$probe")" \
@@ -163,12 +206,16 @@ jq -n \
     --arg cffiVersion "$(jq -r '.cffiVersion' <<<"$probe")" \
     --arg pycparserVersion "$(jq -r '.pycparserVersion' <<<"$probe")" \
     --arg sitePackages "runtime/python/lib/$version_dir/site-packages" \
+    --argjson wan "$wan_metadata" \
     '{schemaVersion:1, architecture:"x86_64", pythonVersion:$pythonVersion,
       pythonLicense:"PSF-2.0", cryptographyVersion:$cryptographyVersion,
       cryptographyLicense:"Apache-2.0 OR BSD-3-Clause", cffiVersion:$cffiVersion,
       cffiLicense:"MIT", pycparserVersion:$pycparserVersion,
       pycparserLicense:"BSD-3-Clause", grangerNetworkVersion:"0.4.0",
-      hostingVersion:1, sitePackages:$sitePackages, isolatedRuntime:true}' \
+      hostingVersion:2, sitePackages:$sitePackages, isolatedRuntime:true,
+      signedWanBundle:$wan.bundled, wanConfigSha256:$wan.configSha256,
+      wanConfigExpiresAt:$wan.expiresAt, wanConfigGeneration:$wan.generation,
+      wanNetworkId:$wan.networkId, wanProtocolVersion:$wan.protocolVersion}' \
     >"$appdir/usr/bin/local-runtime-metadata.json"
 
 printf 'Packaged Linux app-local Python %s for Granger Network.\n' \

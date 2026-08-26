@@ -119,6 +119,9 @@ public:
     QJsonObject developerToolsDiagnostics() const;
     QJsonObject grangerNetworkDiagnosticsForDiagnostics() const;
     QJsonObject grangerHostingDiagnosticsForDiagnostics() const;
+    bool prepareHostedStaticWizardForDiagnostics(const QString &source,
+                                                  const QString &entryPage,
+                                                  QString *error);
     bool createHostedStaticForDiagnostics(const QString &title,
                                           const QString &source,
                                           HostedServiceRecord *created,
@@ -467,6 +470,7 @@ private:
         QString qrReturnAddress;
         QString hostingWizard;
         QString hostingSelectedPath;
+        QString hostingSelectedEntryPage;
         QString hostingEditId;
         QString hostingOperationStage;
         QString hostingOperationError;

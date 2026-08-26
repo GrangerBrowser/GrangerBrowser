@@ -18,6 +18,7 @@
 #include <QPointer>
 #include <QHostAddress>
 #include <QTcpServer>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QVariant>
 #include <QWebEnginePage>
@@ -665,7 +666,91 @@ int runGrangerHostingSmoke(QApplication &app,
         const bool staticWizard = createWizard
             && clickHostingAction(QStringLiteral("/hosting/begin?type=static"))
             && waitForHostingSelector(QStringLiteral(".hosting-publish-form"));
-        const bool backToTypes = staticWizard
+        QTemporaryDir entrySelectorFixture;
+        const auto writeFixture = [&](const QString &name, const QByteArray &contents) {
+            QFile file(QDir(entrySelectorFixture.path()).filePath(name));
+            return file.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                && file.write(contents) == contents.size();
+        };
+        const bool entryFixtureReady = entrySelectorFixture.isValid()
+            && writeFixture(QStringLiteral("home.html"), QByteArrayLiteral("<h1>Home</h1>"))
+            && writeFixture(QStringLiteral("forum.html"), QByteArrayLiteral("<h1>Forum</h1>"))
+            && writeFixture(QStringLiteral("about.htm"), QByteArrayLiteral("<h1>About</h1>"));
+        QString entrySelectorError;
+        const bool entrySelectorPrepared = staticWizard && entryFixtureReady
+            && window.prepareHostedStaticWizardForDiagnostics(
+                entrySelectorFixture.path(), QString(), &entrySelectorError)
+            && waitForHostingSelector(QStringLiteral(".hosting-entry-form select[name=entry]"));
+        const QVariantMap entrySelectorBefore = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral(R"JS((()=>{
+                const select=document.querySelector('.hosting-entry-form select[name=entry]');
+                const publish=document.querySelector('.hosting-publish-form button[type=submit]');
+                return {
+                    options:[...select?.options||[]].filter(option=>option.value)
+                        .map(option=>option.value),
+                    selected:select?.value||'',
+                    publishDisabled:publish?.disabled===true,
+                    enhanced:select?.dataset.dsEnhanced==='true'
+                        &&!!select?.closest('.ds-select')?.querySelector('.ds-select-trigger')
+                };
+            })())JS"), 10000).toMap();
+        bool entrySelectionRequested = false;
+        if (entrySelectorPrepared) {
+            entrySelectionRequested = true;
+            evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral(R"JS((()=>{
+                    const option=[...document.querySelectorAll('.hosting-entry-form .ds-option')]
+                        .find(node=>node.textContent.trim()==='forum.html');
+                    if(!option)return false;
+                    option.click();
+                    return true;
+                })())JS"), 10000);
+        }
+        bool entrySelectionApplied = false;
+        if (entrySelectionRequested) {
+            QElapsedTimer entrySelectionWait;
+            entrySelectionWait.start();
+            do {
+                entrySelectionApplied = evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral(R"JS((()=>{
+                        const select=document.querySelector('.hosting-entry-form select[name=entry]');
+                        const publish=document.querySelector('.hosting-publish-form button[type=submit]');
+                        return select?.value==='forum.html'&&publish?.disabled===false;
+                    })())JS"), 10000).toBool();
+                if (entrySelectionApplied) break;
+                QEventLoop delay;
+                QTimer::singleShot(50, &delay, &QEventLoop::quit);
+                delay.exec();
+            } while (entrySelectionWait.elapsed() < 10000);
+        }
+        const QVariantMap entrySelectorAfter = evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral(R"JS((()=>{
+                const select=document.querySelector('.hosting-entry-form select[name=entry]');
+                const publish=document.querySelector('.hosting-publish-form button[type=submit]');
+                return {selected:select?.value||'',publishEnabled:publish?.disabled===false};
+            })())JS"), 10000).toMap();
+        const QStringList expectedEntries{
+            QStringLiteral("about.htm"), QStringLiteral("forum.html"),
+            QStringLiteral("home.html")};
+        QStringList actualEntries;
+        const QVariantList entryOptions = entrySelectorBefore
+            .value(QStringLiteral("options")).toList();
+        actualEntries.reserve(entryOptions.size());
+        for (const QVariant &option : entryOptions) actualEntries.append(option.toString());
+        const bool entrySelector = entrySelectorPrepared
+            && actualEntries == expectedEntries
+            && entrySelectorBefore.value(QStringLiteral("selected")).toString().isEmpty()
+            && entrySelectorBefore.value(QStringLiteral("publishDisabled")).toBool()
+            && entrySelectorBefore.value(QStringLiteral("enhanced")).toBool()
+            && entrySelectionApplied
+            && entrySelectorAfter.value(QStringLiteral("selected")).toString()
+                == QStringLiteral("forum.html")
+            && entrySelectorAfter.value(QStringLiteral("publishEnabled")).toBool();
+        const bool backToTypes = entrySelector
             && clickHostingAction(QStringLiteral("/hosting/back"))
             && waitForHostingSelector(QStringLiteral(".hosting-type-grid"));
         const bool applicationWizard = backToTypes
@@ -674,7 +759,7 @@ int runGrangerHostingSmoke(QApplication &app,
         const bool cancelWizard = applicationWizard
             && clickHostingAction(QStringLiteral("/hosting/cancel"))
             && waitForHostingSelector(QStringLiteral(".hosting-wizard"), false);
-        const bool uiActions = createWizard && staticWizard && backToTypes
+        const bool uiActions = createWizard && staticWizard && entrySelector && backToTypes
             && applicationWizard && cancelWizard;
         window.openNewTabForDiagnostics();
         tab = window.currentTabForDiagnostics();
@@ -948,6 +1033,12 @@ int runGrangerHostingSmoke(QApplication &app,
             {QStringLiteral("uiActions"), uiActions},
             {QStringLiteral("createWizard"), createWizard},
             {QStringLiteral("staticWizard"), staticWizard},
+            {QStringLiteral("entrySelector"), entrySelector},
+            {QStringLiteral("entrySelectorError"), entrySelectorError},
+            {QStringLiteral("entrySelectorBefore"),
+             QJsonObject::fromVariantMap(entrySelectorBefore)},
+            {QStringLiteral("entrySelectorAfter"),
+             QJsonObject::fromVariantMap(entrySelectorAfter)},
             {QStringLiteral("backToTypes"), backToTypes},
             {QStringLiteral("applicationWizard"), applicationWizard},
             {QStringLiteral("cancelWizard"), cancelWizard},

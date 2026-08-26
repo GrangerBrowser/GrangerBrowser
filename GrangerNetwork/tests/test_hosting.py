@@ -92,10 +92,79 @@ class StaticHostingTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertTrue(result.indexFound)
         self.assertEqual(result.files, 6)
+        self.assertEqual(result.htmlFiles, 1)
         self.assertEqual(result.cssFiles, 1)
         self.assertEqual(result.jsFiles, 1)
+        self.assertEqual(result.jsonFiles, 1)
         self.assertEqual(result.assets, 2)
+        self.assertEqual(result.entryPage, "index.html")
+        self.assertEqual(result.entryCandidates, ("index.html",))
+        self.assertFalse(result.requiresEntrySelection)
         self.assertEqual(result.errors, ())
+
+    def test_single_non_index_html_is_automatic_entry_page(self) -> None:
+        (self.site / "index.html").rename(self.site / "nova_demo_site.html")
+        inspection = inspect_static_site(self.site)
+        self.assertTrue(inspection.ok, inspection.errors)
+        self.assertFalse(inspection.indexFound)
+        self.assertEqual(inspection.entryPage, "nova_demo_site.html")
+        bridge = StaticSiteBridge(self.site)
+        self.assertIn(b"Private site", bridge.fetch("GET", "/").body)
+        self.assertEqual(
+            bridge.fetch("GET", "/nova_demo_site.html").body,
+            bridge.fetch("GET", "/").body,
+        )
+
+    def test_index_htm_is_used_when_index_html_is_absent(self) -> None:
+        (self.site / "index.html").rename(self.site / "index.htm")
+        inspection = inspect_static_site(self.site)
+        self.assertTrue(inspection.ok, inspection.errors)
+        self.assertEqual(inspection.entryPage, "index.htm")
+        self.assertIn(b"Private site", StaticSiteBridge(self.site).fetch("GET", "/").body)
+
+    def test_multiple_html_files_require_an_explicit_entry_page(self) -> None:
+        (self.site / "index.html").unlink()
+        (self.site / "home.html").write_text("<h1>Home</h1>", encoding="utf-8")
+        (self.site / "forum.html").write_text("<h1>Forum</h1>", encoding="utf-8")
+        inspection = inspect_static_site(self.site)
+        self.assertTrue(inspection.ok, inspection.errors)
+        self.assertTrue(inspection.requiresEntrySelection)
+        self.assertEqual(inspection.entryPage, "")
+        self.assertEqual(inspection.entryCandidates, ("forum.html", "home.html"))
+        with self.assertRaisesRegex(UpstreamPolicyError, "must be selected"):
+            StaticSiteBridge(self.site)
+        selected = inspect_static_site(self.site, entry_page="forum.html")
+        self.assertTrue(selected.ok, selected.errors)
+        self.assertEqual(selected.entryPage, "forum.html")
+        self.assertIn(
+            b"Forum",
+            StaticSiteBridge(self.site, entry_page="forum.html").fetch("GET", "/").body,
+        )
+
+    def test_arbitrary_nested_static_types_are_supported_without_filename_rules(self) -> None:
+        nested = self.site / "assets"
+        nested.mkdir()
+        files = {
+            "theme.css": b"body{}",
+            "runtime.mjs": b"export const ok=true",
+            "content.json": b'{"ok":true}',
+            "notes.txt": b"notes",
+            "document.xml": b"<root/>",
+            "font.ttf": b"font",
+            "font.otf": b"font",
+            "site.webmanifest": b'{"name":"site"}',
+            "module.wasm": b"\x00asm\x01\x00\x00\x00",
+        }
+        for name, content in files.items():
+            (nested / name).write_bytes(content)
+        inspection = inspect_static_site(self.site)
+        self.assertTrue(inspection.ok, inspection.errors)
+        self.assertEqual(inspection.cssFiles, 2)
+        self.assertEqual(inspection.jsFiles, 2)
+        self.assertEqual(inspection.jsonFiles, 2)
+        bridge = StaticSiteBridge(self.site)
+        for name, content in files.items():
+            self.assertEqual(bridge.fetch("GET", f"/assets/{name}").body, content)
 
     def test_static_bridge_serves_supported_content_and_head(self) -> None:
         bridge = StaticSiteBridge(self.site)
@@ -169,16 +238,16 @@ class StaticHostingTests(unittest.TestCase):
         self.assertTrue(result.ok, result.errors)
         self.assertEqual(Path(result.root), site.resolve())
 
-    def test_inspection_rejects_empty_and_missing_index_folders(self) -> None:
+    def test_inspection_rejects_folders_without_html(self) -> None:
         empty = self.root / "empty"
         empty.mkdir()
-        self.assertIn("index.html is missing", inspect_static_site(empty).errors)
-        missing_index = self.root / "missing-index"
-        missing_index.mkdir()
-        (missing_index / "style.css").write_text("body{}", encoding="utf-8")
-        result = inspect_static_site(missing_index)
+        self.assertIn("no HTML entry page found", inspect_static_site(empty).errors)
+        missing_html = self.root / "missing-html"
+        missing_html.mkdir()
+        (missing_html / "style.css").write_text("body{}", encoding="utf-8")
+        result = inspect_static_site(missing_html)
         self.assertFalse(result.ok)
-        self.assertIn("index.html is missing", result.errors)
+        self.assertIn("no HTML entry page found", result.errors)
 
     def test_inspection_reports_permission_denied_file(self) -> None:
         blocked = (self.site / "data.json").resolve()
@@ -202,7 +271,7 @@ class StaticHostingTests(unittest.TestCase):
         (self.site / "escape").symlink_to(outside, target_is_directory=True)
         result = inspect_static_site(self.site)
         self.assertFalse(result.ok)
-        self.assertTrue(any("symlink escapes" in error for error in result.errors))
+        self.assertTrue(any("escapes source" in error for error in result.errors))
 
 
 class HostedServiceStorageTests(unittest.TestCase):
@@ -261,6 +330,42 @@ class HostedServiceStorageTests(unittest.TestCase):
         self.assertEqual(descriptor.canonical_name, updated_descriptor.canonical_name)
         self.assertEqual(updated.title, "After")
         self.assertEqual(updated_descriptor.metadata["title"], "After")
+
+    def test_entry_page_is_persisted_without_modifying_the_source_folder(self) -> None:
+        (self.site / "index.html").unlink()
+        (self.site / "home.html").write_text("<h1>Home</h1>", encoding="utf-8")
+        (self.site / "forum.html").write_text("<h1>Forum</h1>", encoding="utf-8")
+        services = self.root / "services"
+        config, descriptor = initialize_hosted_service(
+            services,
+            "5" * 32,
+            "Forum",
+            "static",
+            source=str(self.site.resolve()),
+            entry_page="forum.html",
+        )
+        self.assertEqual(config.entry_page, "forum.html")
+        self.assertEqual(load_hosted_service(services / ("5" * 32))[0].entry_page, "forum.html")
+        self.assertEqual(
+            StaticSiteBridge(self.site, entry_page=config.entry_page).fetch("GET", "/").body,
+            b"<h1>Forum</h1>",
+        )
+        self.assertFalse((self.site / "index.html").exists())
+        self.assertTrue(descriptor.canonical_name.endswith(".granger"))
+
+    def test_version_one_service_configuration_remains_readable(self) -> None:
+        services = self.root / "services"
+        identifier = "6" * 32
+        initialize_hosted_service(
+            services, identifier, "Legacy", "static", source=str(self.site.resolve())
+        )
+        config_path = services / identifier / CONFIG_FILE
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document.pop("entryPage")
+        document["version"] = 1
+        config_path.write_text(json.dumps(document), encoding="utf-8")
+        loaded, _identity, _descriptor = load_hosted_service(services / identifier)
+        self.assertEqual(loaded.entry_page, "index.html")
 
     def test_local_application_must_be_reachable_numeric_loopback(self) -> None:
         services = self.root / "services"

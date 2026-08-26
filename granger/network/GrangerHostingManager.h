@@ -19,11 +19,16 @@ struct HostingInspection {
     bool ok = false;
     QString root;
     int files = 0;
+    int htmlFiles = 0;
     int cssFiles = 0;
     int jsFiles = 0;
+    int jsonFiles = 0;
     int assets = 0;
     qint64 totalBytes = 0;
     bool indexFound = false;
+    QString entryPage;
+    QStringList entryCandidates;
+    bool requiresEntrySelection = false;
     QStringList errors;
 };
 
@@ -32,6 +37,7 @@ struct HostedServiceRecord {
     QString title;
     QString type;
     QString source;
+    QString entryPage;
     QString upstream;
     QString address;
     QString status;
@@ -56,19 +62,23 @@ public:
     ~GrangerHostingManager() override;
 
     QString servicesRoot() const;
-    QString wanConfigPath() const;
     bool runtimeAvailable() const;
     bool networkAvailable() const;
     QList<HostedServiceRecord> services() const;
     HostedServiceRecord service(const QString &id) const;
 
-    HostingInspection inspectStaticSite(const QString &source, QString *error = nullptr) const;
-    quint64 inspectStaticSiteAsync(const QString &source, InspectionCompletion completion);
+    HostingInspection inspectStaticSite(const QString &source,
+                                        QString *error = nullptr,
+                                        const QString &entryPage = QString()) const;
+    quint64 inspectStaticSiteAsync(const QString &source,
+                                   InspectionCompletion completion,
+                                   const QString &entryPage = QString());
     bool probeLocalApplication(const QString &host, int port, QString *error = nullptr) const;
     bool createStaticSite(const QString &title,
                           const QString &source,
                           HostedServiceRecord *created = nullptr,
-                          QString *error = nullptr);
+                          QString *error = nullptr,
+                          const QString &entryPage = QString());
     bool createLocalApplication(const QString &title,
                                 const QString &host,
                                 int port,
@@ -76,7 +86,8 @@ public:
                                 QString *error = nullptr);
     quint64 createStaticSiteAsync(const QString &title,
                                   const QString &source,
-                                  CreationCompletion completion);
+                                  CreationCompletion completion,
+                                  const QString &entryPage = QString());
     quint64 createLocalApplicationAsync(const QString &title,
                                         const QString &host,
                                         int port,
@@ -88,7 +99,8 @@ public:
                        const QString &source,
                        const QString &host,
                        int port,
-                       QString *error = nullptr);
+                       QString *error = nullptr,
+                       const QString &entryPage = QString());
     bool startService(const QString &id, QString *error = nullptr);
     bool stopService(const QString &id, QString *error = nullptr);
     bool restartService(const QString &id, QString *error = nullptr);

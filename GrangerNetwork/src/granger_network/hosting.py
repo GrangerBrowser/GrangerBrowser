@@ -17,12 +17,16 @@ from .errors import GrangerNetworkError, OverlayRoutingError, UpstreamPolicyErro
 from .http_bridge import HttpResult, LoopbackHttpBridge, LoopbackHttpTarget
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
-from .wan_config import load_browser_wan_config, load_discovery_runtime
+from .wan_config import (
+    ensure_browser_wan_config,
+    load_browser_wan_config,
+    load_discovery_runtime,
+)
 from .wan_routing import WanRouteSelector
 from .wan_service import WanServiceHost
 
 
-HOSTING_VERSION = 1
+HOSTING_VERSION = 2
 DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_STATIC_FILES = 10_000
 CONFIG_FILE = "config.json"
@@ -36,33 +40,49 @@ _TITLE = re.compile(r"^[^\x00-\x1f\x7f]{1,80}$")
 _ALLOWED_SUFFIXES = {
     ".css",
     ".gif",
+    ".htm",
     ".html",
     ".ico",
     ".jpeg",
     ".jpg",
     ".js",
     ".json",
+    ".mjs",
+    ".otf",
     ".png",
     ".svg",
+    ".ttf",
+    ".txt",
+    ".wasm",
     ".webp",
+    ".webmanifest",
     ".woff",
     ".woff2",
+    ".xml",
 }
-_FORBIDDEN_SUFFIXES = {".bat", ".cmd", ".exe", ".ps1", ".sh"}
+_FORBIDDEN_SUFFIXES = {".bat", ".cmd", ".com", ".dll", ".exe", ".ps1", ".scr", ".sh"}
 _MIME_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".gif": "image/gif",
+    ".htm": "text/html; charset=utf-8",
     ".html": "text/html; charset=utf-8",
     ".ico": "image/x-icon",
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
     ".js": "application/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".otf": "font/otf",
     ".png": "image/png",
     ".svg": "image/svg+xml; charset=utf-8",
+    ".ttf": "font/ttf",
+    ".txt": "text/plain; charset=utf-8",
+    ".wasm": "application/wasm",
     ".webp": "image/webp",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
     ".woff": "font/woff",
     ".woff2": "font/woff2",
+    ".xml": "application/xml; charset=utf-8",
 }
 
 
@@ -71,16 +91,22 @@ class StaticSiteInspection:
     ok: bool
     root: str
     files: int
+    htmlFiles: int
     cssFiles: int
     jsFiles: int
+    jsonFiles: int
     assets: int
     totalBytes: int
     indexFound: bool
+    entryPage: str
+    entryCandidates: tuple[str, ...]
+    requiresEntrySelection: bool
     errors: tuple[str, ...]
 
     def to_document(self) -> dict[str, object]:
         document = asdict(self)
         document["errors"] = list(self.errors)
+        document["entryCandidates"] = list(self.entryCandidates)
         document["version"] = HOSTING_VERSION
         return document
 
@@ -91,6 +117,7 @@ class HostedServiceConfig:
     title: str
     kind: str
     source: str
+    entry_page: str
     upstream: str
     auto_start: bool
     max_file_bytes: int
@@ -100,6 +127,7 @@ class HostedServiceConfig:
         return {
             "autoStart": self.auto_start,
             "createdAt": self.created_at,
+            "entryPage": self.entry_page,
             "id": self.service_id,
             "maxFileBytes": self.max_file_bytes,
             "source": self.source,
@@ -137,9 +165,22 @@ def _relative_to_root(candidate: Path, root: Path) -> bool:
         return False
 
 
+def _normalize_entry_page(value: str) -> str:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise ValueError("static site entry page is invalid")
+    parsed = PurePosixPath(value)
+    if parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
+        raise ValueError("static site entry page is invalid")
+    normalized = parsed.as_posix()
+    if Path(normalized).suffix.lower() not in {".html", ".htm"}:
+        raise ValueError("static site entry page must be HTML")
+    return normalized
+
+
 def inspect_static_site(
     source: Path,
     *,
+    entry_page: str = "",
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
 ) -> StaticSiteInspection:
     limit = _validate_max_file_bytes(max_file_bytes)
@@ -151,17 +192,28 @@ def inspect_static_site(
 
     raw = Path(source)
     if not raw.is_absolute():
-        return StaticSiteInspection(False, str(raw), 0, 0, 0, 0, 0, False, ("source path must be absolute",))
+        return StaticSiteInspection(
+            False, str(raw), 0, 0, 0, 0, 0, 0, 0, False, "", (), False,
+            ("source path must be absolute",),
+        )
     try:
         root = raw.resolve(strict=True)
     except OSError:
-        return StaticSiteInspection(False, str(raw), 0, 0, 0, 0, 0, False, ("source directory is unavailable",))
+        return StaticSiteInspection(
+            False, str(raw), 0, 0, 0, 0, 0, 0, 0, False, "", (), False,
+            ("source directory is unavailable",),
+        )
     if not root.is_dir():
-        return StaticSiteInspection(False, str(root), 0, 0, 0, 0, 0, False, ("source path is not a directory",))
+        return StaticSiteInspection(
+            False, str(root), 0, 0, 0, 0, 0, 0, 0, False, "", (), False,
+            ("source path is not a directory",),
+        )
 
     files = 0
+    html_files: list[str] = []
     css_files = 0
     js_files = 0
+    json_files = 0
     assets = 0
     total_bytes = 0
     index_found = False
@@ -172,15 +224,17 @@ def inspect_static_site(
             current = Path(directory)
             for name in tuple(names):
                 entry = current / name
-                if entry.is_symlink():
+                is_link = entry.is_symlink()
+                is_junction = bool(getattr(entry, "is_junction", lambda: False)())
+                if is_link or is_junction:
                     try:
                         resolved = entry.resolve(strict=True)
                     except OSError:
-                        record_error(f"broken symlink: {entry.relative_to(root).as_posix()}")
+                        record_error(f"broken linked directory: {entry.relative_to(root).as_posix()}")
                         names.remove(name)
                         continue
                     if not _relative_to_root(resolved, root):
-                        record_error(f"symlink escapes source: {entry.relative_to(root).as_posix()}")
+                        record_error(f"linked directory escapes source: {entry.relative_to(root).as_posix()}")
                     names.remove(name)
             for name in file_names:
                 scanned_files += 1
@@ -213,39 +267,96 @@ def inspect_static_site(
                     continue
                 files += 1
                 total_bytes += size
-                if relative == "index.html":
-                    index_found = True
-                if suffix == ".css":
+                if suffix in {".html", ".htm"}:
+                    html_files.append(relative)
+                elif suffix == ".css":
                     css_files += 1
-                elif suffix == ".js":
+                elif suffix in {".js", ".mjs"}:
                     js_files += 1
-                elif suffix not in {".html", ".json"}:
+                elif suffix == ".json":
+                    json_files += 1
+                else:
                     assets += 1
             if file_limit_reached:
                 break
     except OSError:
         record_error("source directory could not be scanned")
-    if not index_found:
-        record_error("index.html is missing")
+    html_files.sort(key=lambda value: (value.casefold(), value))
+    index_found = "index.html" in html_files
+    selected_entry = ""
+    requested_entry = entry_page.strip() if isinstance(entry_page, str) else ""
+    if requested_entry:
+        try:
+            normalized_entry = _normalize_entry_page(requested_entry)
+            matching_entry = next(
+                (
+                    candidate
+                    for candidate in html_files
+                    if candidate == normalized_entry
+                    or (os.name == "nt" and candidate.casefold() == normalized_entry.casefold())
+                ),
+                "",
+            )
+            if not matching_entry:
+                record_error("selected HTML entry page is unavailable")
+            else:
+                selected_entry = matching_entry
+        except ValueError as error:
+            record_error(str(error))
+    elif index_found:
+        selected_entry = "index.html"
+    elif "index.htm" in html_files:
+        selected_entry = "index.htm"
+    elif os.name == "nt":
+        selected_entry = next(
+            (candidate for candidate in html_files if candidate.casefold() == "index.html"),
+            "",
+        ) or next(
+            (candidate for candidate in html_files if candidate.casefold() == "index.htm"),
+            "",
+        )
+    if not selected_entry and len(html_files) == 1:
+        selected_entry = html_files[0]
+    if not html_files:
+        record_error("no HTML entry page found")
+    requires_selection = len(html_files) > 1 and not selected_entry and not errors
     return StaticSiteInspection(
         not errors,
         str(root),
         files,
+        len(html_files),
         css_files,
         js_files,
+        json_files,
         assets,
         total_bytes,
         index_found,
+        selected_entry,
+        tuple(html_files),
+        requires_selection,
         tuple(errors),
     )
 
 
 class StaticSiteBridge:
-    def __init__(self, source: Path, *, max_file_bytes: int = DEFAULT_MAX_FILE_BYTES) -> None:
-        inspection = inspect_static_site(source, max_file_bytes=max_file_bytes)
+    def __init__(
+        self,
+        source: Path,
+        *,
+        entry_page: str = "",
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    ) -> None:
+        inspection = inspect_static_site(
+            source,
+            entry_page=entry_page,
+            max_file_bytes=max_file_bytes,
+        )
         if not inspection.ok:
             raise UpstreamPolicyError("static site validation failed: " + "; ".join(inspection.errors))
+        if inspection.requiresEntrySelection or not inspection.entryPage:
+            raise UpstreamPolicyError("static site entry page must be selected")
         self.root = Path(inspection.root)
+        self.entry_page = inspection.entryPage
         self.max_file_bytes = _validate_max_file_bytes(max_file_bytes)
 
     @staticmethod
@@ -275,11 +386,13 @@ class StaticSiteBridge:
         parts = PurePosixPath(decoded).parts
         if any(part in {".", ".."} for part in parts):
             raise UpstreamPolicyError("static request path traversal is blocked")
-        relative = decoded.lstrip("/") or "index.html"
+        relative = decoded.lstrip("/") or self.entry_page
         candidate = self.root.joinpath(*PurePosixPath(relative).parts)
         try:
             if candidate.is_dir():
-                candidate = candidate / "index.html"
+                html_index = candidate / "index.html"
+                htm_index = candidate / "index.htm"
+                candidate = html_index if html_index.is_file() else htm_index
             resolved = candidate.resolve(strict=True)
         except OSError as error:
             raise FileNotFoundError(relative) from error
@@ -360,8 +473,14 @@ def load_hosted_service(service_dir: Path) -> tuple[HostedServiceConfig, Service
         document = parse_json_object((root / CONFIG_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise ValueError(f"hosted service configuration is invalid: {error}") from error
-    expected = {"autoStart", "createdAt", "id", "maxFileBytes", "source", "title", "type", "upstream", "version"}
-    if set(document) != expected or document["version"] != HOSTING_VERSION:
+    version = document.get("version")
+    expected_v1 = {"autoStart", "createdAt", "id", "maxFileBytes", "source", "title", "type", "upstream", "version"}
+    expected_v2 = expected_v1 | {"entryPage"}
+    if (version == 1 and set(document) == expected_v1):
+        entry_page = "index.html" if document.get("type") == "static" else ""
+    elif version == HOSTING_VERSION and set(document) == expected_v2:
+        entry_page = document["entryPage"]
+    else:
         raise ValueError("hosted service configuration schema is unsupported")
     if not isinstance(document["autoStart"], bool):
         raise ValueError("hosted service startup policy is invalid")
@@ -380,6 +499,7 @@ def load_hosted_service(service_dir: Path) -> tuple[HostedServiceConfig, Service
         _validate_title(document["title"]),
         kind,
         source,
+        _normalize_entry_page(entry_page) if kind == "static" else "",
         upstream,
         document["autoStart"],
         _validate_max_file_bytes(document["maxFileBytes"]),
@@ -401,6 +521,7 @@ def initialize_hosted_service(
     kind: str,
     *,
     source: str = "",
+    entry_page: str = "",
     upstream: str = "",
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
 ) -> tuple[HostedServiceConfig, ServiceDescriptor]:
@@ -418,12 +539,20 @@ def initialize_hosted_service(
         raise FileExistsError("hosted service staging directory already exists")
     limit = _validate_max_file_bytes(max_file_bytes)
     normalized_source = ""
+    normalized_entry_page = ""
     normalized_upstream = ""
     if kind == "static":
-        inspection = inspect_static_site(Path(source), max_file_bytes=limit)
+        inspection = inspect_static_site(
+            Path(source),
+            entry_page=entry_page,
+            max_file_bytes=limit,
+        )
         if not inspection.ok:
             raise UpstreamPolicyError("static site validation failed: " + "; ".join(inspection.errors))
+        if inspection.requiresEntrySelection or not inspection.entryPage:
+            raise UpstreamPolicyError("static site entry page must be selected")
         normalized_source = inspection.root
+        normalized_entry_page = inspection.entryPage
     else:
         target = probe_loopback_application(upstream)
         normalized_upstream = target.url
@@ -432,6 +561,7 @@ def initialize_hosted_service(
         display_title,
         kind,
         normalized_source,
+        normalized_entry_page,
         normalized_upstream,
         True,
         limit,
@@ -472,6 +602,7 @@ def update_hosted_service(
     *,
     title: str,
     source: str = "",
+    entry_page: str = "",
     upstream: str = "",
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
 ) -> tuple[HostedServiceConfig, ServiceDescriptor]:
@@ -480,12 +611,20 @@ def update_hosted_service(
     display_title = _validate_title(title)
     limit = _validate_max_file_bytes(max_file_bytes)
     normalized_source = previous.source
+    normalized_entry_page = previous.entry_page
     normalized_upstream = previous.upstream
     if previous.kind == "static":
-        inspection = inspect_static_site(Path(source or previous.source), max_file_bytes=limit)
+        inspection = inspect_static_site(
+            Path(source or previous.source),
+            entry_page=entry_page or previous.entry_page,
+            max_file_bytes=limit,
+        )
         if not inspection.ok:
             raise UpstreamPolicyError("static site validation failed: " + "; ".join(inspection.errors))
+        if inspection.requiresEntrySelection or not inspection.entryPage:
+            raise UpstreamPolicyError("static site entry page must be selected")
         normalized_source = inspection.root
+        normalized_entry_page = inspection.entryPage
     else:
         target = probe_loopback_application(upstream or previous.upstream)
         normalized_upstream = target.url
@@ -494,6 +633,7 @@ def update_hosted_service(
         display_title,
         previous.kind,
         normalized_source,
+        normalized_entry_page,
         normalized_upstream,
         previous.auto_start,
         limit,
@@ -553,12 +693,27 @@ def _write_status(root: Path, state: str, descriptor: ServiceDescriptor, **detai
     )
 
 
-def serve_hosted_service(service_dir: Path, wan_config_path: Path) -> int:
+def serve_hosted_service(
+    service_dir: Path,
+    wan_config_path: Path,
+    *,
+    wan_trust_anchor: Path | None = None,
+    wan_rollback_state: Path | None = None,
+) -> int:
     root = Path(service_dir).resolve()
     config, identity, service = load_hosted_service(root)
-    browser_config = load_browser_wan_config(wan_config_path)
+    browser_config = load_browser_wan_config(
+        wan_config_path,
+        trust_anchor_path=wan_trust_anchor,
+        rollback_state_path=wan_rollback_state,
+        allow_legacy=wan_trust_anchor is None,
+    )
     if config.kind == "static":
-        bridge: object = StaticSiteBridge(Path(config.source), max_file_bytes=config.max_file_bytes)
+        bridge: object = StaticSiteBridge(
+            Path(config.source),
+            entry_page=config.entry_page,
+            max_file_bytes=config.max_file_bytes,
+        )
     else:
         bridge = LoopbackHttpBridge(probe_loopback_application(config.upstream))
     runtime = load_discovery_runtime(
@@ -672,6 +827,7 @@ def _service_document(config: HostedServiceConfig, descriptor: ServiceDescriptor
         "address": descriptor.canonical_name,
         "autoStart": config.auto_start,
         "createdAt": config.created_at,
+        "entryPage": config.entry_page,
         "id": config.service_id,
         "maxFileBytes": config.max_file_bytes,
         "source": config.source,
@@ -718,6 +874,7 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect-static")
     inspect.add_argument("--source", type=Path, required=True)
+    inspect.add_argument("--entry-page", default="")
     inspect.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES)
     create = commands.add_parser("create")
     create.add_argument("--services-root", type=Path, required=True)
@@ -725,12 +882,14 @@ def _build_parser() -> argparse.ArgumentParser:
     create.add_argument("--title", required=True)
     create.add_argument("--type", choices=("static", "local-application"), required=True)
     create.add_argument("--source", default="")
+    create.add_argument("--entry-page", default="")
     create.add_argument("--upstream", default="")
     create.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES)
     update = commands.add_parser("update")
     update.add_argument("--service-dir", type=Path, required=True)
     update.add_argument("--title", required=True)
     update.add_argument("--source", default="")
+    update.add_argument("--entry-page", default="")
     update.add_argument("--upstream", default="")
     update.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES)
     inspect_service = commands.add_parser("inspect-service")
@@ -739,7 +898,11 @@ def _build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--upstream", required=True)
     serve = commands.add_parser("serve")
     serve.add_argument("--service-dir", type=Path, required=True)
-    serve.add_argument("--wan-config", type=Path, required=True)
+    serve.add_argument("--wan-config", type=Path)
+    serve.add_argument("--wan-bundle", type=Path)
+    serve.add_argument("--wan-trust-anchor", type=Path)
+    serve.add_argument("--wan-install-root", type=Path)
+    serve.add_argument("--wan-rollback-state", type=Path)
     return parser
 
 
@@ -750,7 +913,11 @@ def main(argv: list[str] | None = None) -> int:
     options = _build_parser().parse_args(argv)
     try:
         if options.command == "inspect-static":
-            _print(inspect_static_site(options.source, max_file_bytes=options.max_file_bytes).to_document())
+            _print(inspect_static_site(
+                options.source,
+                entry_page=options.entry_page,
+                max_file_bytes=options.max_file_bytes,
+            ).to_document())
             return 0
         if options.command == "create":
             config, descriptor = initialize_hosted_service(
@@ -759,6 +926,7 @@ def main(argv: list[str] | None = None) -> int:
                 options.title,
                 options.type,
                 source=options.source,
+                entry_page=options.entry_page,
                 upstream=options.upstream,
                 max_file_bytes=options.max_file_bytes,
             )
@@ -769,6 +937,7 @@ def main(argv: list[str] | None = None) -> int:
                 options.service_dir,
                 title=options.title,
                 source=options.source,
+                entry_page=options.entry_page,
                 upstream=options.upstream,
                 max_file_bytes=options.max_file_bytes,
             )
@@ -782,7 +951,37 @@ def main(argv: list[str] | None = None) -> int:
             target = probe_loopback_application(options.upstream)
             _print({"host": target.host, "ok": True, "port": target.port, "version": HOSTING_VERSION})
             return 0
-        return serve_hosted_service(options.service_dir, options.wan_config)
+        provision_values = (
+            options.wan_bundle,
+            options.wan_trust_anchor,
+            options.wan_install_root,
+            options.wan_rollback_state,
+        )
+        provision_requested = any(value is not None for value in provision_values)
+        if provision_requested and not all(value is not None for value in provision_values):
+            raise ValueError("signed WAN provisioning requires all bundle paths")
+        if options.wan_config is not None and provision_requested:
+            raise ValueError("explicit WAN config and signed provisioning are mutually exclusive")
+        if options.wan_config is None and not provision_requested:
+            raise ValueError("hosting requires a trusted WAN configuration")
+        wan_config = options.wan_config
+        wan_trust_anchor = None
+        wan_rollback_state = None
+        if provision_requested:
+            wan_config = ensure_browser_wan_config(
+                options.wan_bundle,
+                options.wan_trust_anchor,
+                options.wan_install_root,
+                options.wan_rollback_state,
+            )
+            wan_trust_anchor = options.wan_trust_anchor
+            wan_rollback_state = options.wan_rollback_state
+        return serve_hosted_service(
+            options.service_dir,
+            wan_config,
+            wan_trust_anchor=wan_trust_anchor,
+            wan_rollback_state=wan_rollback_state,
+        )
     except KeyboardInterrupt:
         return 130
     except (GrangerNetworkError, OSError, RuntimeError, TypeError, ValueError) as error:

@@ -1438,18 +1438,10 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
                        || pending.status == QStringLiteral("error")
                        || pending.status == QStringLiteral("network-unavailable")
                        || pending.status == QStringLiteral("offline")) {
-                const QString failedId = m_settingsUi.hostingPendingServiceId;
-                m_settingsUi.hostingPendingServiceId.clear();
                 m_settingsUi.hostingOperationStage = QStringLiteral("error");
                 m_settingsUi.hostingOperationError = pending.error.isEmpty()
                     ? Localization::text(QStringLiteral("hosting.error.publish_failed"))
                     : pending.error;
-                QString cleanupError;
-                if (!failedId.isEmpty() && !pending.id.isEmpty()
-                    && !m_hosting.removeService(failedId, &cleanupError)
-                    && !cleanupError.isEmpty()) {
-                    m_settingsUi.hostingOperationError += QStringLiteral(" ") + cleanupError;
-                }
             }
         }
         BrowserTab *tab = currentTab();
@@ -1485,10 +1477,6 @@ MainWindow::~MainWindow()
     if (m_settingsUi.hostingOperationId != 0) {
         m_hosting.cancelOperation(m_settingsUi.hostingOperationId);
         m_settingsUi.hostingOperationId = 0;
-    }
-    if (!m_settingsUi.hostingPendingServiceId.isEmpty()) {
-        m_hosting.removeService(m_settingsUi.hostingPendingServiceId, nullptr);
-        m_settingsUi.hostingPendingServiceId.clear();
     }
     m_hosting.shutdown();
     m_grangerNetwork.stop();
@@ -2158,6 +2146,21 @@ QJsonObject MainWindow::grangerNetworkDiagnosticsForDiagnostics() const
 QJsonObject MainWindow::grangerHostingDiagnosticsForDiagnostics() const
 {
     return m_hosting.diagnostics();
+}
+
+bool MainWindow::prepareHostedStaticWizardForDiagnostics(const QString &source,
+                                                          const QString &entryPage,
+                                                          QString *error)
+{
+    const HostingInspection inspection = m_hosting.inspectStaticSite(source, error, entryPage);
+    m_settingsUi.hostingWizard = QStringLiteral("static");
+    m_settingsUi.hostingSelectedPath = source;
+    m_settingsUi.hostingInspection = inspection;
+    m_settingsUi.hostingSelectedEntryPage = inspection.entryPage;
+    m_settingsUi.hostingOperationStage.clear();
+    m_settingsUi.hostingOperationError = inspection.ok ? QString() : (error ? *error : QString());
+    refreshHostingSettings();
+    return inspection.ok;
 }
 
 bool MainWindow::createHostedStaticForDiagnostics(const QString &title,
@@ -5764,6 +5767,7 @@ void MainWindow::clearHostingWizard(bool discardPendingService)
     }
     m_settingsUi.hostingWizard.clear();
     m_settingsUi.hostingSelectedPath.clear();
+    m_settingsUi.hostingSelectedEntryPage.clear();
     m_settingsUi.hostingEditId.clear();
     m_settingsUi.hostingOperationStage.clear();
     m_settingsUi.hostingOperationError.clear();
@@ -5807,7 +5811,8 @@ void MainWindow::beginStaticHostingCreation(BrowserTab *tab, const QString &titl
                 m_settingsUi.hostingOperationStage = QStringLiteral("publishing");
             }
             refreshHostingSettings();
-        });
+        },
+        m_settingsUi.hostingSelectedEntryPage);
     m_settingsUi.hostingOperationId = *operationId;
 }
 
@@ -6142,7 +6147,20 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         return;
     }
     if (path == QStringLiteral("/hosting/retry")) {
-        if (m_settingsUi.hostingWizard == QStringLiteral("static")) {
+        if (!m_settingsUi.hostingPendingServiceId.isEmpty()) {
+            QString retryError;
+            if (m_hosting.startService(m_settingsUi.hostingPendingServiceId, &retryError)) {
+                m_settingsUi.hostingOperationStage = QStringLiteral("publishing");
+                m_settingsUi.hostingOperationError.clear();
+                refreshHosting();
+            } else {
+                m_settingsUi.hostingOperationStage = QStringLiteral("error");
+                m_settingsUi.hostingOperationError = retryError.isEmpty()
+                    ? Localization::text(QStringLiteral("hosting.error.publish_failed"))
+                    : retryError;
+                refreshHosting();
+            }
+        } else if (m_settingsUi.hostingWizard == QStringLiteral("static")) {
             beginStaticHostingCreation(tab, m_settingsUi.hostingDraftTitle);
         } else if (m_settingsUi.hostingWizard == QStringLiteral("local-application")) {
             beginLocalHostingCreation(tab, m_settingsUi.hostingDraftTitle,
@@ -6187,6 +6205,7 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
                 if (m_settingsUi.hostingOperationId != *operationId) return;
                 m_settingsUi.hostingOperationId = 0;
                 m_settingsUi.hostingInspection = inspection;
+                m_settingsUi.hostingSelectedEntryPage = inspection.entryPage;
                 m_settingsUi.hostingOperationStage.clear();
                 m_settingsUi.hostingOperationError = inspection.ok ? QString() : error;
                 refreshHostingSettings(inspection.ok
@@ -6195,9 +6214,41 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         m_settingsUi.hostingOperationId = *operationId;
         return;
     }
+    if (path == QStringLiteral("/hosting/select-entry")) {
+        if (m_settingsUi.hostingOperationId != 0
+            || m_settingsUi.hostingSelectedPath.isEmpty()) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.operation_pending")));
+            return;
+        }
+        const QString selectedEntry = formValue(QStringLiteral("entry"));
+        if (!m_settingsUi.hostingInspection.entryCandidates.contains(selectedEntry)) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.invalid_entry")));
+            return;
+        }
+        m_settingsUi.hostingOperationStage = QStringLiteral("validating-folder");
+        m_settingsUi.hostingOperationError.clear();
+        refreshHosting();
+        const auto operationId = std::make_shared<quint64>(0);
+        *operationId = m_hosting.inspectStaticSiteAsync(
+            m_settingsUi.hostingSelectedPath,
+            [this, operationId](const HostingInspection &inspection, const QString &error) {
+                if (m_settingsUi.hostingOperationId != *operationId) return;
+                m_settingsUi.hostingOperationId = 0;
+                m_settingsUi.hostingInspection = inspection;
+                m_settingsUi.hostingSelectedEntryPage = inspection.entryPage;
+                m_settingsUi.hostingOperationStage.clear();
+                m_settingsUi.hostingOperationError = inspection.ok ? QString() : error;
+                refreshHostingSettings(inspection.ok
+                    ? Localization::text(QStringLiteral("hosting.validation.pass")) : error);
+            },
+            selectedEntry);
+        m_settingsUi.hostingOperationId = *operationId;
+        return;
+    }
     if (path == QStringLiteral("/hosting/publish-static")) {
         if (!m_settingsUi.hostingInspection.ok
-            || m_settingsUi.hostingSelectedPath.isEmpty()) {
+            || m_settingsUi.hostingSelectedPath.isEmpty()
+            || m_settingsUi.hostingSelectedEntryPage.isEmpty()) {
             refreshHosting(Localization::text(QStringLiteral("hosting.error.select_valid_folder")));
             return;
         }
@@ -6256,8 +6307,10 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         m_settingsUi.hostingWizard = QStringLiteral("edit");
         m_settingsUi.hostingEditId = record.id;
         m_settingsUi.hostingSelectedPath = record.source;
+        m_settingsUi.hostingSelectedEntryPage = record.entryPage;
         m_settingsUi.hostingInspection = record.type == QStringLiteral("static")
-            ? m_hosting.inspectStaticSite(record.source) : HostingInspection();
+            ? m_hosting.inspectStaticSite(record.source, nullptr, record.entryPage)
+            : HostingInspection();
         refreshHosting();
         return;
     }
@@ -6271,9 +6324,11 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         bool portOk = false;
         int port = query.queryItemValue(QStringLiteral("port")).toInt(&portOk);
         QString host = formValue(QStringLiteral("host"));
+        QString entryPage;
         if (record.type == QStringLiteral("static")) {
             port = 1;
             portOk = true;
+            entryPage = formValue(QStringLiteral("entry"));
         }
         if (!portOk || port < 1 || port > 65535) {
             refreshHosting(Localization::text(QStringLiteral("hosting.error.invalid_port")));
@@ -6282,13 +6337,14 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         QString error;
         if (!m_hosting.updateService(id, formValue(QStringLiteral("title")),
                                      m_settingsUi.hostingSelectedPath,
-                                     host, port, &error)) {
+                                     host, port, &error, entryPage)) {
             refreshHosting(error);
             return;
         }
         m_settingsUi.hostingWizard.clear();
         m_settingsUi.hostingEditId.clear();
         m_settingsUi.hostingSelectedPath.clear();
+        m_settingsUi.hostingSelectedEntryPage.clear();
         m_settingsUi.hostingInspection = {};
         refreshHosting(Localization::text(QStringLiteral("hosting.updated")));
         return;
@@ -11317,6 +11373,7 @@ QString MainWindow::hostingSettingsHtml() const
     const QString operationStage = m_settingsUi.hostingOperationStage;
     const bool operationBusy = operationStage == QStringLiteral("validating-folder")
         || operationStage == QStringLiteral("probing-backend")
+        || operationStage == QStringLiteral("preparing-network")
         || operationStage == QStringLiteral("generating-identity")
         || operationStage == QStringLiteral("publishing");
     const bool creationFailed = operationStage == QStringLiteral("error");
@@ -11416,32 +11473,57 @@ QString MainWindow::hostingSettingsHtml() const
             if (inspection.ok) {
                 checks = QStringLiteral(
                     "<li class=\"pass\">%1</li><li class=\"pass\">%2</li>"
-                    "<li class=\"pass\">%3</li><li class=\"pass\">%4</li>")
-                             .arg(text("hosting.validation.index").toHtmlEscaped(),
+                    "<li class=\"pass\">%3</li><li class=\"pass\">%4</li>"
+                    "<li class=\"pass\">%5</li>")
+                             .arg(text("hosting.validation.entry").toHtmlEscaped(),
                                   text("hosting.validation.path").toHtmlEscaped(),
                                   text("hosting.validation.traversal").toHtmlEscaped(),
-                                  text("hosting.validation.files").toHtmlEscaped());
+                                  text("hosting.validation.files").toHtmlEscaped(),
+                                  text("hosting.validation.sizes").toHtmlEscaped());
             } else {
                 for (const QString &error : inspection.errors) {
                     checks += QStringLiteral("<li class=\"fail\">%1</li>")
                                   .arg(error.toHtmlEscaped());
                 }
             }
+            QString entryOptions;
+            for (const QString &candidate : inspection.entryCandidates) {
+                const bool selected = candidate == m_settingsUi.hostingSelectedEntryPage;
+                entryOptions += QStringLiteral("<option value=\"%1\"%2>%1</option>")
+                                    .arg(candidate.toHtmlEscaped(),
+                                         selected ? QStringLiteral(" selected") : QString());
+            }
+            const QString entrySelector = inspection.entryCandidates.isEmpty()
+                ? QString()
+                : QStringLiteral(
+                      "<form class=\"hosting-entry-form\" action=\"%1\" method=\"get\">"
+                      "<label class=\"field\"><span>%2</span><select name=\"entry\" "
+                      "data-ds-auto-submit=\"true\" required><option value=\"\"%3 disabled>%4</option>"
+                      "%5</select></label></form>")
+                      .arg(action(QStringLiteral("hosting/select-entry")),
+                           text("hosting.entry_page").toHtmlEscaped(),
+                           m_settingsUi.hostingSelectedEntryPage.isEmpty()
+                               ? QStringLiteral(" selected") : QString(),
+                           text("hosting.entry_page.select").toHtmlEscaped(),
+                           entryOptions);
             validation = QStringLiteral(
                 "<div class=\"hosting-detected\"><div><span>%1</span><strong>%2</strong></div>"
                 "<div><span>%3</span><strong>%4</strong></div><div><span>%5</span><strong>%6</strong></div>"
-                "<div><span>%7</span><strong>%8</strong></div></div>"
-                "<ul class=\"hosting-validation\">%9</ul>")
-                             .arg(text("hosting.detected.index").toHtmlEscaped(),
-                                  inspection.indexFound ? text("common.yes").toHtmlEscaped()
-                                                        : text("common.no").toHtmlEscaped(),
+                "<div><span>%7</span><strong>%8</strong></div><div><span>%9</span><strong>%10</strong></div>"
+                "</div>%11<ul class=\"hosting-validation\">%12</ul>")
+                             .arg(text("hosting.detected.html").toHtmlEscaped(),
+                                  QString::number(inspection.htmlFiles),
                                   text("hosting.detected.css").toHtmlEscaped(),
                                   QString::number(inspection.cssFiles),
                                   text("hosting.detected.js").toHtmlEscaped(),
                                   QString::number(inspection.jsFiles),
+                                  text("hosting.detected.json").toHtmlEscaped(),
+                                  QString::number(inspection.jsonFiles),
                                   text("hosting.detected.assets").toHtmlEscaped(),
-                                  QString::number(inspection.assets), checks);
+                                  QString::number(inspection.assets), entrySelector, checks);
         }
+        const bool staticReady = inspection.ok
+            && !m_settingsUi.hostingSelectedEntryPage.isEmpty();
         html += QStringLiteral(
             "<section class=\"hosting-wizard ds-card\"><div class=\"ds-card-header hosting-wizard-head\">"
             "<div><span class=\"hosting-step\">%1</span><h3>%2</h3></div>"
@@ -11465,7 +11547,7 @@ QString MainWindow::hostingSettingsHtml() const
                          action(QStringLiteral("hosting/publish-static")),
                          text("hosting.name").toHtmlEscaped(),
                          text("hosting.name.placeholder").toHtmlEscaped(),
-                         inspection.ok ? QString() : QStringLiteral(" disabled"),
+                         staticReady ? QString() : QStringLiteral(" disabled"),
                          text("hosting.publish").toHtmlEscaped(), operationError,
                          m_settingsUi.hostingDraftTitle.toHtmlEscaped(), wizardBack);
     } else if (m_settingsUi.hostingWizard == QStringLiteral("local-application")) {
@@ -11504,13 +11586,22 @@ QString MainWindow::hostingSettingsHtml() const
             if (record.type == QStringLiteral("static")) {
                 QUrlQuery selectQuery;
                 selectQuery.addQueryItem(QStringLiteral("id"), record.id);
+                QString entryOptions;
+                for (const QString &candidate : m_settingsUi.hostingInspection.entryCandidates) {
+                    const bool selected = candidate == m_settingsUi.hostingSelectedEntryPage;
+                    entryOptions += QStringLiteral("<option value=\"%1\"%2>%1</option>")
+                                        .arg(candidate.toHtmlEscaped(),
+                                             selected ? QStringLiteral(" selected") : QString());
+                }
                 sourceFields = QStringLiteral(
                     "<div class=\"hosting-source-row hosting-title-field\"><div><span>%1</span>"
-                    "<strong class=\"mono\">%2</strong></div><a class=\"button secondary\" href=\"%3\">%4</a></div>")
+                    "<strong class=\"mono\">%2</strong></div><a class=\"button secondary\" href=\"%3\">%4</a></div>"
+                    "<label class=\"field\"><span>%5</span><select name=\"entry\" required>%6</select></label>")
                                    .arg(text("hosting.local_source").toHtmlEscaped(),
                                         selectedSource.toHtmlEscaped(),
                                         actionUrl(QStringLiteral("hosting/select-folder"), selectQuery),
-                                        text("hosting.select_folder").toHtmlEscaped());
+                                        text("hosting.select_folder").toHtmlEscaped(),
+                                        text("hosting.entry_page").toHtmlEscaped(), entryOptions);
             } else {
                 sourceFields = QStringLiteral(
                     "<label class=\"field\"><span>%1</span><input type=\"text\" name=\"host\" value=\"%2\" required></label>"

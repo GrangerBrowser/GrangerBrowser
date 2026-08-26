@@ -168,6 +168,12 @@ required_files=(
     "usr/share/licenses/granger-browser/linuxdeploy-SOURCES.md"
     "usr/share/licenses/granger-browser/nss3-copyright.txt"
 )
+if [[ -n "${GRANGER_NETWORK_RELEASE_BUNDLE:-}" ]]; then
+    required_files+=(
+        "usr/bin/runtime/granger-network/bundle/browser-wan.json"
+        "usr/bin/runtime/granger-network/trust/config-authority.pin"
+    )
+fi
 for relative_path in "${required_files[@]}"; do
     [[ -e "$appdir/$relative_path" ]] || fail "AppDir is missing $relative_path"
 done

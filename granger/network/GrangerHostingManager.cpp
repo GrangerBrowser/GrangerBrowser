@@ -1,6 +1,7 @@
 #include "granger/network/GrangerHostingManager.h"
 
 #include "granger/core/AppPaths.h"
+#include "granger/network/GrangerWanConfigPaths.h"
 #include "granger/platform/ManagedProcess.h"
 
 #include <QCoreApplication>
@@ -53,11 +54,19 @@ HostingInspection inspectionFromDocument(const QJsonObject &document)
     result.ok = document.value(QStringLiteral("ok")).toBool();
     result.root = document.value(QStringLiteral("root")).toString();
     result.files = document.value(QStringLiteral("files")).toInt();
+    result.htmlFiles = document.value(QStringLiteral("htmlFiles")).toInt();
     result.cssFiles = document.value(QStringLiteral("cssFiles")).toInt();
     result.jsFiles = document.value(QStringLiteral("jsFiles")).toInt();
+    result.jsonFiles = document.value(QStringLiteral("jsonFiles")).toInt();
     result.assets = document.value(QStringLiteral("assets")).toInt();
     result.totalBytes = document.value(QStringLiteral("totalBytes")).toInteger();
     result.indexFound = document.value(QStringLiteral("indexFound")).toBool();
+    result.entryPage = document.value(QStringLiteral("entryPage")).toString();
+    for (const QJsonValue &value : document.value(QStringLiteral("entryCandidates")).toArray()) {
+        if (value.isString()) result.entryCandidates.append(value.toString());
+    }
+    result.requiresEntrySelection = document.value(
+        QStringLiteral("requiresEntrySelection")).toBool();
     for (const QJsonValue &value : document.value(QStringLiteral("errors")).toArray()) {
         if (value.isString()) result.errors.append(value.toString());
     }
@@ -170,20 +179,6 @@ QString GrangerHostingManager::configuredModuleRoot() const
     return QString();
 }
 
-QString GrangerHostingManager::wanConfigPath() const
-{
-    QCoreApplication *application = QCoreApplication::instance();
-    QString configured = application
-        ? application->property("granger.networkWanConfig").toString().trimmed() : QString();
-    if (configured.isEmpty()) configured = qEnvironmentVariable("GRANGER_NETWORK_WAN_CONFIG").trimmed();
-    if (!configured.isEmpty()) {
-        return QFileInfo::exists(configured) ? QFileInfo(configured).absoluteFilePath() : QString();
-    }
-    const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("runtime/granger-network/browser-wan.json"));
-    return QFileInfo::exists(appLocal) ? QFileInfo(appLocal).absoluteFilePath() : QString();
-}
-
 bool GrangerHostingManager::runtimeAvailable() const
 {
     return !configuredPython().isEmpty() && !configuredModuleRoot().isEmpty();
@@ -191,7 +186,7 @@ bool GrangerHostingManager::runtimeAvailable() const
 
 bool GrangerHostingManager::networkAvailable() const
 {
-    return runtimeAvailable() && !wanConfigPath().isEmpty();
+    return runtimeAvailable() && GrangerWanConfigPaths::available();
 }
 
 bool GrangerHostingManager::runUtility(const QStringList &arguments,
@@ -472,6 +467,11 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
     result.title = config.value(QStringLiteral("title")).toString();
     result.type = config.value(QStringLiteral("type")).toString();
     result.source = config.value(QStringLiteral("source")).toString();
+    result.entryPage = config.value(QStringLiteral("entryPage")).toString();
+    if (result.entryPage.isEmpty() && result.type == QStringLiteral("static")
+        && config.value(QStringLiteral("version")).toInt() == 1) {
+        result.entryPage = QStringLiteral("index.html");
+    }
     result.upstream = config.value(QStringLiteral("upstream")).toString();
     result.autoStart = config.value(QStringLiteral("autoStart")).toBool();
     result.createdAt = QDateTime::fromSecsSinceEpoch(
@@ -537,11 +537,17 @@ HostedServiceRecord GrangerHostingManager::service(const QString &id) const
 }
 
 HostingInspection GrangerHostingManager::inspectStaticSite(const QString &source,
-                                                           QString *error) const
+                                                           QString *error,
+                                                           const QString &entryPage) const
 {
     QJsonObject document;
-    if (!runUtility({QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
-                     QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)},
+    QStringList arguments{QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
+                          QStringLiteral("--max-file-bytes"),
+                          QString::number(kDefaultMaxFileBytes)};
+    if (!entryPage.isEmpty()) {
+        arguments.append({QStringLiteral("--entry-page"), entryPage});
+    }
+    if (!runUtility(arguments,
                     &document, error)) {
         return {};
     }
@@ -554,17 +560,22 @@ HostingInspection GrangerHostingManager::inspectStaticSite(const QString &source
 }
 
 quint64 GrangerHostingManager::inspectStaticSiteAsync(const QString &source,
-                                                      InspectionCompletion completion)
+                                                      InspectionCompletion completion,
+                                                      const QString &entryPage)
 {
     const quint64 operationId = beginOperation();
-    QTimer::singleShot(0, this, [this, operationId, source,
+    QTimer::singleShot(0, this, [this, operationId, source, entryPage,
                                  completion = std::move(completion)] {
         if (!operationActive(operationId)) return;
         emit operationStageChanged(operationId, QStringLiteral("validating-folder"));
+        QStringList arguments{QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
+                              QStringLiteral("--max-file-bytes"),
+                              QString::number(kDefaultMaxFileBytes)};
+        if (!entryPage.isEmpty()) {
+            arguments.append({QStringLiteral("--entry-page"), entryPage});
+        }
         runUtilityAsync(
-            operationId,
-            {QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
-             QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)},
+            operationId, arguments,
             [this, operationId, completion](bool ok, const QJsonObject &document,
                                             const QString &utilityError) {
                 if (!operationActive(operationId)) return;
@@ -599,19 +610,17 @@ bool GrangerHostingManager::probeLocalApplication(const QString &host,
 bool GrangerHostingManager::createStaticSite(const QString &title,
                                              const QString &source,
                                              HostedServiceRecord *created,
-                                             QString *error)
+                                             QString *error,
+                                             const QString &entryPage)
 {
     const QString normalizedTitle = title.trimmed();
     if (!kServiceTitle.match(normalizedTitle).hasMatch()) {
         if (error) *error = QStringLiteral("Identity creation failed: service title is invalid.");
         return false;
     }
-    if (!networkAvailable()) {
-        if (error) *error = QStringLiteral("Network unavailable: signed Granger Network configuration is missing.");
-        return false;
-    }
     QString inspectionError;
-    if (!inspectStaticSite(source, &inspectionError).ok) {
+    const HostingInspection inspection = inspectStaticSite(source, &inspectionError, entryPage);
+    if (!inspection.ok || inspection.requiresEntrySelection || inspection.entryPage.isEmpty()) {
         if (error) {
             *error = QStringLiteral("Folder validation failed: %1").arg(
                 inspectionError.isEmpty() ? QStringLiteral("the selected folder is invalid")
@@ -619,12 +628,17 @@ bool GrangerHostingManager::createStaticSite(const QString &title,
         }
         return false;
     }
+    if (!networkAvailable()) {
+        if (error) *error = QStringLiteral("Unable to reach the Granger Network.");
+        return false;
+    }
     const QString id = QUuid::createUuid().toString(QUuid::Id128).toLower();
     QJsonObject document;
     if (!runUtility({QStringLiteral("create"), QStringLiteral("--services-root"), servicesRoot(),
                      QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
                      QStringLiteral("--type"), QStringLiteral("static"),
-                     QStringLiteral("--source"), source}, &document, error)) {
+                     QStringLiteral("--source"), source, QStringLiteral("--entry-page"),
+                     inspection.entryPage}, &document, error)) {
         removeCreationArtifacts(id, nullptr);
         return false;
     }
@@ -651,10 +665,6 @@ bool GrangerHostingManager::createLocalApplication(const QString &title,
         if (error) *error = QStringLiteral("Identity creation failed: service title is invalid.");
         return false;
     }
-    if (!networkAvailable()) {
-        if (error) *error = QStringLiteral("Network unavailable: signed Granger Network configuration is missing.");
-        return false;
-    }
     QString probeError;
     if (!probeLocalApplication(host, port, &probeError)) {
         if (error) {
@@ -662,6 +672,10 @@ bool GrangerHostingManager::createLocalApplication(const QString &title,
                 probeError.isEmpty() ? QStringLiteral("the loopback application did not respond")
                                      : probeError);
         }
+        return false;
+    }
+    if (!networkAvailable()) {
+        if (error) *error = QStringLiteral("Unable to reach the Granger Network.");
         return false;
     }
     const QString id = QUuid::createUuid().toString(QUuid::Id128).toLower();
@@ -688,10 +702,11 @@ bool GrangerHostingManager::createLocalApplication(const QString &title,
 
 quint64 GrangerHostingManager::createStaticSiteAsync(const QString &title,
                                                      const QString &source,
-                                                     CreationCompletion completion)
+                                                     CreationCompletion completion,
+                                                     const QString &entryPage)
 {
     const quint64 operationId = beginOperation();
-    QTimer::singleShot(0, this, [this, operationId, title, source,
+    QTimer::singleShot(0, this, [this, operationId, title, source, entryPage,
                                  completion = std::move(completion)] {
         if (!operationActive(operationId)) return;
         const QString normalizedTitle = title.trimmed();
@@ -701,28 +716,35 @@ quint64 GrangerHostingManager::createStaticSiteAsync(const QString &title,
                          completion);
             return;
         }
-        if (!networkAvailable()) {
-            failCreation(operationId,
-                         QStringLiteral("Network unavailable: signed Granger Network configuration is missing."),
-                         completion);
-            return;
-        }
         emit operationStageChanged(operationId, QStringLiteral("validating-folder"));
+        QStringList inspectArguments{
+            QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
+            QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)};
+        if (!entryPage.isEmpty()) {
+            inspectArguments.append({QStringLiteral("--entry-page"), entryPage});
+        }
         runUtilityAsync(
-            operationId,
-            {QStringLiteral("inspect-static"), QStringLiteral("--source"), source,
-             QStringLiteral("--max-file-bytes"), QString::number(kDefaultMaxFileBytes)},
+            operationId, inspectArguments,
             [this, operationId, normalizedTitle, source, completion](
                 bool ok, const QJsonObject &document, const QString &utilityError) {
                 if (!operationActive(operationId)) return;
                 const HostingInspection inspection = ok
                     ? inspectionFromDocument(document) : HostingInspection();
-                if (!ok || !inspection.ok) {
+                if (!ok || !inspection.ok || inspection.requiresEntrySelection
+                    || inspection.entryPage.isEmpty()) {
                     const QString detail = !utilityError.isEmpty() ? utilityError
                         : inspection.errors.isEmpty() ? QStringLiteral("the selected folder is invalid")
                                                       : inspection.errors.first();
                     failCreation(operationId,
                                  QStringLiteral("Folder validation failed: %1").arg(detail),
+                                 completion);
+                    return;
+                }
+
+                emit operationStageChanged(operationId, QStringLiteral("preparing-network"));
+                if (!networkAvailable()) {
+                    failCreation(operationId,
+                                 QStringLiteral("Unable to reach the Granger Network."),
                                  completion);
                     return;
                 }
@@ -735,7 +757,8 @@ quint64 GrangerHostingManager::createStaticSiteAsync(const QString &title,
                     {QStringLiteral("create"), QStringLiteral("--services-root"), servicesRoot(),
                      QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
                      QStringLiteral("--type"), QStringLiteral("static"),
-                     QStringLiteral("--source"), source},
+                     QStringLiteral("--source"), source, QStringLiteral("--entry-page"),
+                     inspection.entryPage},
                     [this, operationId, id, completion](bool createdOk,
                                                         const QJsonObject &,
                                                         const QString &createError) {
@@ -783,12 +806,6 @@ quint64 GrangerHostingManager::createLocalApplicationAsync(
                          completion);
             return;
         }
-        if (!networkAvailable()) {
-            failCreation(operationId,
-                         QStringLiteral("Network unavailable: signed Granger Network configuration is missing."),
-                         completion);
-            return;
-        }
         emit operationStageChanged(operationId, QStringLiteral("probing-backend"));
         const QString upstream = normalizedLoopbackUrl(host, port);
         runUtilityAsync(
@@ -802,6 +819,14 @@ quint64 GrangerHostingManager::createLocalApplicationAsync(
                         ? QStringLiteral("the loopback application did not respond") : probeError;
                     failCreation(operationId,
                                  QStringLiteral("Backend unreachable: %1").arg(detail), completion);
+                    return;
+                }
+
+                emit operationStageChanged(operationId, QStringLiteral("preparing-network"));
+                if (!networkAvailable()) {
+                    failCreation(operationId,
+                                 QStringLiteral("Unable to reach the Granger Network."),
+                                 completion);
                     return;
                 }
 
@@ -849,7 +874,8 @@ bool GrangerHostingManager::updateService(const QString &id,
                                           const QString &source,
                                           const QString &host,
                                           int port,
-                                          QString *error)
+                                          QString *error,
+                                          const QString &entryPage)
 {
     const HostedServiceRecord previous = service(id);
     if (previous.id.isEmpty()) {
@@ -866,11 +892,15 @@ bool GrangerHostingManager::updateService(const QString &id,
     if (previous.type == QStringLiteral("static")) {
         const QString effectiveSource = source.isEmpty() ? previous.source : source;
         QString inspectionError;
-        if (!inspectStaticSite(effectiveSource, &inspectionError).ok) {
+        const HostingInspection inspection = inspectStaticSite(
+            effectiveSource, &inspectionError,
+            entryPage.isEmpty() ? previous.entryPage : entryPage);
+        if (!inspection.ok || inspection.requiresEntrySelection || inspection.entryPage.isEmpty()) {
             if (error) *error = QStringLiteral("Folder validation failed: %1").arg(inspectionError);
             return false;
         }
-        arguments.append({QStringLiteral("--source"), effectiveSource});
+        arguments.append({QStringLiteral("--source"), effectiveSource,
+                          QStringLiteral("--entry-page"), inspection.entryPage});
     } else {
         QString probeError;
         if (!probeLocalApplication(host, port, &probeError)) {
@@ -918,8 +948,7 @@ bool GrangerHostingManager::setAutoStart(const QString &id, bool enabled, QStrin
 bool GrangerHostingManager::launchService(const QString &id, QString *error)
 {
     if (!networkAvailable()) {
-        const QString message = QStringLiteral(
-            "A signed Granger Network configuration is not installed.");
+        const QString message = QStringLiteral("Granger Network is unavailable.");
         if (kServiceId.match(id).hasMatch()) m_lastErrors.insert(id, message);
         if (error) *error = message;
         return false;
@@ -952,8 +981,14 @@ bool GrangerHostingManager::launchService(const QString &id, QString *error)
     QStringList arguments;
     if (appLocal) arguments.append({QStringLiteral("-I"), QStringLiteral("-B")});
     arguments.append({QStringLiteral("-m"), QStringLiteral("granger_network.hosting"),
-                      QStringLiteral("serve"), QStringLiteral("--service-dir"), root,
-                      QStringLiteral("--wan-config"), wanConfigPath()});
+                      QStringLiteral("serve"), QStringLiteral("--service-dir"), root});
+    if (!GrangerWanConfigPaths::appendProcessArguments(&arguments)) {
+        const QString message = QStringLiteral("Granger Network is unavailable.");
+        m_lastErrors.insert(id, message);
+        process->deleteLater();
+        if (error) *error = message;
+        return false;
+    }
     process->setArguments(arguments);
     connect(process, &QProcess::readyReadStandardError, this, [this, id, process] {
         const QString detail = QString::fromUtf8(process->readAllStandardError()).trimmed();
@@ -1155,7 +1190,8 @@ QJsonObject GrangerHostingManager::diagnostics() const
         {QStringLiteral("pendingOperations"), m_activeOperations.size()},
         {QStringLiteral("runtimeAvailable"), runtimeAvailable()},
         {QStringLiteral("networkAvailable"), networkAvailable()},
-        {QStringLiteral("wanConfigInstalled"), !wanConfigPath().isEmpty()},
+        {QStringLiteral("wanConfigBundled"), GrangerWanConfigPaths::bundledConfigAvailable()},
+        {QStringLiteral("wanConfigInstalled"), GrangerWanConfigPaths::installed()},
         {QStringLiteral("directFallback"), false},
         {QStringLiteral("dnsFallback"), false}
     };

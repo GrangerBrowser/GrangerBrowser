@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$PackageDirectory = "release/.local-staging",
-    [string]$PythonExecutable = ""
+    [string]$PythonExecutable = "",
+    [string]$WanBundleDirectory = $env:GRANGER_NETWORK_RELEASE_BUNDLE
 )
 
 $ErrorActionPreference = "Stop"
@@ -304,7 +305,7 @@ print(json.dumps({
     if ($LASTEXITCODE -ne 0) { throw "Packaged Granger Network Python runtime failed validation." }
     $runtimeValidation = $validationText | ConvertFrom-Json
     if (-not [bool]$runtimeValidation.app_local -or [int]$runtimeValidation.bits -ne 64 -or
-        [int]$runtimeValidation.protocol -ne 2 -or [int]$runtimeValidation.hosting -ne 1 -or
+        [int]$runtimeValidation.protocol -ne 2 -or [int]$runtimeValidation.hosting -ne 2 -or
         -not [bool]$runtimeValidation.hosting_static_bridge -or
         [int]$runtimeValidation.dns_requests -ne 0 -or
         [string]$runtimeValidation.granger_network -ne [string]$sourceNetworkIdentity.Version -or
@@ -319,6 +320,91 @@ print(json.dumps({
     $env:PYTHONPATH = $oldPythonPath
     $env:PYTHONUSERBASE = $oldPythonUserBase
     $env:PYTHONDONTWRITEBYTECODE = $oldDontWriteBytecode
+}
+
+$wanBundleInfo = [ordered]@{
+    Bundled = $false
+    ConfigSHA256 = ""
+    ExpiresAt = 0
+    Generation = 0
+    NetworkId = ""
+    ProtocolVersion = 0
+}
+if (-not [string]::IsNullOrWhiteSpace($WanBundleDirectory)) {
+    $wanSourceRoot = [IO.Path]::GetFullPath($WanBundleDirectory).TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $wanSourceRoot -PathType Container)) {
+        throw "Signed Granger WAN bundle directory was not found: $wanSourceRoot"
+    }
+    $wanSourceConfig = Join-Path $wanSourceRoot "browser-wan.json"
+    $wanSourceTrust = Join-Path $wanSourceRoot "config-authority.pin"
+    if (-not (Test-Path -LiteralPath $wanSourceConfig -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $wanSourceTrust -PathType Leaf)) {
+        throw "Signed Granger WAN bundle must contain browser-wan.json and config-authority.pin."
+    }
+    $wanValidationCode = @'
+import json
+import pathlib
+import sys
+from granger_network.wan_config import load_browser_wan_config
+
+config_path = pathlib.Path(sys.argv[1]).resolve()
+trust_path = pathlib.Path(sys.argv[2]).resolve()
+config = load_browser_wan_config(
+    config_path,
+    trust_anchor_path=trust_path,
+    allow_legacy=False,
+)
+root = config_path.parent
+print(json.dumps({
+    "authorityPin": config.authority_pin_path.relative_to(root).as_posix(),
+    "bootstrap": config.bootstrap_path.relative_to(root).as_posix(),
+    "configSha256": config.sha256,
+    "expiresAt": config.expires_at,
+    "generation": config.generation,
+    "networkId": config.network_id,
+    "protocolVersion": config.protocol_version,
+}, separators=(",", ":"), sort_keys=True))
+'@
+    $wanValidationText = & $packagedPython -I -B -c $wanValidationCode `
+        $wanSourceConfig $wanSourceTrust
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($wanValidationText)) {
+        throw "Signed Granger WAN release bundle validation failed."
+    }
+    $sourceWan = $wanValidationText | ConvertFrom-Json
+    $packagedWanBundle = Join-Path $packageRoot "runtime/granger-network/bundle"
+    $packagedWanTrust = Join-Path $packageRoot "runtime/granger-network/trust"
+    New-Item -ItemType Directory -Path $packagedWanBundle,$packagedWanTrust -Force | Out-Null
+    Copy-Item -LiteralPath $wanSourceConfig -Destination (Join-Path $packagedWanBundle "browser-wan.json")
+    Copy-Item -LiteralPath $wanSourceTrust -Destination (Join-Path $packagedWanTrust "config-authority.pin")
+    foreach ($relative in @([string]$sourceWan.bootstrap, [string]$sourceWan.authorityPin)) {
+        $sourceMember = [IO.Path]::GetFullPath((Join-Path $wanSourceRoot $relative))
+        if (-not $sourceMember.StartsWith($wanSourceRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-Path -LiteralPath $sourceMember -PathType Leaf)) {
+            throw "Signed Granger WAN bundle member escaped its source root: $relative"
+        }
+        $targetMember = Join-Path $packagedWanBundle $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $targetMember) -Force | Out-Null
+        Copy-Item -LiteralPath $sourceMember -Destination $targetMember
+    }
+    $packagedWanText = & $packagedPython -I -B -c $wanValidationCode `
+        (Join-Path $packagedWanBundle "browser-wan.json") `
+        (Join-Path $packagedWanTrust "config-authority.pin")
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($packagedWanText)) {
+        throw "Packaged signed Granger WAN bundle validation failed."
+    }
+    $packagedWan = $packagedWanText | ConvertFrom-Json
+    if ([string]$packagedWan.configSha256 -ne [string]$sourceWan.configSha256 -or
+        [long]$packagedWan.generation -ne [long]$sourceWan.generation) {
+        throw "Packaged signed Granger WAN bundle does not match its validated source."
+    }
+    $wanBundleInfo = [ordered]@{
+        Bundled = $true
+        ConfigSHA256 = [string]$packagedWan.configSha256
+        ExpiresAt = [long]$packagedWan.expiresAt
+        Generation = [long]$packagedWan.generation
+        NetworkId = [string]$packagedWan.networkId
+        ProtocolVersion = [int]$packagedWan.protocolVersion
+    }
 }
 Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force |
     Where-Object { $_.Name -eq "__pycache__" } |
@@ -342,6 +428,12 @@ $criticalRuntimeFiles = @(
     "runtime/python/Lib/site-packages/granger_network/browser_gateway.py",
     "runtime/python/Lib/site-packages/granger_network/hosting.py"
 )
+if ([bool]$wanBundleInfo.Bundled) {
+    $criticalRuntimeFiles += @(
+        "runtime/granger-network/bundle/browser-wan.json",
+        "runtime/granger-network/trust/config-authority.pin"
+    )
+}
 $runtimeFileRecords = foreach ($relativePath in $criticalRuntimeFiles) {
     $path = Join-Path $packageRoot $relativePath
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -375,6 +467,12 @@ $runtimeFileRecords = foreach ($relativePath in $criticalRuntimeFiles) {
     GrangerNetworkSourceSHA256 = [string]$packagedNetworkIdentity.SHA256
     GrangerNetworkSourceFiles = [int]$packagedNetworkIdentity.FileCount
     GrangerNetworkFiles = @($packagedNetworkIdentity.Files)
+    SignedWanBundle = [bool]$wanBundleInfo.Bundled
+    WanConfigSHA256 = [string]$wanBundleInfo.ConfigSHA256
+    WanConfigExpiresAt = [long]$wanBundleInfo.ExpiresAt
+    WanConfigGeneration = [long]$wanBundleInfo.Generation
+    WanNetworkId = [string]$wanBundleInfo.NetworkId
+    WanProtocolVersion = [int]$wanBundleInfo.ProtocolVersion
     IsolatedRuntime = $true
     RuntimeFiles = @($runtimeFileRecords)
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $packageRoot "local-runtime-metadata.json") -Encoding UTF8

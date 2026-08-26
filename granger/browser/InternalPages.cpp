@@ -631,10 +631,11 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-source-row span{color:var(--ds-text-muted);font-size:10px;font-weight:650;text-transform:uppercase}
 .settings-page .hosting-source-row strong{display:block;min-width:0;overflow:hidden;color:var(--ds-text-secondary);font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .settings-page .hosting-source-row>.button{flex:0 0 auto}
-.settings-page .hosting-detected{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.settings-page .hosting-detected{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
 .settings-page .hosting-detected>div{display:grid;gap:4px;padding:11px 12px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:rgba(255,255,255,.018)}
 .settings-page .hosting-detected span{color:var(--ds-text-muted);font-size:10px}
 .settings-page .hosting-detected strong{color:var(--ds-text);font-size:14px}
+.settings-page .hosting-entry-form{margin:12px 0 0;max-width:var(--ds-control-column)}
 .settings-page .hosting-validation{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;margin:0;padding:0;list-style:none}
 .settings-page .hosting-validation li{position:relative;min-width:0;padding:5px 6px 5px 22px;color:var(--ds-text-secondary);font-size:11px;overflow-wrap:anywhere}
 .settings-page .hosting-validation li::before{content:"";position:absolute;left:6px;top:10px;width:7px;height:7px;border-radius:50%;background:var(--ds-text-muted)}
@@ -921,6 +922,10 @@ body.settings-page.reduced-motion *,body.settings-page.reduced-motion *::before,
         wrapper.append(trigger,list);
         if(select.closest('label'))select.closest('label').dataset.dsSelectLabel='true';
         sync(wrapper,Math.max(0,select.selectedIndex));
+    });
+    document.addEventListener('change',event=>{
+        const select=event.target.closest?.('select[data-ds-auto-submit=true]');
+        if(select?.form)select.form.requestSubmit();
     });
     document.addEventListener('click',event=>{
         const option=event.target.closest?.('.ds-option');
