@@ -55,6 +55,7 @@ class RpcType(IntEnum):
     STREAM_RESET = 22
     WINDOW_UPDATE = 23
     ERROR = 24
+    PEER_SAMPLE = 25
 
 
 class PeerRole(IntEnum):

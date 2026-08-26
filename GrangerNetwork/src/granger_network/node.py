@@ -46,6 +46,7 @@ from .wan_discovery import (
     PersistentRecordStore,
     decode_find_node,
     decode_find_record,
+    decode_peer_sample,
     decode_record_envelope,
     encode_node_list,
     encode_optional_record,
@@ -188,7 +189,10 @@ class WanNodeServer:
         self.runtime = GrangerNode(identity, descriptor, self.policy)
         self._known: dict[str, NodeDescriptor] = {descriptor.node_id: descriptor}
         for peer in known_peers:
-            peer.verify()
+            peer.verify(
+                expected_network_id=descriptor.network_id,
+                expected_protocol_version=descriptor.protocol_version,
+            )
             self._known[peer.node_id] = peer
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
@@ -320,7 +324,10 @@ class WanNodeServer:
             return tuple(self._known.values())
 
     def add_known_peer(self, descriptor: NodeDescriptor) -> None:
-        descriptor.verify()
+        descriptor.verify(
+            expected_network_id=self.descriptor.network_id,
+            expected_protocol_version=self.descriptor.protocol_version,
+        )
         with self._lock:
             previous = self._known.get(descriptor.node_id)
             if previous is None or descriptor.issued_at >= previous.issued_at:
@@ -807,6 +814,30 @@ class WanNodeServer:
                 response=True,
             )
             return True
+        if request.message_type is RpcType.PEER_SAMPLE:
+            if "discovery" not in self.descriptor.capabilities:
+                self._send_error(peer, request, "CAPABILITY_DISABLED")
+                return True
+            capability, limit = decode_peer_sample(request.payload)
+            candidates = []
+            for candidate in self._known_peers():
+                try:
+                    candidate.verify(
+                        expected_network_id=self.descriptor.network_id,
+                        expected_protocol_version=self.descriptor.protocol_version,
+                    )
+                except DescriptorError:
+                    continue
+                if capability in candidate.capabilities and candidate.reachability == "reachable":
+                    candidates.append(candidate)
+            candidates.sort(key=lambda candidate: candidate.node_id)
+            peer.rpc.send(
+                RpcType.PEER_SAMPLE,
+                encode_node_list(candidates[:limit]),
+                request_id=request.request_id,
+                response=True,
+            )
+            return True
         if request.message_type is RpcType.FIND_NODE:
             if "discovery" not in self.descriptor.capabilities:
                 self._send_error(peer, request, "CAPABILITY_DISABLED")
@@ -815,7 +846,10 @@ class WanNodeServer:
             candidates = []
             for candidate in self._known_peers():
                 try:
-                    candidate.verify()
+                    candidate.verify(
+                        expected_network_id=self.descriptor.network_id,
+                        expected_protocol_version=self.descriptor.protocol_version,
+                    )
                 except DescriptorError:
                     continue
                 if capability in candidate.capabilities and candidate.reachability == "reachable":

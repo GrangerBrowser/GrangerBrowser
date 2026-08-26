@@ -21,11 +21,18 @@ from ._codec import (
     parse_json_object,
 )
 from .address import normalize_name
-from .bootstrap import BootstrapPool, BootstrapSet, PeerCache
+from .bootstrap import (
+    DEFAULT_NETWORK_ID,
+    DEFAULT_PROTOCOL_VERSION,
+    BootstrapPool,
+    BootstrapSet,
+    PeerCache,
+)
 from .errors import DiscoveryError
 from .identity import ServiceIdentity
 from .protocol import VERSION_3
 from .rendezvous_control import validate_service_id
+from .reseed import ReseedStore
 from .wan_discovery import WanDiscoveryClient
 
 
@@ -44,6 +51,7 @@ class WanDiscoveryRuntime:
     bootstrap: BootstrapSet
     cache: PeerCache
     discovery: WanDiscoveryClient
+    reseed: ReseedStore
 
 
 @dataclass(frozen=True)
@@ -306,12 +314,14 @@ def _load_signed_config(
         bootstrap_set = BootstrapSet.from_json(
             bootstrap.read_text(encoding="utf-8"),
             bootstrap_pin,
-            now=current,
+            now=issued_at,
+            expected_network_id=SIGNED_CONFIG_NETWORK_ID,
+            expected_protocol_version=VERSION_3,
         )
     except (OSError, UnicodeDecodeError) as error:
         raise DiscoveryError(f"signed browser WAN bootstrap is unavailable: {error}") from error
-    if issued_at < bootstrap_set.issued_at or expires_at > bootstrap_set.expires_at:
-        raise DiscoveryError("signed browser WAN validity exceeds its bootstrap validity")
+    if issued_at < bootstrap_set.issued_at:
+        raise DiscoveryError("signed browser WAN predates its bootstrap set")
 
     result = BrowserWanConfig(
         bootstrap,
@@ -389,6 +399,8 @@ def write_signed_browser_wan_config(
         bootstrap.read_text(encoding="utf-8"),
         bootstrap_pin,
         now=timestamp,
+        expected_network_id=SIGNED_CONFIG_NETWORK_ID,
+        expected_protocol_version=VERSION_3,
     )
     expiry = bootstrap_set.expires_at if expires_at is None else expires_at
     unsigned: dict[str, object] = {
@@ -665,15 +677,36 @@ def load_discovery_runtime(
     timeout: float = 5.0,
     replication_factor: int = 3,
     minimum_replicas: int = 2,
+    network_id: str = DEFAULT_NETWORK_ID,
+    protocol_version: int = DEFAULT_PROTOCOL_VERSION,
+    reseed_root: Path | None = None,
+    additional_authority_pins: tuple[bytes, ...] = (),
 ) -> WanDiscoveryRuntime:
     pin = load_authority_pin(authority_pin_path)
-    bootstrap = BootstrapSet.from_json(
-        Path(bootstrap_path).read_text(encoding="utf-8"),
-        pin,
+    cache = PeerCache(
+        cache_path,
+        network_id=network_id,
+        protocol_version=protocol_version,
     )
+    reseed = ReseedStore(
+        Path(reseed_root) if reseed_root is not None else Path(cache_path).parent / "reseed",
+        (pin, *additional_authority_pins),
+        network_id=network_id,
+        protocol_version=protocol_version,
+    )
+    import_error: DiscoveryError | None = None
+    try:
+        reseed.import_path(Path(bootstrap_path), source="bundled")
+    except DiscoveryError as error:
+        import_error = error
+    bootstrap_sets = reseed.load_active()
+    if not bootstrap_sets:
+        if import_error is not None:
+            raise import_error
+        raise DiscoveryError("no valid signed bootstrap or reseed set is available")
+    bootstrap = bootstrap_sets[0]
     identity = load_or_create_identity(identity_path)
-    cache = PeerCache(cache_path)
-    pool = BootstrapPool(bootstrap, cache)
+    pool = BootstrapPool(bootstrap_sets, cache)
     discovery = WanDiscoveryClient(
         identity,
         pool,
@@ -682,4 +715,4 @@ def load_discovery_runtime(
         replication_factor=replication_factor,
         minimum_replicas=minimum_replicas,
     )
-    return WanDiscoveryRuntime(identity, bootstrap, cache, discovery)
+    return WanDiscoveryRuntime(identity, bootstrap, cache, discovery, reseed)

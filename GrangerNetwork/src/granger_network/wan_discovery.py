@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
 import json
 import threading
@@ -29,13 +30,17 @@ from .peer_rpc import PeerRole, RpcType, connect_authenticated_peer
 from .address import is_canonical_name, normalize_name, service_id_from_name
 from .descriptor import ServiceDescriptor
 from .introduction import AliasRecord, IntroductionDescriptor
+from .network_health import NetworkHealth, NetworkHealthSnapshot, NetworkState
+from .peer import RELAY_CAPABILITIES
 from .rendezvous_control import validate_service_id
 
 
 WAN_DISCOVERY_VERSION = 1
 MAX_WAN_RECORDS = 4096
 MAX_FIND_NODE_RESULTS = 32
+MAX_PEER_SAMPLE_RESULTS = 32
 MAX_DISCOVERY_QUERIES = 32
+MAX_PARALLEL_DISCOVERY_REQUESTS = 4
 _ROUTING_KEY_DOMAIN = b"granger-network-v0.4/wan-routing-key\x00"
 
 
@@ -142,6 +147,28 @@ def decode_find_node(content: bytes) -> tuple[bytes, str]:
     return target, capability
 
 
+def encode_peer_sample(capability: str, limit: int = 16) -> bytes:
+    if (
+        not isinstance(capability, str)
+        or not capability
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= MAX_PEER_SAMPLE_RESULTS
+    ):
+        raise ProtocolError("WAN peer sample request is invalid")
+    return BinaryWriter(128).text_u16(capability, 32).u8(limit).build()
+
+
+def decode_peer_sample(content: bytes) -> tuple[str, int]:
+    reader = BinaryReader(content, 128)
+    capability = reader.text_u16(32)
+    limit = reader.u8()
+    reader.finish()
+    if not capability or not 1 <= limit <= MAX_PEER_SAMPLE_RESULTS:
+        raise ProtocolError("WAN peer sample request is invalid")
+    return capability, limit
+
+
 def encode_node_list(peers: list[NodeDescriptor] | tuple[NodeDescriptor, ...]) -> bytes:
     if len(peers) > MAX_FIND_NODE_RESULTS:
         raise ProtocolError("WAN node response has too many peers")
@@ -152,7 +179,13 @@ def encode_node_list(peers: list[NodeDescriptor] | tuple[NodeDescriptor, ...]) -
     return writer.build()
 
 
-def decode_node_list(content: bytes, now: int | None = None) -> tuple[NodeDescriptor, ...]:
+def decode_node_list(
+    content: bytes,
+    now: int | None = None,
+    *,
+    expected_network_id: str | None = None,
+    expected_protocol_version: int | None = None,
+) -> tuple[NodeDescriptor, ...]:
     reader = BinaryReader(content, MAX_FIND_NODE_RESULTS * 64 * 1024 + 4)
     count = reader.u16()
     if count > MAX_FIND_NODE_RESULTS:
@@ -164,6 +197,8 @@ def decode_node_list(content: bytes, now: int | None = None) -> tuple[NodeDescri
             peer = NodeDescriptor.from_json(
                 reader.bytes_u32(64 * 1024).decode("ascii"),
                 now=now,
+                expected_network_id=expected_network_id,
+                expected_protocol_version=expected_protocol_version,
             )
         except UnicodeDecodeError as error:
             raise ProtocolError("WAN node descriptor is not ASCII") from error
@@ -283,6 +318,22 @@ class WanDiscoveryClient:
         self._highest_seen: dict[tuple[str, str], int] = {}
         self._failed_until: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._join_lock = threading.Lock()
+        self._joined = False
+        self._health = NetworkHealth()
+        self._authenticated_nodes: set[str] = set()
+
+    def health(self) -> NetworkHealthSnapshot:
+        return self._health.snapshot()
+
+    def _health_counts(self, peers: tuple[NodeDescriptor, ...] | None = None) -> tuple[int, int]:
+        known = peers if peers is not None else self.pool.candidates("discovery")
+        reachable_relays = sum(
+            peer.reachability == "reachable"
+            and bool(set(peer.capabilities) & RELAY_CAPABILITIES)
+            for peer in known
+        )
+        return len({peer.node_id for peer in known}), reachable_relays
 
     def _request(self, peer: NodeDescriptor, message: RpcType, payload: bytes, expected: RpcType) -> bytes:
         connection = None
@@ -295,11 +346,14 @@ class WanDiscoveryClient:
             )
             response = connection.rpc.request(message, payload, expected=expected)
             if self.cache is not None:
-                self.cache.add(peer)
+                self.cache.record_success(peer)
             with self._lock:
                 self._failed_until.pop(peer.node_id, None)
+                self._authenticated_nodes.add(peer.node_id)
             return response.payload
         except (GrangerNetworkError, OSError):
+            if self.cache is not None:
+                self.cache.record_failure(peer)
             with self._lock:
                 self._failed_until[peer.node_id] = time.monotonic() + max(
                     5.0,
@@ -310,7 +364,173 @@ class WanDiscoveryClient:
             if connection is not None:
                 connection.close()
 
+    def _request_batch(
+        self,
+        peers: list[NodeDescriptor],
+        message: RpcType,
+        payload: bytes,
+        expected: RpcType,
+    ) -> tuple[tuple[NodeDescriptor, bytes | None], ...]:
+        selected = peers[:MAX_PARALLEL_DISCOVERY_REQUESTS]
+        if not selected:
+            return ()
+        with ThreadPoolExecutor(
+            max_workers=len(selected),
+            thread_name_prefix="granger-discovery",
+        ) as executor:
+            requests: list[tuple[NodeDescriptor, Future[bytes]]] = [
+                (peer, executor.submit(self._request, peer, message, payload, expected))
+                for peer in selected
+            ]
+            results: list[tuple[NodeDescriptor, bytes | None]] = []
+            for peer, request in requests:
+                try:
+                    results.append((peer, request.result()))
+                except (GrangerNetworkError, OSError):
+                    results.append((peer, None))
+            return tuple(results)
+
+    def join_network(self) -> NetworkHealthSnapshot:
+        if self._joined:
+            return self._health.snapshot()
+        with self._join_lock:
+            if self._joined:
+                return self._health.snapshot()
+            candidates = self.pool.candidates("discovery")
+            cached_contacts = (
+                list(self.cache.ranked("discovery"))[:8]
+                if self.cache is not None
+                else []
+            )
+            seed_contacts = list(self.pool.seed_candidates("discovery"))[:8]
+            known_count, relay_count = self._health_counts(candidates)
+            self._health.update(
+                NetworkState.BOOTSTRAPPING,
+                bootstrap_attempted=0,
+                authenticated_peers=len(self._authenticated_nodes),
+                known_peers=known_count,
+                reachable_relays=relay_count,
+                dht_ready=False,
+                failure_reason="",
+            )
+            if not cached_contacts and not seed_contacts:
+                return self._health.update(
+                    NetworkState.OFFLINE,
+                    failure_reason="NO_RESEED_SOURCE",
+                )
+            learned: dict[str, NodeDescriptor] = {
+                peer.node_id: peer for peer in candidates
+            }
+            bootstrap_attempted = 0
+            authenticated = 0
+            phases = (
+                (NetworkState.JOINING, cached_contacts, False),
+                (
+                    NetworkState.RESEEDING if cached_contacts else NetworkState.BOOTSTRAPPING,
+                    seed_contacts,
+                    True,
+                ),
+            )
+            attempted_descriptors: set[tuple[str, str, int, int]] = set()
+            for state, contacts, is_bootstrap in phases:
+                pending_contacts = [
+                    peer
+                    for peer in contacts
+                    if (
+                        peer.node_id,
+                        peer.endpoint.host,
+                        peer.endpoint.port,
+                        peer.issued_at,
+                    )
+                    not in attempted_descriptors
+                ]
+                for offset in range(
+                    0,
+                    len(pending_contacts),
+                    MAX_PARALLEL_DISCOVERY_REQUESTS,
+                ):
+                    batch = pending_contacts[
+                        offset : offset + MAX_PARALLEL_DISCOVERY_REQUESTS
+                    ]
+                    attempted_descriptors.update(
+                        (
+                            peer.node_id,
+                            peer.endpoint.host,
+                            peer.endpoint.port,
+                            peer.issued_at,
+                        )
+                        for peer in batch
+                    )
+                    if is_bootstrap:
+                        bootstrap_attempted += len(batch)
+                    self._health.update(
+                        state,
+                        bootstrap_attempted=bootstrap_attempted,
+                    )
+                    responses = self._request_batch(
+                        batch,
+                        RpcType.PEER_SAMPLE,
+                        encode_peer_sample("discovery", MAX_PEER_SAMPLE_RESULTS),
+                        RpcType.PEER_SAMPLE,
+                    )
+                    for peer, content in responses:
+                        if content is None:
+                            continue
+                        try:
+                            sample = decode_node_list(
+                                content,
+                                expected_network_id=self.pool.network_id,
+                                expected_protocol_version=self.pool.protocol_version,
+                            )
+                        except GrangerNetworkError:
+                            continue
+                        authenticated += 1
+                        if self.cache is not None:
+                            self.cache.ingest(
+                                sample,
+                                source=f"peer:{peer.node_id}",
+                            )
+                        for candidate in sample:
+                            previous = learned.get(candidate.node_id)
+                            if previous is None or candidate.issued_at > previous.issued_at:
+                                learned[candidate.node_id] = candidate
+                    if (
+                        authenticated >= self.minimum_replicas
+                        and len(learned) >= self.replication_factor
+                    ):
+                        break
+                if (
+                    authenticated >= self.minimum_replicas
+                    and len(learned) >= self.replication_factor
+                ):
+                    break
+            known = tuple(learned.values())
+            known_count, relay_count = self._health_counts(known)
+            if authenticated == 0:
+                return self._health.update(
+                    NetworkState.OFFLINE,
+                    bootstrap_attempted=bootstrap_attempted,
+                    authenticated_peers=len(self._authenticated_nodes),
+                    known_peers=known_count,
+                    reachable_relays=relay_count,
+                    dht_ready=False,
+                    failure_reason="FIRST_CONTACT_FAILED",
+                )
+            self._joined = True
+            return self._health.update(
+                NetworkState.JOINING,
+                bootstrap_attempted=bootstrap_attempted,
+                authenticated_peers=len(self._authenticated_nodes),
+                known_peers=known_count,
+                reachable_relays=relay_count,
+                dht_ready=False,
+                failure_reason="",
+            )
+
     def find_nodes(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]:
+        joined = self.join_network()
+        if joined.state is NetworkState.OFFLINE:
+            raise DiscoveryError("Granger Network first contact failed")
         seeds = list(self.pool.candidates("discovery"))
         with self._lock:
             current = time.monotonic()
@@ -323,36 +543,72 @@ class WanDiscoveryClient:
             pending = seeds
         known = {peer.node_id: peer for peer in pending}
         queried: set[str] = set()
+        responsive: set[str] = set()
         while pending and len(queried) < MAX_DISCOVERY_QUERIES:
             pending.sort(key=lambda peer: int.from_bytes(_node_id_bytes(peer.node_id), "big") ^ int.from_bytes(target, "big"))
-            peer = pending.pop(0)
-            if peer.node_id in queried:
-                continue
-            queried.add(peer.node_id)
-            try:
-                content = self._request(
-                    peer,
-                    RpcType.FIND_NODE,
-                    encode_find_node(target, capability),
-                    RpcType.FIND_NODE,
-                )
-                learned = decode_node_list(content)
-            except (GrangerNetworkError, OSError):
-                continue
-            for candidate in learned:
-                if self.cache is not None:
-                    self.cache.add(candidate)
-                previous = known.get(candidate.node_id)
-                if previous is None or candidate.issued_at > previous.issued_at:
-                    known[candidate.node_id] = candidate
-                    if candidate.node_id not in queried and "discovery" in candidate.capabilities:
-                        pending.append(candidate)
+            batch: list[NodeDescriptor] = []
+            batch_limit = min(
+                MAX_PARALLEL_DISCOVERY_REQUESTS,
+                MAX_DISCOVERY_QUERIES - len(queried),
+            )
+            while pending and len(batch) < batch_limit:
+                peer = pending.pop(0)
+                if peer.node_id in queried:
+                    continue
+                queried.add(peer.node_id)
+                batch.append(peer)
+            responses = self._request_batch(
+                batch,
+                RpcType.FIND_NODE,
+                encode_find_node(target, capability),
+                RpcType.FIND_NODE,
+            )
+            for peer, content in responses:
+                if content is None:
+                    continue
+                try:
+                    learned = decode_node_list(
+                        content,
+                        expected_network_id=self.pool.network_id,
+                        expected_protocol_version=self.pool.protocol_version,
+                    )
+                except GrangerNetworkError:
+                    continue
+                responsive.add(peer.node_id)
+                for candidate in learned:
+                    if self.cache is not None:
+                        self.cache.add(candidate, source=f"peer:{peer.node_id}")
+                    previous = known.get(candidate.node_id)
+                    if previous is None or candidate.issued_at > previous.issued_at:
+                        known[candidate.node_id] = candidate
+                        if candidate.node_id not in queried and "discovery" in candidate.capabilities:
+                            pending.append(candidate)
         result = [
             peer
             for peer in known.values()
             if capability in peer.capabilities and peer.reachability == "reachable"
         ]
         result.sort(key=lambda peer: int.from_bytes(_node_id_bytes(peer.node_id), "big") ^ int.from_bytes(target, "big"))
+        all_known = tuple(known.values())
+        known_count, relay_count = self._health_counts(all_known)
+        if len(result) >= self.minimum_replicas and len(responsive) >= self.minimum_replicas:
+            self._health.update(
+                NetworkState.CONNECTED,
+                authenticated_peers=len(self._authenticated_nodes),
+                known_peers=known_count,
+                reachable_relays=relay_count,
+                dht_ready=True,
+                failure_reason="",
+            )
+        else:
+            self._health.update(
+                NetworkState.DEGRADED,
+                authenticated_peers=len(self._authenticated_nodes),
+                known_peers=known_count,
+                reachable_relays=relay_count,
+                dht_ready=False,
+                failure_reason="INSUFFICIENT_DHT_PEERS",
+            )
         return tuple(result)
 
     def publish(self, record: DistributedRecord, now: int | None = None) -> int:

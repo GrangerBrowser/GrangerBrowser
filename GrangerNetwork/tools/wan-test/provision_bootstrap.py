@@ -11,7 +11,11 @@ from pathlib import Path
 NETWORK_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(NETWORK_ROOT / "src"))
 
-from granger_network.bootstrap import BootstrapSet
+from granger_network.bootstrap import (
+    DEFAULT_NETWORK_ID,
+    DEFAULT_PROTOCOL_VERSION,
+    BootstrapSet,
+)
 from granger_network.identity import ServiceIdentity
 from granger_network.peer import NodeDescriptor
 from granger_network.wan_config import write_bootstrap_bundle
@@ -26,6 +30,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--authority-pin", type=Path, required=True)
     parser.add_argument("--lifetime", type=int, default=6 * 60 * 60)
+    parser.add_argument("--generation", type=int, default=1)
+    parser.add_argument("--network-id", default=DEFAULT_NETWORK_ID)
+    parser.add_argument("--protocol-version", type=int, default=DEFAULT_PROTOCOL_VERSION)
     return parser
 
 
@@ -50,7 +57,14 @@ def main(argv: list[str] | None = None) -> int:
             "bootstrap lifetime must be at least 60 seconds and cannot outlive "
             f"the shortest node descriptor ({remaining} seconds remaining)"
         )
-    bootstrap = BootstrapSet.create(authority, peers, lifetime=options.lifetime)
+    bootstrap = BootstrapSet.create(
+        authority,
+        peers,
+        generation=options.generation,
+        network_id=options.network_id,
+        protocol_version=options.protocol_version,
+        lifetime=options.lifetime,
+    )
     bundle_path = options.bundle.resolve()
     pin_path = options.authority_pin.resolve()
     write_bootstrap_bundle(bootstrap, bundle_path, pin_path)
@@ -59,9 +73,12 @@ def main(argv: list[str] | None = None) -> int:
         "bundle": str(bundle_path),
         "bundleSha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest().upper(),
         "expiresAt": bootstrap.expires_at,
+        "generation": bootstrap.generation,
+        "networkId": bootstrap.network_id,
         "peerCount": len(bootstrap.peers),
         "peerNodeIds": [peer.node_id for peer in bootstrap.peers],
-        "version": 1,
+        "protocolVersion": bootstrap.protocol_version,
+        "version": bootstrap.version,
     }
     print(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True))
     return 0

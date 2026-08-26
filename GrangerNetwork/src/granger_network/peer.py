@@ -20,10 +20,14 @@ from .transport import RendezvousEndpoint
 
 
 LEGACY_NODE_DESCRIPTOR_VERSION = 1
-NODE_DESCRIPTOR_VERSION = 2
+REACHABILITY_NODE_DESCRIPTOR_VERSION = 2
+NODE_DESCRIPTOR_VERSION = 3
 NODE_ID_DOMAIN = b"granger-network-v0.3/node-id\x00"
 NODE_DESCRIPTOR_SIGNATURE_DOMAIN = b"granger-network-v0.3/node-descriptor\x00"
 NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V2 = b"granger-network-v0.4/node-descriptor\x00"
+NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V3 = b"granger-network-v0.5/node-descriptor\x00"
+NODE_NETWORK_ID = "granger-network-v0.4"
+NODE_PROTOCOL_VERSION = 3
 MAX_NODE_DESCRIPTOR_LIFETIME = 24 * 60 * 60
 MAX_NODE_CLOCK_SKEW = 120
 NODE_CAPABILITIES = frozenset(
@@ -42,6 +46,7 @@ RELAY_CAPABILITIES = frozenset(
 )
 NODE_REACHABILITY = frozenset({"reachable", "non-reachable", "unknown"})
 _NODE_ID = re.compile(r"^[a-z2-7]{52}$")
+_NODE_NETWORK = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
 
 
 def node_id_from_public_key(public_key: bytes) -> str:
@@ -119,7 +124,7 @@ class RelayPolicy:
             "maxBytesPerCircuit": self.max_bytes_per_circuit,
             "maxCircuits": self.max_circuits,
         }
-        if version == NODE_DESCRIPTOR_VERSION:
+        if version in {REACHABILITY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION}:
             document.update(
                 {
                     "burstKiB": self.burst_kib,
@@ -156,7 +161,11 @@ class RelayPolicy:
             "memoryBudgetKiB",
         }
         expected = legacy_fields if version == LEGACY_NODE_DESCRIPTOR_VERSION else current_fields
-        if version not in {LEGACY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION}:
+        if version not in {
+            LEGACY_NODE_DESCRIPTOR_VERSION,
+            REACHABILITY_NODE_DESCRIPTOR_VERSION,
+            NODE_DESCRIPTOR_VERSION,
+        }:
             raise DescriptorError("unsupported node descriptor version")
         if not isinstance(document, dict) or set(document) != expected:
             raise DescriptorError("node relay policy has an invalid schema")
@@ -195,6 +204,8 @@ class NodeDescriptor:
     signature: bytes
     version: int = NODE_DESCRIPTOR_VERSION
     reachability: str = "reachable"
+    network_id: str = NODE_NETWORK_ID
+    protocol_version: int = NODE_PROTOCOL_VERSION
 
     def unsigned_document(self) -> dict:
         document = {
@@ -211,20 +222,33 @@ class NodeDescriptor:
             "relayPolicy": self.relay_policy.to_document(version=self.version),
             "version": self.version,
         }
-        if self.version == NODE_DESCRIPTOR_VERSION:
+        if self.version in {REACHABILITY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION}:
             document["reachability"] = self.reachability
+        if self.version == NODE_DESCRIPTOR_VERSION:
+            document["networkId"] = self.network_id
+            document["protocolVersion"] = self.protocol_version
         return document
 
     def signature_payload(self) -> bytes:
-        domain = (
-            NODE_DESCRIPTOR_SIGNATURE_DOMAIN
-            if self.version == LEGACY_NODE_DESCRIPTOR_VERSION
-            else NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V2
-        )
+        domain = {
+            LEGACY_NODE_DESCRIPTOR_VERSION: NODE_DESCRIPTOR_SIGNATURE_DOMAIN,
+            REACHABILITY_NODE_DESCRIPTOR_VERSION: NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V2,
+            NODE_DESCRIPTOR_VERSION: NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V3,
+        }.get(self.version, NODE_DESCRIPTOR_SIGNATURE_DOMAIN_V3)
         return domain + canonical_json(self.unsigned_document())
 
-    def verify(self, now: int | None = None) -> None:
-        if self.version not in {LEGACY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION} or isinstance(self.version, bool):
+    def verify(
+        self,
+        now: int | None = None,
+        *,
+        expected_network_id: str | None = None,
+        expected_protocol_version: int | None = None,
+    ) -> None:
+        if self.version not in {
+            LEGACY_NODE_DESCRIPTOR_VERSION,
+            REACHABILITY_NODE_DESCRIPTOR_VERSION,
+            NODE_DESCRIPTOR_VERSION,
+        } or isinstance(self.version, bool):
             raise DescriptorError("unsupported node descriptor version")
         validate_node_id(self.node_id)
         if (
@@ -251,6 +275,24 @@ class NodeDescriptor:
             raise DescriptorError("node reachability is invalid")
         if self.version == LEGACY_NODE_DESCRIPTOR_VERSION and self.reachability != "reachable":
             raise DescriptorError("legacy node descriptor reachability is invalid")
+        if self.version == NODE_DESCRIPTOR_VERSION:
+            if not isinstance(self.network_id, str) or not _NODE_NETWORK.fullmatch(self.network_id):
+                raise DescriptorError("node descriptor network is invalid")
+            if (
+                isinstance(self.protocol_version, bool)
+                or not isinstance(self.protocol_version, int)
+                or not 1 <= self.protocol_version <= 255
+            ):
+                raise DescriptorError("node descriptor protocol is invalid")
+        if expected_network_id is not None:
+            if self.version != NODE_DESCRIPTOR_VERSION or self.network_id != expected_network_id:
+                raise DescriptorError("node descriptor belongs to a different network")
+        if expected_protocol_version is not None:
+            if (
+                self.version != NODE_DESCRIPTOR_VERSION
+                or self.protocol_version != expected_protocol_version
+            ):
+                raise DescriptorError("node descriptor protocol does not match the network")
         if set(self.capabilities) & RELAY_CAPABILITIES and not self.relay_policy.enabled:
             raise DescriptorError("relay capabilities require explicit opt-in")
         if set(self.capabilities) & RELAY_CAPABILITIES and self.reachability != "reachable":
@@ -296,6 +338,8 @@ class NodeDescriptor:
         issued_at: int | None = None,
         lifetime: int = 60 * 60,
         reachability: str = "reachable",
+        network_id: str = NODE_NETWORK_ID,
+        protocol_version: int = NODE_PROTOCOL_VERSION,
     ) -> "NodeDescriptor":
         timestamp = int(time.time()) if issued_at is None else issued_at
         if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
@@ -327,13 +371,22 @@ class NodeDescriptor:
             expires_at=timestamp + lifetime,
             signature=b"\x00" * 64,
             reachability=reachability,
+            network_id=network_id,
+            protocol_version=protocol_version,
         )
         descriptor = replace(unsigned, signature=identity.sign(unsigned.signature_payload()))
         descriptor.verify(now=timestamp)
         return descriptor
 
     @classmethod
-    def from_json(cls, content: str, now: int | None = None) -> "NodeDescriptor":
+    def from_json(
+        cls,
+        content: str,
+        now: int | None = None,
+        *,
+        expected_network_id: str | None = None,
+        expected_protocol_version: int | None = None,
+    ) -> "NodeDescriptor":
         try:
             document = parse_json_object(content)
             expected = {
@@ -348,9 +401,14 @@ class NodeDescriptor:
                 "version",
             }
             version = document.get("version")
-            if version == NODE_DESCRIPTOR_VERSION:
+            if version in {REACHABILITY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION}:
                 expected.add("reachability")
-            elif version != LEGACY_NODE_DESCRIPTOR_VERSION:
+            if version == NODE_DESCRIPTOR_VERSION:
+                expected.update({"networkId", "protocolVersion"})
+            elif version not in {
+                LEGACY_NODE_DESCRIPTOR_VERSION,
+                REACHABILITY_NODE_DESCRIPTOR_VERSION,
+            }:
                 raise ValueError("unsupported node descriptor version")
             if set(document) != expected:
                 raise ValueError("unexpected node descriptor fields")
@@ -376,11 +434,21 @@ class NodeDescriptor:
                 version=version,
                 reachability=(
                     document["reachability"]
-                    if version == NODE_DESCRIPTOR_VERSION
+                    if version in {REACHABILITY_NODE_DESCRIPTOR_VERSION, NODE_DESCRIPTOR_VERSION}
                     else "reachable"
                 ),
+                network_id=(document["networkId"] if version == NODE_DESCRIPTOR_VERSION else "legacy"),
+                protocol_version=(
+                    document["protocolVersion"]
+                    if version == NODE_DESCRIPTOR_VERSION
+                    else NODE_PROTOCOL_VERSION
+                ),
             )
-            descriptor.verify(now=now)
+            descriptor.verify(
+                now=now,
+                expected_network_id=expected_network_id,
+                expected_protocol_version=expected_protocol_version,
+            )
             return descriptor
         except DescriptorError:
             raise

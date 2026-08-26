@@ -18,6 +18,7 @@ from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import PeerRole, RpcType, connect_authenticated_peer
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_discovery import WanDiscoveryClient, encode_record_envelope
+from granger_network.network_health import NetworkState
 
 
 def available_port() -> int:
@@ -57,7 +58,7 @@ class WanDiscoveryTests(unittest.TestCase):
         ]
         for node in self.nodes:
             node.start_background()
-        bootstrap = BootstrapSet.create(
+        self.bootstrap = BootstrapSet.create(
             self.authority,
             self.descriptors,
             issued_at=self.now,
@@ -66,7 +67,7 @@ class WanDiscoveryTests(unittest.TestCase):
         self.cache = PeerCache(self.root / "client-peers.json")
         self.client = WanDiscoveryClient(
             ServiceIdentity.generate(),
-            BootstrapPool(bootstrap, self.cache),
+            BootstrapPool(self.bootstrap, self.cache),
             cache=self.cache,
             timeout=2.0,
         )
@@ -98,6 +99,10 @@ class WanDiscoveryTests(unittest.TestCase):
         self.assertTrue(all(node.accepted_connections > 0 for node in self.nodes))
         self.assertTrue(all(node.rpc_requests > 0 for node in self.nodes))
         self.assertEqual(len(self.cache.load(now=self.now)), 3)
+        health = self.client.health()
+        self.assertEqual(health.state, NetworkState.CONNECTED)
+        self.assertTrue(health.dht_ready)
+        self.assertGreaterEqual(health.authenticated_peers, 2)
 
     def test_one_bootstrap_failure_keeps_quorum_and_two_failures_close_route(self) -> None:
         service_identity = ServiceIdentity.generate()
@@ -116,6 +121,30 @@ class WanDiscoveryTests(unittest.TestCase):
         self.nodes[1].stop()
         with self.assertRaises(ResolutionError):
             self.client.lookup(SERVICE_RECORD, service.service_id, now=self.now)
+
+    def test_unreachable_cache_entries_cannot_mask_signed_bootstrap_seeds(self) -> None:
+        stale = [
+            NodeDescriptor.create(
+                ServiceIdentity.generate(),
+                RendezvousEndpoint("127.0.0.1", available_port()),
+                ("discovery",),
+                RelayPolicy(enabled=False),
+                issued_at=self.now,
+                lifetime=3600,
+            )
+            for _ in range(8)
+        ]
+        self.cache.ingest(stale, source="peer:stale", now=self.now)
+        client = WanDiscoveryClient(
+            ServiceIdentity.generate(),
+            BootstrapPool(self.bootstrap, self.cache),
+            cache=self.cache,
+            timeout=0.25,
+        )
+        health = client.join_network()
+        self.assertEqual(health.state, NetworkState.JOINING)
+        self.assertGreaterEqual(health.bootstrap_attempted, 2)
+        self.assertGreaterEqual(health.authenticated_peers, 2)
 
     def test_malformed_signed_record_is_rejected_by_remote_store(self) -> None:
         service_identity = ServiceIdentity.generate()
