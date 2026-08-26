@@ -10,6 +10,7 @@ tools_root="$project_root/output/linux-tools"
 version="0.4.4"
 artifact="$output_root/GrangerBrowser-${version}-x86_64.AppImage"
 qt_root="${QT_ROOT:-}"
+source_head="${GRANGER_SOURCE_HEAD:-$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)}"
 
 fail() {
     printf 'Linux AppImage build failed: %s\n' "$*" >&2
@@ -25,6 +26,7 @@ for command_name in cmake ninja curl sha256sum file ldd readelf jq; do
 done
 [[ "$(uname -s)" == "Linux" ]] || fail "this script must run natively on Linux"
 [[ "$(uname -m)" == "x86_64" ]] || fail "only Linux x86_64 is supported"
+[[ "$source_head" =~ ^[0-9a-f]{40}$ ]] || fail "GRANGER_SOURCE_HEAD must identify the committed source"
 [[ -n "$qt_root" ]] || fail "QT_ROOT must point to Qt 6.11.2 linux_gcc_64"
 qt_root="$(realpath -m "$qt_root")"
 [[ -x "$qt_root/bin/qmake" ]] || fail "qmake is missing below QT_ROOT"
@@ -212,6 +214,7 @@ fi
 
 runtime_metadata="$runtime_root/runtime-metadata.json"
 jq --arg qt "$qt_version" \
+   --arg sourceHead "$source_head" \
    --arg linuxdeploy "1-alpha-20251107-1" \
    --arg linuxdeploySha "${linuxdeploy_sha256^^}" \
    --arg qtPlugin "1-alpha-20250213-1" \
@@ -221,6 +224,7 @@ jq --arg qt "$qt_version" \
       architecture: "x86_64",
       qtVersion: $qt,
       qtWebEngineVersion: $qt,
+      sourceHead: $sourceHead,
       appImageBuilder: "linuxdeploy",
       linuxdeployVersion: $linuxdeploy,
       linuxdeploySha256: $linuxdeploySha,
@@ -254,9 +258,11 @@ printf '%s  %s\n' "$artifact_sha256" "$(basename "$artifact")" \
     >"$output_root/SHA256SUMS-linux.txt"
 jq -n --arg file "$(basename "$artifact")" \
     --arg sha256 "$artifact_sha256" --argjson size "$artifact_size" \
-    --arg qt "$qt_version" \
+    --arg qt "$qt_version" --arg sourceHead "$source_head" \
     '{ok:true, artifact:$file, sizeBytes:$size, sha256:$sha256,
-      architecture:"x86_64", qtVersion:$qt, publicRelease:false}' \
+      architecture:"x86_64", qtVersion:$qt, sourceHead:$sourceHead,
+      publicRelease:false}' \
     >"$output_root/linux-build-report.json"
+printf '%s\n' "$source_head" >"$output_root/source-head.txt"
 
 printf 'Created %s\nSHA-256 %s\n' "$artifact" "$artifact_sha256"
