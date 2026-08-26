@@ -60,7 +60,6 @@ private:
     QString configuredModuleRoot() const;
     QString configuredRegistryRoot() const;
     QString configuredPython() const;
-    QString configuredWanConfig() const;
 
     QPointer<QProcess> m_process;
     QByteArray m_stdoutBuffer;

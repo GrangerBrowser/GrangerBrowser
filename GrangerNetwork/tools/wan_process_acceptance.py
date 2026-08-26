@@ -21,12 +21,17 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from granger_network._codec import atomic_write_text
 from granger_network.bootstrap import BootstrapSet
+from granger_network.hosting import inspect_static_site
 from granger_network.identity import ServiceIdentity
 from granger_network.network_audit import install_socket_audit
 from granger_network.node import NODE_DESCRIPTOR_FILE, initialize_node
 from granger_network.peer import NodeDescriptor, RELAY_CAPABILITIES, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
-from granger_network.wan_config import load_discovery_runtime, write_bootstrap_bundle
+from granger_network.wan_config import (
+    load_discovery_runtime,
+    write_bootstrap_bundle,
+    write_signed_browser_wan_config,
+)
 
 
 MESSAGE = "GRANGER_TEST_MESSAGE_123"
@@ -330,8 +335,10 @@ def run_acceptance(
     report_path = Path(report_path).resolve()
     if hosting_source is not None:
         hosting_source = Path(hosting_source).resolve()
-        if not (hosting_source / "index.html").is_file():
-            raise AcceptanceError("hosting source does not contain index.html")
+        inspection = inspect_static_site(hosting_source)
+        if not inspection.ok or inspection.requiresEntrySelection or not inspection.entryPage:
+            detail = "; ".join(inspection.errors) or "an entry page must be selected"
+            raise AcceptanceError(f"hosting source is invalid: {detail}")
     root.mkdir(parents=True, exist_ok=False)
     children: list[ChildProcess] = []
     report: dict = {
@@ -358,6 +365,19 @@ def run_acceptance(
         bootstrap_path = root / "bootstrap-set.json"
         authority_pin_path = root / "bootstrap-authority.pin"
         write_bootstrap_bundle(bootstrap, bootstrap_path, authority_pin_path)
+        config_authority = ServiceIdentity.generate()
+        browser_config_path = root / "browser-wan.json"
+        browser_trust_anchor = root / "config-authority.pin"
+        write_signed_browser_wan_config(
+            browser_config_path,
+            config_authority,
+            bootstrap_path,
+            authority_pin_path,
+            generation=1,
+            issued_at=int(time.time()),
+            expires_at=bootstrap.expires_at,
+            replication_factor=6,
+        )
 
         descriptor_paths = [state / NODE_DESCRIPTOR_FILE for state in state_paths.values()]
         node_ready: dict[str, dict] = {}
@@ -575,28 +595,9 @@ def run_acceptance(
         browser_result: dict = {}
         hosting_browser_result: dict = {}
         if browser is not None:
-            browser_config_path = root / "browser-wan.json"
-            atomic_write_text(
-                browser_config_path,
-                json.dumps(
-                    {
-                        "aliasPins": {},
-                        "authorityPin": authority_pin_path.name,
-                        "bootstrap": bootstrap_path.name,
-                        "minimumReplicas": 2,
-                        "replicationFactor": 6,
-                        "routeAttempts": 6,
-                        "timeoutSeconds": 8,
-                        "version": 1,
-                    },
-                    ensure_ascii=True,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                mode=0o644,
-            )
             browser_output = root / "browser-wan-smoke.json"
+            browser_install_root = root / "browser-data" / "granger-network" / "wan"
+            browser_rollback_state = root / "browser-data" / "state" / "wan-rollback.json"
             browser_environment = child_environment(
                 root / "audit" / "browser.jsonl",
                 "browser-gateway",
@@ -615,7 +616,10 @@ def run_acceptance(
                 str(browser),
                 "--smoke-granger-network-wan",
                 f"--smoke-output={browser_output}",
-                f"--granger-network-wan-config={browser_config_path}",
+                f"--granger-network-wan-bundle={browser_config_path}",
+                f"--granger-network-wan-trust-anchor={browser_trust_anchor}",
+                f"--granger-network-wan-install-root={browser_install_root}",
+                f"--granger-network-wan-rollback-state={browser_rollback_state}",
                 f"--granger-network-canonical={canonical_name}",
             ]
             if not expect_packaged_runtime:
@@ -640,6 +644,7 @@ def run_acceptance(
             worker_pid = int(browser_result.get("runtime", {}).get("workerPid", 0))
             time.sleep(0.25)
             browser_result["harness"] = {
+                "autoProvisioned": (browser_install_root / "active.json").is_file(),
                 "exitCode": browser_completed.returncode,
                 "orphanGateway": process_is_running(worker_pid),
                 "packagedRuntimeRequested": expect_packaged_runtime,
@@ -660,12 +665,19 @@ def run_acceptance(
             if (
                 browser_completed.returncode != 0
                 or browser_result.get("ok") is not True
+                or browser_result["harness"]["autoProvisioned"] is not True
                 or browser_result["harness"]["orphanGateway"]
             ):
                 raise AcceptanceError("real Qt WebEngine WAN browser smoke failed")
 
             if hosting_source is not None:
                 hosting_output = root / "browser-hosting-smoke.json"
+                hosting_install_root = (
+                    root / "browser-hosting-data" / "granger-network" / "wan"
+                )
+                hosting_rollback_state = (
+                    root / "browser-hosting-data" / "state" / "wan-rollback.json"
+                )
                 hosting_environment = child_environment(
                     root / "audit" / "browser-hosting.jsonl",
                     "browser-hosting",
@@ -684,7 +696,10 @@ def run_acceptance(
                     str(browser),
                     "--smoke-granger-hosting",
                     f"--smoke-output={hosting_output}",
-                    f"--granger-network-wan-config={browser_config_path}",
+                    f"--granger-network-wan-bundle={browser_config_path}",
+                    f"--granger-network-wan-trust-anchor={browser_trust_anchor}",
+                    f"--granger-network-wan-install-root={hosting_install_root}",
+                    f"--granger-network-wan-rollback-state={hosting_rollback_state}",
                     f"--granger-hosting-source={hosting_source}",
                     f"--granger-hosting-backend-port={int(backend_ready['port'])}",
                 ]
@@ -717,6 +732,7 @@ def run_acceptance(
                 hosting_pids.discard(0)
                 time.sleep(0.25)
                 hosting_browser_result["harness"] = {
+                    "autoProvisioned": (hosting_install_root / "active.json").is_file(),
                     "exitCode": hosting_completed.returncode,
                     "hostProcessOrphan": any(process_is_running(pid) for pid in hosting_pids),
                     "hostProcessPids": sorted(hosting_pids),
@@ -738,6 +754,7 @@ def run_acceptance(
                 if (
                     hosting_completed.returncode != 0
                     or hosting_browser_result.get("ok") is not True
+                    or hosting_browser_result["harness"]["autoProvisioned"] is not True
                     or hosting_browser_result["harness"]["hostProcessOrphan"]
                 ):
                     raise AcceptanceError("real Qt WebEngine hosting smoke failed")

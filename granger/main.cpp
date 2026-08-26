@@ -6269,6 +6269,14 @@ int main(int argc, char *argv[])
     app.setProperty("granger.networkRegistryExplicit", !networkRegistryArgument.isEmpty());
     app.setProperty("granger.networkWanConfig",
                     argumentValue(arguments, QStringLiteral("--granger-network-wan-config=")));
+    app.setProperty("granger.networkWanBundle",
+                    argumentValue(arguments, QStringLiteral("--granger-network-wan-bundle=")));
+    app.setProperty("granger.networkWanTrustAnchor",
+                    argumentValue(arguments, QStringLiteral("--granger-network-wan-trust-anchor=")));
+    app.setProperty("granger.networkWanInstallRoot",
+                    argumentValue(arguments, QStringLiteral("--granger-network-wan-install-root=")));
+    app.setProperty("granger.networkWanRollbackState",
+                    argumentValue(arguments, QStringLiteral("--granger-network-wan-rollback-state=")));
     app.setProperty("granger.networkLocalDemo",
                     arguments.contains(QStringLiteral("--granger-network-local-demo"))
                         || arguments.contains(QStringLiteral("--smoke-granger-network-local-demo")));

@@ -1,6 +1,7 @@
 #include "granger/network/GrangerNetworkRuntime.h"
 
 #include "granger/core/AppPaths.h"
+#include "granger/network/GrangerWanConfigPaths.h"
 #include "granger/network/GrangerNetworkUrl.h"
 #include "granger/platform/ManagedProcess.h"
 
@@ -312,7 +313,7 @@ void GrangerNetworkRuntime::fetch(const QString &name,
     };
     auto *timer = new QTimer(this);
     timer->setSingleShot(true);
-    timer->setInterval(configuredWanConfig().isEmpty()
+    timer->setInterval(!GrangerWanConfigPaths::available()
                            ? kCompatibilityRequestTimeoutMs
                            : kWanRequestTimeoutMs);
     connect(timer, &QTimer::timeout, this, [this, requestId] {
@@ -345,14 +346,14 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     const QString python = configuredPython();
     const QString moduleRoot = configuredModuleRoot();
     const QString registryRoot = configuredRegistryRoot();
-    const QString wanConfig = configuredWanConfig();
-    QString requestedWanConfig = qApp
-        ? qApp->property("granger.networkWanConfig").toString().trimmed() : QString();
-    if (requestedWanConfig.isEmpty()) {
-        requestedWanConfig = qEnvironmentVariable("GRANGER_NETWORK_WAN_CONFIG").trimmed();
-    }
-    if (!requestedWanConfig.isEmpty() && wanConfig.isEmpty()) {
+    if (GrangerWanConfigPaths::explicitConfigRequested()
+        && GrangerWanConfigPaths::explicitConfigPath().isEmpty()) {
         if (error) *error = QStringLiteral("Explicit Granger WAN config is unavailable");
+        return false;
+    }
+    if (GrangerWanConfigPaths::bundledAssetsPresent()
+        && !GrangerWanConfigPaths::bundledConfigAvailable()) {
+        if (error) *error = QStringLiteral("Bundled Granger WAN configuration is incomplete");
         return false;
     }
     const QString modulePath = QDir(moduleRoot).filePath(
@@ -407,9 +408,9 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
         && qApp->property("granger.networkLocalDemo").toBool();
     const bool explicitRegistry = qApp
         && qApp->property("granger.networkRegistryExplicit").toBool();
-    if (!wanConfig.isEmpty()) {
-        arguments.append({QStringLiteral("--wan-config"), wanConfig,
-                          QStringLiteral("--state-dir"),
+    const bool wanConfigured = GrangerWanConfigPaths::appendProcessArguments(&arguments);
+    if (wanConfigured) {
+        arguments.append({QStringLiteral("--state-dir"),
                           QDir(registryRoot).filePath(QStringLiteral("wan"))});
     } else if (localDemo) {
         arguments.append({QStringLiteral("--registry"), registryRoot});
@@ -443,7 +444,7 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     m_localDemoCanonical.clear();
     m_gatewayMode.clear();
     m_lastRequestError.clear();
-    m_wanConfigActive = !wanConfig.isEmpty();
+    m_wanConfigActive = wanConfigured;
     m_ready = false;
     m_stdoutBuffer.clear();
     ++m_workerStartCount;
@@ -686,21 +687,6 @@ QString GrangerNetworkRuntime::configuredPython() const
     return configured;
 }
 
-QString GrangerNetworkRuntime::configuredWanConfig() const
-{
-    QString configured = qApp
-        ? qApp->property("granger.networkWanConfig").toString().trimmed() : QString();
-    if (configured.isEmpty()) {
-        configured = qEnvironmentVariable("GRANGER_NETWORK_WAN_CONFIG").trimmed();
-    }
-    if (!configured.isEmpty()) {
-        return QFileInfo::exists(configured) ? QFileInfo(configured).absoluteFilePath() : QString();
-    }
-    const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(
-        QStringLiteral("runtime/granger-network/browser-wan.json"));
-    return QFileInfo::exists(appLocal) ? QFileInfo(appLocal).absoluteFilePath() : QString();
-}
-
 QJsonObject GrangerNetworkRuntime::diagnostics() const
 {
     return {
@@ -722,6 +708,8 @@ QJsonObject GrangerNetworkRuntime::diagnostics() const
         {QStringLiteral("localDemoCanonical"), m_localDemoCanonical},
         {QStringLiteral("gatewayMode"), m_gatewayMode},
         {QStringLiteral("wanConfigActive"), m_wanConfigActive},
+        {QStringLiteral("wanConfigBundled"), GrangerWanConfigPaths::bundledConfigAvailable()},
+        {QStringLiteral("wanConfigInstalled"), GrangerWanConfigPaths::installed()},
         {QStringLiteral("ready"), m_ready},
         {QStringLiteral("lastWorkerError"), m_lastWorkerError},
         {QStringLiteral("lastRequestError"), m_lastRequestError}

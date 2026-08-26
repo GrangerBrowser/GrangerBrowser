@@ -32,7 +32,11 @@ from .resolver import LocalResolver
 from .service import GrangerServiceHost
 from .transport import LoopbackEndpoint
 from .wan_client import WanClientConnection, connect_service
-from .wan_config import load_browser_wan_config, load_discovery_runtime
+from .wan_config import (
+    ensure_browser_wan_config,
+    load_browser_wan_config,
+    load_discovery_runtime,
+)
 from .wan_discovery import WanDistributedResolver
 
 
@@ -143,8 +147,20 @@ class _LocalDemo:
 
 
 class _WanGateway:
-    def __init__(self, config_path: Path, state_dir: Path) -> None:
-        config = load_browser_wan_config(config_path)
+    def __init__(
+        self,
+        config_path: Path,
+        state_dir: Path,
+        *,
+        trust_anchor_path: Path | None = None,
+        rollback_state_path: Path | None = None,
+    ) -> None:
+        config = load_browser_wan_config(
+            config_path,
+            trust_anchor_path=trust_anchor_path,
+            rollback_state_path=rollback_state_path,
+            allow_legacy=trust_anchor_path is None,
+        )
         self._runtime = load_discovery_runtime(
             config.bootstrap_path,
             config.authority_pin_path,
@@ -413,13 +429,20 @@ def serve(
     local_demo: bool = False,
     wan_config: Path | None = None,
     state_dir: Path | None = None,
+    wan_trust_anchor: Path | None = None,
+    wan_rollback_state: Path | None = None,
 ) -> int:
     install_dns_guard()
     demo = _LocalDemo(registry) if local_demo and registry is not None else None
     if wan_config is not None:
         if state_dir is None:
             raise ValueError("WAN browser gateway requires a state directory")
-        resolver: object = _WanGateway(wan_config, state_dir)
+        resolver: object = _WanGateway(
+            wan_config,
+            state_dir,
+            trust_anchor_path=wan_trust_anchor,
+            rollback_state_path=wan_rollback_state,
+        )
         mode = "wan"
     elif demo is not None:
         resolver = demo.resolver
@@ -501,6 +524,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--registry", type=Path)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--wan-config", type=Path)
+    parser.add_argument("--wan-bundle", type=Path)
+    parser.add_argument("--wan-trust-anchor", type=Path)
+    parser.add_argument("--wan-install-root", type=Path)
+    parser.add_argument("--wan-rollback-state", type=Path)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--local-demo", action="store_true")
     return parser
@@ -517,16 +544,43 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if options.local_demo and options.registry is None:
             raise ValueError("local demo requires an explicit registry")
-        if options.wan_config is not None and (options.local_demo or options.registry is not None):
+        provision_values = (
+            options.wan_bundle,
+            options.wan_trust_anchor,
+            options.wan_install_root,
+            options.wan_rollback_state,
+        )
+        provision_requested = any(value is not None for value in provision_values)
+        if provision_requested and not all(value is not None for value in provision_values):
+            raise ValueError("signed WAN provisioning requires all bundle paths")
+        if options.wan_config is not None and provision_requested:
+            raise ValueError("explicit WAN config and signed provisioning are mutually exclusive")
+        if (options.wan_config is not None or provision_requested) and (
+            options.local_demo or options.registry is not None
+        ):
             raise ValueError("WAN, compatibility, and local demo modes are mutually exclusive")
+        wan_config = options.wan_config
+        wan_trust_anchor = None
+        wan_rollback_state = None
+        if provision_requested:
+            wan_config = ensure_browser_wan_config(
+                options.wan_bundle,
+                options.wan_trust_anchor,
+                options.wan_install_root,
+                options.wan_rollback_state,
+            )
+            wan_trust_anchor = options.wan_trust_anchor
+            wan_rollback_state = options.wan_rollback_state
         return serve(
             options.registry,
             options.timeout,
             local_demo=options.local_demo,
-            wan_config=options.wan_config,
+            wan_config=wan_config,
             state_dir=options.state_dir,
+            wan_trust_anchor=wan_trust_anchor,
+            wan_rollback_state=wan_rollback_state,
         )
-    except (OSError, ValueError) as error:
+    except (GrangerNetworkError, OSError, ValueError) as error:
         print(f"granger-browser-gateway: {type(error).__name__}", file=sys.stderr)
         return 2
 
