@@ -112,7 +112,7 @@ Implemented message types are:
 
 ```text
 HELLO AUTH CAPABILITIES PING PONG
-FIND_NODE FIND_RECORD STORE_RECORD
+PEER_SAMPLE FIND_NODE FIND_RECORD STORE_RECORD
 OPEN_CIRCUIT EXTEND_CIRCUIT CIRCUIT_CREATED CIRCUIT_FAILED CLOSE_CIRCUIT
 INTRO_REGISTER INTRO_REQUEST INTRO_DELIVER
 RENDEZVOUS_REGISTER RENDEZVOUS_JOIN
@@ -127,16 +127,20 @@ out-of-state messages fail closed.
 ## Distributed lookup
 
 Bootstrap peers provide an initial authenticated route to the discovery mesh.
-The client asks peers for node descriptors nearest to a domain-separated XOR
+First contact requests a bounded `PEER_SAMPLE` from authenticated discovery
+peers. Responses contain signed node descriptors, never an unsigned endpoint
+list. The client then asks peers for node descriptors nearest to a domain-separated XOR
 key and then sends `FIND_RECORD` or `STORE_RECORD` to the nearest eligible
 discovery nodes.
 
 Default publication replication is three and default read quorum is two.
 Responses are independently parsed and signature-verified. A lookup succeeds
 only when a non-stale sequence has an unambiguous replica quorum. A peer cache
-stores only bounded, valid, signed node descriptors and may provide startup
-after all bootstrap peers become unreachable. A fresh profile with no reachable
-bootstrap and no valid cache returns network unavailable.
+stores bounded valid signed descriptors plus non-sensitive reliability metadata
+and may provide startup after all bootstrap peers become unreachable. Cache and
+bootstrap descriptors are bound to the same network ID and wire protocol. A
+fresh profile with no reachable bootstrap/reseed peer and no valid cache returns
+network unavailable.
 
 ## Circuit construction
 

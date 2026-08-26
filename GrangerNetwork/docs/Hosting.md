@@ -23,8 +23,10 @@ client-to-host connection.
 
 The native Qt folder picker passes an absolute path to the hosting runtime. The
 runtime resolves and scans that path without following directory symlinks,
-requires a root `index.html`, checks readability, and enforces file-count and
-per-file limits.
+checks readability, and enforces file-count and per-file limits. A root
+`index.html` is selected automatically. If it is absent and more than one HTML
+file exists, the user must choose an entry page before publication; that choice
+is persisted with the service identity.
 
 Allowed extensions are:
 
@@ -70,6 +72,7 @@ granger-network/services/<random-id>/
     introduction-descriptor.json
     introduction-sequence.txt
     peer-cache.json
+    reseed/
     status.json
 ```
 

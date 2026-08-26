@@ -124,7 +124,8 @@ While captures continue:
 4. Stop the rendezvous. New requests may recover through another verified
    rendezvous after descriptor/route refresh.
 5. Stop bootstrap A, then all bootstrap nodes while retaining a valid peer
-   cache. Cached startup should work.
+   cache. Cached startup and an existing published service should continue
+   through discovered relays without contacting an initial seed.
 6. Use a fresh client state with every bootstrap unreachable. It must report
    network unavailable and make no other connection.
 7. Test malformed, expired, replayed, substituted, and wrong-authority data.
@@ -174,3 +175,19 @@ Archive:
 Only after this evidence exists may `PHYSICAL WAN` be marked PASS. One-machine
 loopback, documentation addresses, socket mocks, or modeled topology are never
 sufficient.
+
+For browser static-hosting acceptance, use the selected source and entry point
+without modifying the source directory:
+
+```powershell
+python tools\wan_process_acceptance.py `
+  --work-dir C:\granger\acceptance `
+  --report C:\granger\acceptance.json `
+  --browser C:\path\to\GrangerBrowser.exe `
+  --hosting-source C:\path\to\granger-test-site `
+  --hosting-entry-page nova_demo_site.html
+```
+
+The report must include source hashes before and after, HTML/second-page/CSS/
+JavaScript/JSON/SVG checks, service restart under the same identity, host
+offline fail-closed behavior, and warm-cache access after all seeds stop.

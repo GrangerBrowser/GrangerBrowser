@@ -59,9 +59,10 @@ explicitly selected for a test.
    52-character base32 names. Local aliases require an explicit service-ID pin.
 2. **Discovery**: signed records are stored at XOR-nearest discovery peers with
    bounded replication and quorum requirements.
-3. **Bootstrap**: a locally pinned Ed25519 authority signs a set containing at
-   least two independent reachable bootstrap descriptors. Learned descriptors
-   are retained in a bounded persistent peer cache.
+3. **Bootstrap and reseed**: one or more explicitly pinned Ed25519 authorities
+   sign generation-numbered sets containing multiple reachable bootstrap
+   descriptors. Learned descriptors and reliability metadata are retained in
+   an atomic, bounded, network-scoped peer cache.
 4. **Link security**: every adjacent peer connection uses wire protocol 3 and
    authenticated peer RPC.
 5. **Circuit transport**: routes are built one hop at a time. A relay receives
@@ -113,10 +114,19 @@ expired signatures, rollback and same-sequence equivocation. Discovery storage
 is bounded to 4096 records per participant. Peer cache storage is bounded to 512
 descriptors.
 
-Bootstrap is used for cold start, not as a mandatory traffic proxy. If all
-bootstrap peers fail, a valid cache may still provide discovery candidates. A
-fresh profile with no reachable bootstrap and no cache fails with
+Bootstrap is used for cold start, not as a mandatory traffic proxy. The runtime
+tries valid cached peers before current signed seeds, with at most four
+concurrent discovery dials. Authenticated `PEER_SAMPLE` responses feed bounded
+parallel `FIND_NODE` expansion. If every initial seed later stops, a valid
+cache and reachable learned peers still provide discovery. A fresh profile
+with neither a reachable seed nor a valid cache fails with
 `NETWORK_UNAVAILABLE`.
+
+Cache ingestion is capped globally, per authenticated source, and per IPv4
+`/24` or IPv6 `/48`; duplicate endpoints and invalid, expired, or wrong-network
+descriptors are rejected. Signed reseed generations are stored atomically and
+protected against rollback and same-generation equivocation. This is
+meaningful eclipse hardening, not complete Sybil resistance.
 
 ## Service publication
 
@@ -213,16 +223,20 @@ benchmark from 2.56 to 140.34 operations per second.
 
 ## Trust and deployment boundary
 
-The bootstrap authority is a cold-start trust anchor, not an account service or
-traffic relay. Operators must distribute its public pin out of band and protect
-the private signing identity. A network needs multiple independently operated,
-publicly reachable infrastructure nodes. A browser package without a valid
-bootstrap configuration intentionally has no working `.granger` WAN route.
+Bootstrap authorities are cold-start trust anchors, not account services or
+traffic relays. Operators must distribute public pins out of band and protect
+private signing identities. The reseed store can retain signed generations
+from several explicitly pinned authorities, while the current packaged browser
+configuration supplies its bundled authority. A network still needs multiple
+independently operated, publicly reachable infrastructure nodes. A package
+without a valid signed bootstrap/reseed set intentionally has no working
+`.granger` WAN route.
 
 ## Remaining architecture work
 
 - physical cross-network acceptance;
-- operational automatic node-descriptor and bootstrap-bundle rotation;
+- public independent seed/relay deployment and authenticated bundle delivery;
+- operational automatic node-descriptor rotation;
 - broader Sybil/eclipse resistance;
 - circuit rotation policy;
 - optional, measured cover traffic;

@@ -45,6 +45,12 @@ signed bootstrap set, an authority-key pin, optional local alias pins, route
 attempt count, quorum policy, and timeout. Relative paths are resolved inside
 the config directory and may not escape it.
 
+The child runtime persists a network-scoped peer cache and signed reseed
+generations next to its identity. Diagnostics expose aggregate network health
+(`OFFLINE`, `BOOTSTRAPPING`, `JOINING`, `CONNECTED`, `DEGRADED`, or
+`RESEEDING`) without service browsing details. Retry reuses the same identity
+and valid cache; it never switches transports.
+
 The packaged browser uses its app-local Python and `cryptography` runtime.
 Source-tree runtime discovery and explicit test arguments are development-only
 paths. Browser shutdown closes the pipe, waits for active requests, closes
@@ -106,7 +112,7 @@ rendezvous.
 
 ## Verified behavior
 
-The local Qt 6.11.2 acceptance covers:
+The local Qt WebEngine acceptance covers:
 
 - alias and canonical address-bar input;
 - HTTP/HTTPS interception before ordinary resolution;

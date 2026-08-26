@@ -23,6 +23,11 @@ Descriptors expire. Current scripts default physical-test descriptors to 24
 hours and bootstrap bundles to 6 hours. Rotation is an operator task; the
 runtime fails closed after expiry.
 
+Bootstrap sets carry a monotonic generation. Clients reject a lower generation
+after accepting a newer one and reject different content at the same generation.
+Use `tools/reseed_tool.py` for explicit signed bundle import, inspection, and
+export. The tool never accepts a raw endpoint as a trust substitute.
+
 ## Starting nodes
 
 Windows:
@@ -79,6 +84,10 @@ Operators should monitor:
 - connection/circuit counts and sustained byte rates;
 - unexpected DNS, UDP, or direct endpoint traffic in packet capture;
 - stale or orphan processes after restart.
+
+Client diagnostics expose only bounded network health metadata:
+`OFFLINE`, `BOOTSTRAPPING`, `JOINING`, `CONNECTED`, `DEGRADED`, or
+`RESEEDING`, plus aggregate peer/DHT counters and a short failure category.
 
 Do not log private identities, channel keys, introduction cookies, application
 bodies, or endpoint addresses across the client/service boundary.

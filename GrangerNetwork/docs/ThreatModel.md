@@ -38,11 +38,11 @@ X25519, ML-KEM-768, HKDF-SHA256, ChaCha20-Poly1305, the operating-system random
 source, Python `cryptography`, TCP, Qt WebEngine, and the local operating system.
 There is no formal proof or independent protocol audit.
 
-The client must obtain an authentic bootstrap-authority key pin and, when using
-a human-readable alias, an authentic alias-to-service identity pin. Reachable
-relay operators must publish correct numeric endpoints. Clients and service
-hosts are assumed not to be compromised at the administrator, kernel, browser,
-or live-process level.
+The client must obtain authentic bootstrap/reseed authority pins and, when
+using a human-readable alias, an authentic alias-to-service identity pin.
+Reachable relay operators must publish correct numeric endpoints. Clients and
+service hosts are assumed not to be compromised at the administrator, kernel,
+browser, or live-process level.
 
 ## Implemented route
 
@@ -232,7 +232,9 @@ post-quantum secure.
 
 - Physical WAN behavior and packet-level leak checks are unverified.
 - No public, independently operated seed/relay fleet exists in this local stage.
-- No operator/family/AS diversity, Sybil resistance, reputation, or revocation.
+- Per-source and endpoint-prefix cache limits do not identify a common
+  operator. There is no complete Sybil resistance, reputation, ASN diversity,
+  or global revocation.
 - Timing, volume, session duration, and first/last relay relationships leak.
 - No cover traffic or periodic circuit rotation.
 - TCP head-of-line blocking and network-level denial of service remain.

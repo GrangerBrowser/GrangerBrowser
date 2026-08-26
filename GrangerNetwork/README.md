@@ -33,7 +33,10 @@ through the rendezvous before application data is exchanged.
 - `granger_network.peer_rpc`: bounded, versioned and sequenced peer RPC over a
   wire-3 secure channel.
 - `granger_network.wan_discovery`: signed DHT record publication and lookup,
-  replication quorum, persistent peer cache and multiple bootstrap seeds.
+  authenticated peer exchange, controlled parallel join, replication quorum,
+  persistent peer cache and multiple bootstrap seeds.
+- `granger_network.reseed`: multi-authority signed bundle rotation with atomic
+  persistence, rollback protection, manual import, and export tooling.
 - `granger_network.circuit`: telescoping multi-hop circuit construction.
 - `granger_network.cells`: fixed 1024-byte padded cells, multiplexed streams,
   flow control and batches of at most 64 cells.
@@ -106,6 +109,13 @@ The test checks HTML, CSS, JavaScript, POST/readback, multiple clients, host
 offline/restart, middle and entry replacement, bootstrap loss, cached-peer
 startup, no fresh-profile fallback, DNS/UDP calls, endpoint socket sets,
 plaintext relay captures and orphan processes.
+
+To exercise the real static site used for release acceptance, add:
+
+```powershell
+  --hosting-source C:\path\to\granger-test-site `
+  --hosting-entry-page nova_demo_site.html
+```
 
 ## Benchmarks
 
@@ -201,8 +211,9 @@ mock service state. See [Hosting.md](docs/Hosting.md).
 
 - Physical cross-ISP and Windows-to-Debian behavior is **UNVERIFIED**.
 - No public bootstrap/relay fleet is shipped in this local development stage.
-- Bootstrap bundles and node descriptors require operator rotation before
-  expiry; automatic authority distribution is not implemented.
+- Signed reseed import/export and generation rollback protection are
+  implemented. Remote bundle download and automatic authority distribution are
+  intentionally not implemented; node descriptors still require rotation.
 - Traffic timing, volume and session duration remain observable.
 - Cover traffic and periodic circuit rotation are not enabled.
 - Responses are buffered up to bounded limits; streaming large files and
