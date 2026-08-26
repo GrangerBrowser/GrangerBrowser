@@ -727,7 +727,13 @@ def serve_hosted_service(
     )
     selector = WanRouteSelector(runtime.discovery)
     generation = 0
-    _write_status(root, "starting", service)
+    recovery_cycles = 0
+    _write_status(
+        root,
+        "starting",
+        service,
+        networkHealth=runtime.discovery.health().to_document(),
+    )
     while True:
         now = int(time.time())
         assert service.expires_at is not None
@@ -766,16 +772,25 @@ def serve_hosted_service(
         runtime.discovery.publish(introduction)
         host: WanServiceHost | None = None
         failures: list[str] = []
+        route_exclusions: set[str] = set()
         try:
             for attempt in range(4):
                 candidate: WanServiceHost | None = None
                 try:
                     intro_routes = tuple(
-                        selector.service_route(service.service_id, node, "introduction")
+                        selector.service_route(
+                            service.service_id,
+                            node,
+                            "introduction",
+                            excluded_ids=route_exclusions,
+                        )
                         for node in selected_introductions
                     )
                     rendezvous_route = selector.service_route(
-                        service.service_id, rendezvous_node, "rendezvous"
+                        service.service_id,
+                        rendezvous_node,
+                        "rendezvous",
+                        excluded_ids=route_exclusions,
                     )
                     candidate = WanServiceHost(
                         identity,
@@ -794,11 +809,26 @@ def serve_hosted_service(
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                     failures.append(type(error).__name__)
                     if candidate is not None:
+                        route_exclusions.update(candidate.startup_failed_middle_ids)
                         candidate.stop()
                     if attempt < 3:
                         time.sleep(0.2 * (attempt + 1))
             if host is None:
-                raise OverlayRoutingError("hosting route startup attempts were exhausted")
+                if generation == 0:
+                    raise OverlayRoutingError("hosting route startup attempts were exhausted")
+                recovery_cycles += 1
+                _write_status(
+                    root,
+                    "recovering",
+                    service,
+                    generation=generation,
+                    networkHealth=runtime.discovery.health().to_document(),
+                    recoveryReason="hosting route startup attempts were exhausted",
+                    startupFailures=failures,
+                )
+                time.sleep(min(2.0, 0.25 * recovery_cycles))
+                continue
+            recovery_cycles = 0
             generation += 1
             _write_status(
                 root,
@@ -806,6 +836,7 @@ def serve_hosted_service(
                 service,
                 generation=generation,
                 introductionNodeIds=[node.node_id for node in selected_introductions],
+                networkHealth=runtime.discovery.health().to_document(),
                 rendezvousNodeId=rendezvous_node.node_id,
                 startupFailures=failures,
             )
@@ -813,7 +844,17 @@ def serve_hosted_service(
             while not host.wait(0.25):
                 if int(time.time()) >= refresh_at:
                     break
-            if host.wait(0):
+            if host.recovery_requested:
+                _write_status(
+                    root,
+                    "recovering",
+                    service,
+                    generation=generation,
+                    networkHealth=runtime.discovery.health().to_document(),
+                    recoveryReason=host.recovery_reason,
+                )
+                time.sleep(0.25)
+            elif host.wait(0):
                 if host.errors:
                     raise RuntimeError(host.errors[0])
                 raise RuntimeError("hosted service stopped before descriptor refresh")

@@ -2166,17 +2166,20 @@ bool MainWindow::prepareHostedStaticWizardForDiagnostics(const QString &source,
 bool MainWindow::createHostedStaticForDiagnostics(const QString &title,
                                                   const QString &source,
                                                   HostedServiceRecord *created,
-                                                  QString *error)
+                                                  QString *error,
+                                                  const QString &entryPage)
 {
-    return m_hosting.createStaticSite(title, source, created, error);
+    return m_hosting.createStaticSite(title, source, created, error, entryPage);
 }
 
 quint64 MainWindow::createHostedStaticAsyncForDiagnostics(
     const QString &title,
     const QString &source,
-    GrangerHostingManager::CreationCompletion completion)
+    GrangerHostingManager::CreationCompletion completion,
+    const QString &entryPage)
 {
-    return m_hosting.createStaticSiteAsync(title, source, std::move(completion));
+    return m_hosting.createStaticSiteAsync(
+        title, source, std::move(completion), entryPage);
 }
 
 quint64 MainWindow::createHostedLocalApplicationAsyncForDiagnostics(

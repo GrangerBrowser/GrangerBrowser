@@ -91,6 +91,7 @@ def run_host(options: argparse.Namespace) -> int:
     selector = WanRouteSelector(runtime.discovery)
     bridge = LoopbackHttpBridge(LoopbackHttpTarget.parse(options.upstream))
     generation = 0
+    recovery_cycles = 0
     while True:
         now = int(time.time())
         assert service.expires_at is not None
@@ -148,6 +149,7 @@ def run_host(options: argparse.Namespace) -> int:
         intro_routes = None
         rendezvous_route = None
         startup_failures: list[str] = []
+        route_exclusions: set[str] = set()
         try:
             for attempt in range(options.startup_attempts):
                 candidate: WanServiceHost | None = None
@@ -157,6 +159,7 @@ def run_host(options: argparse.Namespace) -> int:
                             service.service_id,
                             introduction_node,
                             "introduction",
+                            excluded_ids=route_exclusions,
                         )
                         for introduction_node in selected_introductions
                     )
@@ -164,6 +167,7 @@ def run_host(options: argparse.Namespace) -> int:
                         service.service_id,
                         rendezvous_node,
                         "rendezvous",
+                        excluded_ids=route_exclusions,
                     )
                     candidate = WanServiceHost(
                         identity,
@@ -182,14 +186,20 @@ def run_host(options: argparse.Namespace) -> int:
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                     startup_failures.append(f"{type(error).__name__}:{error}")
                     if candidate is not None:
+                        route_exclusions.update(candidate.startup_failed_middle_ids)
                         candidate.stop()
                     if attempt + 1 < options.startup_attempts:
                         time.sleep(min(1.0, 0.2 * (attempt + 1)))
             if host is None or intro_routes is None or rendezvous_route is None:
-                raise OverlayRoutingError(
-                    "service private-route startup attempts were exhausted: "
-                    + ";".join(startup_failures)
-                )
+                if generation == 0:
+                    raise OverlayRoutingError(
+                        "service private-route startup attempts were exhausted: "
+                        + ";".join(startup_failures)
+                    )
+                recovery_cycles += 1
+                time.sleep(min(2.0, 0.25 * recovery_cycles))
+                continue
+            recovery_cycles = 0
             generation += 1
             if options.ready_file is not None:
                 atomic_write_text(
@@ -228,7 +238,10 @@ def run_host(options: argparse.Namespace) -> int:
             while not host.wait(0.25):
                 if int(time.time()) >= refresh_at:
                     break
-            if host.wait(0):
+            if host.recovery_requested:
+                recovery_cycles += 1
+                time.sleep(min(2.0, 0.25 * recovery_cycles))
+            elif host.wait(0):
                 if host.errors:
                     raise RuntimeError(host.errors[0])
                 raise RuntimeError("service host stopped before descriptor refresh")

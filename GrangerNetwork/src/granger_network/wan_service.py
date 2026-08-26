@@ -28,6 +28,13 @@ from .wan_control import (
 )
 
 
+_RENDEZVOUS_ROUTE_FAILURE_LIMIT = 3
+
+
+class _RendezvousRouteUnavailable(OverlayRoutingError):
+    pass
+
+
 def rendezvous_session_id(cookie: bytes) -> bytes:
     if not isinstance(cookie, bytes) or len(cookie) != 32:
         raise ProtocolError("rendezvous cookie is invalid")
@@ -268,6 +275,9 @@ class WanServiceHost:
         self.rendezvous_lifetime = rendezvous_lifetime
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self._recovery = threading.Event()
+        self._recovery_lock = threading.Lock()
+        self._recovery_reason = ""
         self._thread: threading.Thread | None = None
         self._intro_threads: list[threading.Thread] = []
         self._intro_circuits: list[BuiltCircuit] = []
@@ -278,6 +288,7 @@ class WanServiceHost:
         self._application_server: WanApplicationServer | None = None
         self._grant_condition = threading.Condition()
         self._grant_slot: tuple[bytes, int] | None = None
+        self._startup_failed_route: tuple[tuple[NodeDescriptor, str], ...] = ()
         self.errors: list[str] = []
         self.session_failures: list[str] = []
 
@@ -285,10 +296,30 @@ class WanServiceHost:
     def ready(self) -> bool:
         return self._ready.is_set()
 
+    @property
+    def recovery_requested(self) -> bool:
+        return self._recovery.is_set()
+
+    @property
+    def recovery_reason(self) -> str:
+        with self._recovery_lock:
+            return self._recovery_reason
+
+    @property
+    def startup_failed_middle_ids(self) -> frozenset[str]:
+        return frozenset(
+            descriptor.node_id
+            for descriptor, role in self._startup_failed_route
+            if role == "middle"
+        )
+
     def start_background(self) -> None:
         if self._thread is not None:
             raise RuntimeError("WAN service host is already running")
         self._stop.clear()
+        self._recovery.clear()
+        with self._recovery_lock:
+            self._recovery_reason = ""
         self._thread = threading.Thread(
             target=self._run,
             name="granger-wan-service-host",
@@ -303,12 +334,34 @@ class WanServiceHost:
             raise TimeoutError("WAN service host did not become ready")
         if self.errors:
             raise ProtocolError(f"WAN service host failed: {self.errors[0]}")
+        if self.recovery_requested:
+            raise OverlayRoutingError(
+                f"WAN service route requires recovery: {self.recovery_reason}"
+            )
+
+    def _request_recovery(self, reason: str) -> None:
+        if self._stop.is_set():
+            return
+        with self._recovery_lock:
+            if not self._recovery_reason:
+                self._recovery_reason = reason
+        self._recovery.set()
+        with self._grant_condition:
+            self._grant_slot = None
+            self._grant_condition.notify_all()
+        circuit = self._rendezvous_circuit
+        if circuit is not None:
+            circuit.close()
 
     def _run(self) -> None:
         try:
             builder = CircuitBuilder(self.identity, PeerRole.SERVICE, timeout=self.timeout)
             for route in self.introduction_routes:
-                circuit = builder.open(route)
+                try:
+                    circuit = builder.open(route)
+                except (GrangerNetworkError, OSError, TimeoutError, ValueError):
+                    self._startup_failed_route = route
+                    raise
                 try:
                     circuit.endpoint.rpc.request(
                         RpcType.INTRO_REGISTER,
@@ -329,18 +382,46 @@ class WanServiceHost:
                 self._intro_threads.append(thread)
                 thread.start()
 
-            while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
+            consecutive_route_failures = 0
+            while (
+                not self._stop.is_set()
+                and not self._recovery.is_set()
+                and int(time.time()) < self.introduction.expires_at
+            ):
                 try:
                     self._serve_rendezvous_session(builder)
+                    consecutive_route_failures = 0
+                except _RendezvousRouteUnavailable as error:
+                    if self._stop.is_set() or self._recovery.is_set():
+                        break
+                    if not self._ready.is_set():
+                        self._startup_failed_route = self.rendezvous_route
+                        raise
+                    consecutive_route_failures += 1
+                    if len(self.session_failures) < 1024:
+                        self.session_failures.append(
+                            f"rendezvous-route:{type(error.__cause__).__name__}:{error}"
+                        )
+                    if consecutive_route_failures >= _RENDEZVOUS_ROUTE_FAILURE_LIMIT:
+                        self._request_recovery(
+                            f"rendezvous-route:{type(error.__cause__).__name__}"
+                        )
+                        break
+                    self._stop.wait(0.1 * consecutive_route_failures)
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                    if self._stop.is_set():
+                    if self._stop.is_set() or self._recovery.is_set():
                         break
                     if not self._ready.is_set():
                         raise
+                    consecutive_route_failures = 0
                     if len(self.session_failures) < 1024:
                         self.session_failures.append(f"{type(error).__name__}:{error}")
                     self._stop.wait(0.1)
-            if not self._stop.is_set() and int(time.time()) >= self.introduction.expires_at:
+            if (
+                not self._stop.is_set()
+                and not self._recovery.is_set()
+                and int(time.time()) >= self.introduction.expires_at
+            ):
                 raise ProtocolError("service introduction descriptor expired")
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
             if not self._stop.is_set():
@@ -352,8 +433,11 @@ class WanServiceHost:
         cookie = secrets.token_bytes(32)
         expires_at = int(time.time()) + self.rendezvous_lifetime
         cell_circuit_id = secrets.token_bytes(16)
+        route_ready = False
         try:
             self._rendezvous_circuit = builder.open(self.rendezvous_route)
+            if self._recovery.is_set():
+                raise OverlayRoutingError("service route recovery was requested")
             registration = RendezvousRegistration.create(
                 self.identity,
                 self.service.service_id,
@@ -373,7 +457,10 @@ class WanServiceHost:
             )
             rendezvous_stream = self._rendezvous_mux.open_stream(self.timeout)
             rendezvous_stream.settimeout(float(self.rendezvous_lifetime))
+            route_ready = True
             with self._grant_condition:
+                if self._recovery.is_set():
+                    raise OverlayRoutingError("service route recovery was requested")
                 self._grant_slot = (cookie, expires_at)
                 self._grant_condition.notify_all()
             self._ready.set()
@@ -398,6 +485,10 @@ class WanServiceHost:
                 timeout=self.timeout,
             )
             self._application_server.serve_forever()
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            if not route_ready and not self._stop.is_set() and not self._recovery.is_set():
+                raise _RendezvousRouteUnavailable(str(error)) from error
+            raise
         finally:
             with self._grant_condition:
                 if self._grant_slot is not None and self._grant_slot[0] == cookie:
@@ -443,9 +534,10 @@ class WanServiceHost:
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 if not self._stop.is_set():
-                    self.session_failures.append(
-                        f"introduction:{type(error).__name__}:{error}"
-                    )
+                    reason = f"introduction:{type(error).__name__}:{error}"
+                    if len(self.session_failures) < 1024:
+                        self.session_failures.append(reason)
+                    self._request_recovery(reason)
                 return
 
     def _close_rendezvous_session(self) -> None:

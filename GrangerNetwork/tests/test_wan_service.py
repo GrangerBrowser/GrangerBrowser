@@ -365,6 +365,66 @@ class WanServiceTests(unittest.TestCase):
                     self.assertFalse(observation.contains(content))
         self.assertEqual(host.errors, [])
 
+    def test_host_requests_route_recovery_when_introduction_circuit_breaks(self) -> None:
+        (
+            _client_entry,
+            _client_middle,
+            service_entry,
+            host_middle,
+            introduction_node,
+            rendezvous_node,
+        ) = self.descriptors
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "distributed-overlay",
+            metadata={"contentType": "text/html", "title": "Recovery test"},
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [introduction_node.node_id],
+            sequence=1,
+            lifetime=900,
+        )
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            (
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (introduction_node, "introduction"),
+            ),
+            (
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (rendezvous_node, "rendezvous"),
+            ),
+            LoopbackHttpBridge(
+                LoopbackHttpTarget("127.0.0.1", int(self.backend.server_address[1]))
+            ),
+            timeout=2.0,
+            rendezvous_lifetime=30,
+        )
+        try:
+            host.start_background()
+            host.wait_ready(10.0)
+            self.assertTrue(host._intro_circuits)
+            host._intro_circuits[0].close()
+
+            deadline = time.monotonic() + 5.0
+            while not host.recovery_requested and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+            self.assertTrue(host.recovery_requested)
+            self.assertTrue(host.recovery_reason.startswith("introduction:"))
+            self.assertTrue(host.wait(5.0))
+            self.assertEqual(host.errors, [])
+        finally:
+            host.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

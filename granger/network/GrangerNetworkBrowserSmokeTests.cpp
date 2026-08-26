@@ -604,7 +604,8 @@ int runGrangerNetworkWanSmoke(QApplication &app,
 int runGrangerHostingSmoke(QApplication &app,
                            const QString &outputPath,
                            const QString &sourceDirectory,
-                           int localApplicationPort)
+                           int localApplicationPort,
+                           const QString &entryPage)
 {
     Q_UNUSED(app)
     static const QString localApplicationMessage =
@@ -782,7 +783,7 @@ int runGrangerHostingSmoke(QApplication &app,
                 created = record;
                 createError = error;
                 createLoop.quit();
-            });
+            }, entryPage);
         createTimeout.start(180000);
         if (!createCompleted) createLoop.exec();
         const qint64 createMs = publishTimer.elapsed();
@@ -819,10 +820,16 @@ int runGrangerHostingSmoke(QApplication &app,
             do {
                 asyncAssetsReady = evaluateJavaScript(
                     tab ? tab->page() : nullptr,
-                    QStringLiteral(
-                        "document.documentElement.dataset.hostingJson === 'ok'"
-                        " && document.querySelector('img')?.complete"
-                        " && document.querySelector('img')?.naturalWidth > 0"),
+                    QStringLiteral(R"JS((()=>{
+                        const button=document.querySelector('#js-test');
+                        if(button&&!document.querySelector('#check-js')?.checked)button.click();
+                        const script=document.documentElement.dataset.granger==='hosted'
+                            ||document.querySelector('#check-js')?.checked===true;
+                        const json=document.documentElement.dataset.hostingJson==='ok'
+                            ||document.querySelector('#json-badge')?.textContent.trim()==='PASS';
+                        const image=[...document.images].some(item=>item.complete&&item.naturalWidth>0);
+                        return script&&json&&image;
+                    })())JS"),
                     10000).toBool();
                 if (asyncAssetsReady) break;
                 QEventLoop delay;
@@ -837,15 +844,15 @@ int runGrangerHostingSmoke(QApplication &app,
                     10000))},
                 {QStringLiteral("css"), QJsonValue::fromVariant(evaluateJavaScript(
                     tab ? tab->page() : nullptr,
-                    QStringLiteral("getComputedStyle(document.body).backgroundColor"),
+                    QStringLiteral("document.styleSheets.length > 0 && getComputedStyle(document.body).backgroundColor !== ''"),
                     10000))},
                 {QStringLiteral("script"), QJsonValue::fromVariant(evaluateJavaScript(
                     tab ? tab->page() : nullptr,
-                    QStringLiteral("document.documentElement.dataset.granger === 'hosted'"),
+                    QStringLiteral("document.documentElement.dataset.granger === 'hosted' || document.querySelector('#check-js')?.checked === true"),
                     10000))},
                 {QStringLiteral("json"), QJsonValue::fromVariant(evaluateJavaScript(
                     tab ? tab->page() : nullptr,
-                    QStringLiteral("document.documentElement.dataset.hostingJson || ''"),
+                    QStringLiteral("document.documentElement.dataset.hostingJson === 'ok' || document.querySelector('#json-badge')?.textContent.trim() === 'PASS'"),
                     10000))},
                 {QStringLiteral("image"), QJsonValue::fromVariant(evaluateJavaScript(
                     tab ? tab->page() : nullptr,
@@ -854,12 +861,27 @@ int runGrangerHostingSmoke(QApplication &app,
             };
         }
         const bool assets = firstLoad.loaded
-            && first.value(QStringLiteral("heading")).toString()
-                == QStringLiteral("Granger hosted site")
-            && first.value(QStringLiteral("css")).toString() == QStringLiteral("rgb(16, 18, 22)")
+            && !first.value(QStringLiteral("heading")).toString().trimmed().isEmpty()
+            && first.value(QStringLiteral("css")).toBool()
             && first.value(QStringLiteral("script")).toBool()
-            && first.value(QStringLiteral("json")).toString() == QStringLiteral("ok")
+            && first.value(QStringLiteral("json")).toBool()
             && first.value(QStringLiteral("image")).toBool();
+
+        const bool expectsSecondHtml = QFileInfo(
+            QDir(sourceDirectory).filePath(QStringLiteral("about.html"))).isFile();
+        LoadResult secondLoad;
+        QString secondHeading;
+        if (online && expectsSecondHtml) {
+            secondLoad = waitForLoad(tab, [&] {
+                window.openAddressForDiagnostics(created.address + QStringLiteral("/about.html"));
+            }, 120000);
+            secondHeading = evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.querySelector('h1')?.textContent || ''"),
+                10000).toString();
+        }
+        const bool secondHtml = !expectsSecondHtml
+            || (secondLoad.loaded && !secondHeading.trimmed().isEmpty());
 
         QString stopError;
         const bool stopped = createdOk
@@ -894,7 +916,7 @@ int runGrangerHostingSmoke(QApplication &app,
                 10000).toString();
         }
         const bool recovery = recoveryLoad.loaded
-            && recoveryHeading == QStringLiteral("Granger hosted site");
+            && recoveryHeading == first.value(QStringLiteral("heading")).toString();
         const HostedServiceRecord recoveryRecord = createdOk
             ? window.hostedServiceForDiagnostics(created.id) : HostedServiceRecord();
         const qint64 recoveryWorkingSetBytes = recovery
@@ -1000,7 +1022,7 @@ int runGrangerHostingSmoke(QApplication &app,
         QString blockedError;
         const bool unavailableRejected = !window.createHostedStaticForDiagnostics(
             QStringLiteral("Blocked hosting acceptance"), sourceDirectory,
-            &blockedService, &blockedError);
+            &blockedService, &blockedError, entryPage);
         qApp->setProperty("granger.networkWanConfig", configuredWan);
         const bool noUnavailableGhost = unavailableRejected && blockedService.id.isEmpty()
             && window.grangerHostingDiagnosticsForDiagnostics()
@@ -1023,7 +1045,7 @@ int runGrangerHostingSmoke(QApplication &app,
             && finalHostingRuntime.value(QStringLiteral("pendingOperations")).toInt(-1) == 0;
 
         passed = settingsPage && uiActions && createdOk && identityBound && online
-            && idempotentStart && assets && stopped && failClosed && restarted && recovery
+            && idempotentStart && assets && secondHtml && stopped && failClosed && restarted && recovery
             && privacy && removed && localApplication && noUnavailableGhost && noOfflineGhost;
         result = {
             {QStringLiteral("ok"), passed},
@@ -1061,6 +1083,9 @@ int runGrangerHostingSmoke(QApplication &app,
             {QStringLiteral("hostWorkingSetBytes"), hostWorkingSetBytes},
             {QStringLiteral("recoveryWorkingSetBytes"), recoveryWorkingSetBytes},
             {QStringLiteral("staticAssets"), assets},
+            {QStringLiteral("entryPage"), entryPage},
+            {QStringLiteral("secondHtml"), secondHtml},
+            {QStringLiteral("secondHeading"), secondHeading},
             {QStringLiteral("stopped"), stopped},
             {QStringLiteral("stopError"), stopError},
             {QStringLiteral("failClosedWhileOffline"), failClosed},

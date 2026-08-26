@@ -18,6 +18,7 @@ int runGrangerNetworkWanSmoke(QApplication &app,
 int runGrangerHostingSmoke(QApplication &app,
                            const QString &outputPath,
                            const QString &sourceDirectory,
-                           int localApplicationPort);
+                           int localApplicationPort,
+                           const QString &entryPage = QString());
 
 }

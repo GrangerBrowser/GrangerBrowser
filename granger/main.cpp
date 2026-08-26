@@ -6329,7 +6329,8 @@ int main(int argc, char *argv[])
             smokeOutput.isEmpty()
                 ? QStringLiteral("output/granger-hosting-smoke.json") : smokeOutput,
             argumentValue(arguments, QStringLiteral("--granger-hosting-source=")),
-            argumentValue(arguments, QStringLiteral("--granger-hosting-backend-port=")).toInt());
+            argumentValue(arguments, QStringLiteral("--granger-hosting-backend-port=")).toInt(),
+            argumentValue(arguments, QStringLiteral("--granger-hosting-entry-page=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

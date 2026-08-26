@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import shutil
@@ -43,6 +44,8 @@ PLAINTEXT_MARKERS = (
     b"POST /message HTTP/1.1",
     b"Granger test forum",
     b"Granger hosted site",
+    b"STATIC .GRANGER TEST SITE",
+    b"Static JSON loaded successfully",
 )
 
 
@@ -68,6 +71,32 @@ def available_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+def directory_manifest(root: Path) -> dict[str, tuple[int, str]]:
+    base = Path(root).resolve()
+    result: dict[str, tuple[int, str]] = {}
+    for path in sorted(candidate for candidate in base.rglob("*") if candidate.is_file()):
+        relative = path.relative_to(base).as_posix()
+        result[relative] = (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+    return result
+
+
+def manifest_document(manifest: dict[str, tuple[int, str]]) -> dict[str, dict[str, object]]:
+    return {
+        path: {"sha256": digest, "size": size}
+        for path, (size, digest) in sorted(manifest.items())
+    }
+
+
+def manifest_sha256(manifest: dict[str, tuple[int, str]]) -> str:
+    content = json.dumps(
+        manifest_document(manifest),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return hashlib.sha256(content).hexdigest()
 
 
 def process_is_running(pid: int) -> bool:
@@ -174,6 +203,42 @@ def wait_json(path: Path, child: ChildProcess, timeout: float) -> dict:
         time.sleep(0.05)
     suffix = f": {last_error}" if last_error is not None else ""
     raise AcceptanceError(f"timed out waiting for {child.name} readiness{suffix}")
+
+
+def wait_status(
+    path: Path,
+    child: ChildProcess,
+    expected: str,
+    timeout: float,
+    *,
+    minimum_generation: int | None = None,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if child.process.poll() is not None:
+            raise AcceptanceError(
+                f"{child.name} exited before {expected} with code {child.process.returncode}"
+            )
+        if path.exists():
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                document = {}
+            generation = document.get("generation", 0)
+            generation_ready = (
+                minimum_generation is None
+                or isinstance(generation, int)
+                and not isinstance(generation, bool)
+                and generation >= minimum_generation
+            )
+            if document.get("state") == expected and generation_ready:
+                return document
+            if document.get("state") == "error":
+                raise AcceptanceError(
+                    f"{child.name} reported {document.get('errorCode', 'hosting error')}"
+                )
+        time.sleep(0.05)
+    raise AcceptanceError(f"timed out waiting for {child.name} state {expected}")
 
 
 def wait_exit(child: ChildProcess, timeout: float) -> int:
@@ -330,12 +395,15 @@ def run_acceptance(
     qt_bin: Path | None = None,
     expect_packaged_runtime: bool = False,
     hosting_source: Path | None = None,
+    hosting_entry_page: str = "",
 ) -> dict:
     root = Path(root).resolve()
     report_path = Path(report_path).resolve()
+    hosting_source_manifest: dict[str, tuple[int, str]] = {}
     if hosting_source is not None:
         hosting_source = Path(hosting_source).resolve()
-        inspection = inspect_static_site(hosting_source)
+        hosting_source_manifest = directory_manifest(hosting_source)
+        inspection = inspect_static_site(hosting_source, entry_page=hosting_entry_page)
         if not inspection.ok or inspection.requiresEntrySelection or not inspection.entryPage:
             detail = "; ".join(inspection.errors) or "an entry page must be selected"
             raise AcceptanceError(f"hosting source is invalid: {detail}")
@@ -505,6 +573,9 @@ def run_acceptance(
             exclusions: list[str],
             *,
             attempts: int = 6,
+            target_name: str = canonical_name,
+            request_path: str = "/messages",
+            state_name: str | None = None,
         ) -> tuple[ChildProcess, Path, Path]:
             client_report_path = root / f"{name}-report.json"
             client_output_path = root / f"{name}-messages.txt"
@@ -516,15 +587,15 @@ def run_acceptance(
                     "-m",
                     "granger_network.wan_client",
                     "fetch",
-                    canonical_name,
+                    target_name,
                     "--state-dir",
-                    str(root / name),
+                    str(root / (state_name or name)),
                     "--bootstrap",
                     str(bootstrap_path),
                     "--authority-pin",
                     str(authority_pin_path),
                     "--path",
-                    "/messages",
+                    request_path,
                     "--output",
                     str(client_output_path),
                     "--report",
@@ -541,6 +612,80 @@ def run_acceptance(
             )
             children.append(client_process)
             return client_process, client_report_path, client_output_path
+
+        static_host: ChildProcess | None = None
+        static_host_ready: dict = {}
+        static_canonical_name = ""
+        static_entry_content = b""
+        static_initial_report: dict = {}
+        static_initial_output = b""
+        if hosting_source is not None:
+            static_services = root / "static-services"
+            static_service_id = "0123456789abcdef0123456789abcdef"
+            static_service_dir = static_services / static_service_id
+            created_static = run_checked(
+                [
+                    sys.executable,
+                    "-m",
+                    "granger_network.hosting",
+                    "create",
+                    "--services-root",
+                    str(static_services),
+                    "--service-id",
+                    static_service_id,
+                    "--title",
+                    "Granger bootstrap-independent static acceptance",
+                    "--type",
+                    "static",
+                    "--source",
+                    str(hosting_source),
+                    "--entry-page",
+                    inspection.entryPage,
+                ],
+                child_environment(root / "audit" / "static-create.jsonl", "static-create"),
+            )
+            static_document = json.loads(created_static.stdout)
+            static_canonical_name = str(static_document["address"])
+            static_entry_content = (hosting_source / inspection.entryPage).read_bytes()
+            static_status_path = static_service_dir / "metadata/status.json"
+            static_host = start_child(
+                root,
+                "static-host",
+                [
+                    sys.executable,
+                    "-m",
+                    "granger_network.hosting",
+                    "serve",
+                    "--service-dir",
+                    str(static_service_dir),
+                    "--wan-bundle",
+                    str(browser_config_path),
+                    "--wan-trust-anchor",
+                    str(browser_trust_anchor),
+                    "--wan-install-root",
+                    str(root / "static-host-wan"),
+                    "--wan-rollback-state",
+                    str(root / "static-host-rollback.json"),
+                ],
+                role="static-host",
+            )
+            children.append(static_host)
+            static_host_ready = wait_status(static_status_path, static_host, "online", 90.0)
+            if static_host_ready.get("canonicalName") != static_canonical_name:
+                raise AcceptanceError("static host readiness changed its service identity")
+            static_client, static_report_path, static_output_path = start_fetch_client(
+                "site-client",
+                [],
+                target_name=static_canonical_name,
+                request_path="/",
+            )
+            static_exit = wait_exit(static_client, 90.0)
+            if static_exit != 0:
+                raise AcceptanceError(f"initial static site client failed with exit code {static_exit}")
+            static_initial_report = json.loads(static_report_path.read_text(encoding="utf-8"))
+            static_initial_output = static_output_path.read_bytes()
+            if static_initial_output != static_entry_content:
+                raise AcceptanceError("initial static site response did not match its entry file")
 
         client_a_report_path = root / "client-a-report.json"
         client_a = start_child(
@@ -701,6 +846,7 @@ def run_acceptance(
                     f"--granger-network-wan-install-root={hosting_install_root}",
                     f"--granger-network-wan-rollback-state={hosting_rollback_state}",
                     f"--granger-hosting-source={hosting_source}",
+                    f"--granger-hosting-entry-page={inspection.entryPage}",
                     f"--granger-hosting-backend-port={int(backend_ready['port'])}",
                 ]
                 if not expect_packaged_runtime:
@@ -870,6 +1016,67 @@ def run_acceptance(
         if MESSAGE.encode("ascii") not in cached_messages:
             raise AcceptanceError("cached client did not receive the forum message")
 
+        static_cached_report: dict = {}
+        static_cached_output = b""
+        static_cached_exit = -1
+        static_recovery_attempts = 0
+        static_recovery_status: dict = {}
+        static_recovery_process_ids: list[int] = []
+        if hosting_source is not None:
+            static_cached_state = root / "site-client-cache"
+            static_cached_state.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(
+                root / "site-client" / "peer-cache.json",
+                static_cached_state / "peer-cache.json",
+            )
+            static_cached_client, static_cached_report_path, static_cached_output_path = (
+                start_fetch_client(
+                    "site-client-cache",
+                    [],
+                    target_name=static_canonical_name,
+                    request_path="/",
+                )
+            )
+            static_recovery_attempts = 1
+            static_recovery_process_ids.append(static_cached_client.process.pid)
+            static_cached_exit = wait_exit(static_cached_client, 90.0)
+            if static_cached_exit != 0:
+                static_recovery_status = wait_status(
+                    static_status_path,
+                    static_host,
+                    "online",
+                    90.0,
+                    minimum_generation=int(static_host_ready.get("generation", 0)) + 1,
+                )
+                if static_recovery_status.get("canonicalName") != static_canonical_name:
+                    raise AcceptanceError("static host recovery changed its service identity")
+                static_cached_client, static_cached_report_path, static_cached_output_path = (
+                    start_fetch_client(
+                        "site-client-cache-retry",
+                        [],
+                        target_name=static_canonical_name,
+                        request_path="/",
+                        state_name="site-client-cache",
+                    )
+                )
+                static_recovery_attempts += 1
+                static_recovery_process_ids.append(static_cached_client.process.pid)
+                static_cached_exit = wait_exit(static_cached_client, 90.0)
+                if static_cached_exit != 0:
+                    raise AcceptanceError(
+                        "cached static-site client failed after host route recovery"
+                    )
+            static_cached_report = json.loads(
+                static_cached_report_path.read_text(encoding="utf-8")
+            )
+            static_cached_output = static_cached_output_path.read_bytes()
+            if static_cached_output != static_entry_content:
+                raise AcceptanceError(
+                    "cached static-site response did not match its entry file"
+                )
+            if static_host is None or static_host.process.poll() is not None:
+                raise AcceptanceError("static host stopped during bootstrap-loss acceptance")
+
         fresh_client, fresh_report_path, fresh_output_path = start_fetch_client(
             "client-fresh",
             route_exclusion_arguments,
@@ -904,6 +1111,8 @@ def run_acceptance(
             + audit_events.get("client-d", [])
             + audit_events.get("client-cache", [])
             + audit_events.get("client-fresh", [])
+            + audit_events.get("site-client", [])
+            + audit_events.get("site-client-cache", [])
         )
         host_ports = destination_ports(
             audit_events.get("host", []) + audit_events.get("host-restarted", [])
@@ -912,6 +1121,7 @@ def run_acceptance(
         hosting_browser_endpoints = destination_endpoints(
             audit_events.get("browser-hosting", [])
         )
+        static_host_endpoints = destination_endpoints(audit_events.get("static-host", []))
         discovery_ports = {
             descriptor.endpoint.port
             for descriptor in descriptors_by_name.values()
@@ -977,10 +1187,26 @@ def run_acceptance(
                 int(fresh_client.process.pid),
             )
         )
+        if hosting_source is not None:
+            process_ids.extend(
+                (
+                    int(static_host_ready["pid"]),
+                    int(static_initial_report["pid"]),
+                )
+            )
+            process_ids.extend(static_recovery_process_ids)
         checks = {
             "allBootstrapDownCacheRecovered": cached_exit == 0
             and cached_report.get("status") == 200
             and MESSAGE.encode("ascii") in cached_messages,
+            "allBootstrapDownSiteRecovered": hosting_source is None
+            or (
+                static_cached_exit == 0
+                and static_cached_report.get("status") == 200
+                and static_cached_output == static_entry_content
+            ),
+            "allBootstrapDownSiteRecoveryBounded": hosting_source is None
+            or 1 <= static_recovery_attempts <= 2,
             "bootstrapFailureRecovered": node_children[failed_bootstrap_name].process.poll()
             is not None,
             "browserWanIntegration": browser is None
@@ -1038,6 +1264,16 @@ def run_acceptance(
                 bool(hosting_browser_endpoints)
                 and hosting_browser_endpoints.issubset(allowed_hosting_endpoints)
             ),
+            "staticHostingConnectedOnlyToOverlayNodes": hosting_source is None
+            or (
+                bool(static_host_endpoints)
+                and static_host_endpoints.issubset(all_overlay_endpoints)
+            ),
+            "staticSiteInitialRead": hosting_source is None
+            or (
+                static_initial_report.get("status") == 200
+                and static_initial_output == static_entry_content
+            ),
             "independentProcesses": len(process_ids) == len(set(process_ids)),
             "middleFailureRecovered": client_c_report["clientMiddleNodeId"]
             != failed_middle_id,
@@ -1066,12 +1302,22 @@ def run_acceptance(
                 for readiness in (initial_host_ready, host_ready)
             ),
             "udpSends": len(udp_events) == 0,
+            "hostingSourceUnchanged": hosting_source is None
+            or directory_manifest(hosting_source) == hosting_source_manifest,
         }
         report.update(
             {
                 "canonicalName": canonical_name,
                 "browser": browser_result,
                 "hostingBrowser": hosting_browser_result,
+                "hostingEntryPage": inspection.entryPage if hosting_source is not None else "",
+                "hostingSource": str(hosting_source) if hosting_source is not None else "",
+                "hostingSourceFiles": len(hosting_source_manifest),
+                "hostingSourceManifest": manifest_document(hosting_source_manifest),
+                "hostingSourceSHA256": manifest_sha256(hosting_source_manifest),
+                "staticSiteCanonicalName": static_canonical_name,
+                "staticSiteInitialReport": static_initial_report,
+                "staticSiteWarmCacheReport": static_cached_report,
                 "checks": checks,
                 "clientDestinationPorts": sorted(client_ports),
                 "clientRoutes": [
@@ -1174,6 +1420,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--qt-bin", type=Path)
     parser.add_argument("--expect-packaged-runtime", action="store_true")
     parser.add_argument("--hosting-source", type=Path)
+    parser.add_argument("--hosting-entry-page", default="")
     parser.add_argument("--keep-work-dir", action="store_true")
     options = parser.parse_args(argv)
     try:
@@ -1190,6 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
             hosting_source=(
                 options.hosting_source.resolve() if options.hosting_source is not None else None
             ),
+            hosting_entry_page=options.hosting_entry_page,
         )
     except Exception as error:
         print(f"wan-process-acceptance: {type(error).__name__}: {error}", file=sys.stderr)

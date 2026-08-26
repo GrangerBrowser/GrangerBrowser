@@ -125,11 +125,13 @@ public:
     bool createHostedStaticForDiagnostics(const QString &title,
                                           const QString &source,
                                           HostedServiceRecord *created,
-                                          QString *error);
+                                          QString *error,
+                                          const QString &entryPage = QString());
     quint64 createHostedStaticAsyncForDiagnostics(
         const QString &title,
         const QString &source,
-        GrangerHostingManager::CreationCompletion completion);
+        GrangerHostingManager::CreationCompletion completion,
+        const QString &entryPage = QString());
     quint64 createHostedLocalApplicationAsyncForDiagnostics(
         const QString &title,
         const QString &host,
