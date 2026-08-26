@@ -176,6 +176,9 @@ class _WanGateway:
         self._sessions: dict[str, WanClientConnection] = {}
         self._lock = threading.Lock()
 
+    def network_health(self) -> dict[str, object]:
+        return self._runtime.discovery.health().to_document()
+
     def fetch_gateway(
         self,
         name: str,
@@ -386,7 +389,7 @@ def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str
             )
         if len(response.body) > MAX_RESPONSE_BODY:
             raise ProtocolError("service response exceeds the browser gateway limit")
-        return {
+        result: dict[str, object] = {
             "body": base64.b64encode(response.body).decode("ascii"),
             "canonicalService": response.canonical_service,
             "dnsRequests": _dns_request_count,
@@ -398,8 +401,11 @@ def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str
             "type": "response",
             "version": PROTOCOL_VERSION,
         }
+        if hasattr(resolver, "network_health"):
+            result["networkHealth"] = resolver.network_health()
+        return result
     except (GrangerNetworkError, OSError, TypeError, ValueError) as error:
-        return {
+        result = {
             "code": _error_code(error),
             "dnsRequests": _dns_request_count,
             "ok": False,
@@ -407,6 +413,9 @@ def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str
             "type": "response",
             "version": PROTOCOL_VERSION,
         }
+        if hasattr(resolver, "network_health"):
+            result["networkHealth"] = resolver.network_health()
+        return result
 
 
 def _write(document: dict[str, object]) -> None:
@@ -477,6 +486,8 @@ def serve(
         }
         if demo is not None:
             ready["localDemoCanonical"] = demo.descriptor.canonical_name
+        if hasattr(resolver, "network_health"):
+            ready["networkHealth"] = resolver.network_health()
         _write(ready)
         while True:
             content = sys.stdin.buffer.readline(MAX_MESSAGE_BYTES + 2)

@@ -443,6 +443,7 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     m_localDemoActive = false;
     m_localDemoCanonical.clear();
     m_gatewayMode.clear();
+    m_networkHealth = QJsonObject{};
     m_lastRequestError.clear();
     m_wanConfigActive = wanConfigured;
     m_ready = false;
@@ -502,6 +503,7 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
         m_localDemoActive = document.value(QStringLiteral("localDemo")).toBool(false);
         m_localDemoCanonical = document.value(QStringLiteral("localDemoCanonical")).toString();
         m_gatewayMode = document.value(QStringLiteral("mode")).toString();
+        m_networkHealth = document.value(QStringLiteral("networkHealth")).toObject();
         if (!QSet<QString>{QStringLiteral("wan"), QStringLiteral("compatibility"),
                            QStringLiteral("local-demo"), QStringLiteral("unavailable")}
                  .contains(m_gatewayMode)) {
@@ -523,6 +525,9 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
     if (!m_pending.contains(requestId)) return;
     m_dnsRequestCount = qMax(m_dnsRequestCount,
                              document.value(QStringLiteral("dnsRequests")).toInt());
+    if (document.value(QStringLiteral("networkHealth")).isObject()) {
+        m_networkHealth = document.value(QStringLiteral("networkHealth")).toObject();
+    }
 
     GrangerNetworkReply reply;
     reply.ok = document.value(QStringLiteral("ok")).toBool(false);
@@ -593,6 +598,7 @@ void GrangerNetworkRuntime::stop()
     m_localDemoActive = false;
     m_localDemoCanonical.clear();
     m_gatewayMode.clear();
+    m_networkHealth = QJsonObject{};
     m_wanConfigActive = false;
     m_stdoutBuffer.clear();
     if (process) {
@@ -710,6 +716,7 @@ QJsonObject GrangerNetworkRuntime::diagnostics() const
         {QStringLiteral("wanConfigActive"), m_wanConfigActive},
         {QStringLiteral("wanConfigBundled"), GrangerWanConfigPaths::bundledConfigAvailable()},
         {QStringLiteral("wanConfigInstalled"), GrangerWanConfigPaths::installed()},
+        {QStringLiteral("networkHealth"), m_networkHealth},
         {QStringLiteral("ready"), m_ready},
         {QStringLiteral("lastWorkerError"), m_lastWorkerError},
         {QStringLiteral("lastRequestError"), m_lastRequestError}

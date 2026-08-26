@@ -71,6 +71,7 @@ private:
     QString m_localDemoCanonical;
     QString m_gatewayMode;
     QString m_lastRequestError;
+    QJsonObject m_networkHealth;
     int m_requestCount = 0;
     int m_responseCount = 0;
     int m_failureCount = 0;
