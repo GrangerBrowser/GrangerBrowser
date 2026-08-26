@@ -1,0 +1,40 @@
+{
+  "advertise": {
+    "host": "95.182.105.239",
+    "port": 62441
+  },
+  "bootstrap": {
+    "authorityPins": [],
+    "bundles": []
+  },
+  "capabilities": [
+    "bootstrap",
+    "discovery",
+    "entry",
+    "introduction",
+    "middle",
+    "rendezvous",
+    "service-relay"
+  ],
+  "descriptorLifetimeSeconds": 86400,
+  "discoveryIntervalSeconds": 300,
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 62441
+  },
+  "peerDescriptors": [],
+  "relayPolicy": {
+    "burstKiB": 4096,
+    "connectionTimeoutSeconds": 10,
+    "enabled": true,
+    "idleTimeoutSeconds": 120,
+    "maxBandwidthKiBPerSecond": 2048,
+    "maxBytesPerCircuit": 67108864,
+    "maxCircuits": 48,
+    "maxConnections": 96,
+    "maxStreams": 128,
+    "memoryBudgetKiB": 131072
+  },
+  "renewBeforeSeconds": 21600,
+  "version": 1
+}

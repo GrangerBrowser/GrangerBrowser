@@ -30,6 +30,9 @@ through the rendezvous before application data is exchanged.
 
 - `granger_network.node`: authenticated bootstrap, discovery and opt-in relay
   runtime over real TCP sockets.
+- `granger_network.operator`: persistent bootstrap/relay lifecycle, separate
+  bind and advertised endpoints, signed descriptor export, reseed import,
+  status, and clean shutdown for physical operators.
 - `granger_network.peer_rpc`: bounded, versioned and sequenced peer RPC over a
   wire-3 secure channel.
 - `granger_network.wan_discovery`: signed DHT record publication and lookup,
@@ -148,6 +151,12 @@ Cross-platform scripts are in `tools/wan-test`:
 - `provision-bootstrap.ps1` / `provision-bootstrap.sh`
 
 See [WAN-Test.md](docs/WAN-Test.md) for the exact Windows and Debian plan.
+
+The self-contained Debian operator package is generated on Windows with
+`scripts/package-granger-node-linux.ps1`. Its runtime uses the same peer RPC,
+wire-v3, DHT, reseed, and relay implementation as the browser project. The
+package deliberately contains no node or authority private keys; the first
+physical start creates the persistent node identity locally.
 
 ## Browser configuration
 

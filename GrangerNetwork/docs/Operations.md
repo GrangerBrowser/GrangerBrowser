@@ -30,6 +30,19 @@ export. The tool never accepts a raw endpoint as a trust substitute.
 
 ## Starting nodes
 
+For a persistent physical bootstrap/relay, use `granger_network.operator` or
+the generated `output/granger-node-linux` package. The operator keeps the
+local listener outside the signed descriptor, so a node behind NAT can bind
+`0.0.0.0:62441` while advertising a forwarded public endpoint such as
+`203.0.113.20:62441`. It reuses the current peer RPC, wire-v3, DHT, relay,
+reseed, descriptor, and identity implementations.
+
+The first start creates the private Ed25519 node identity in the operator state
+directory and exports only its signed public descriptor. A valid public
+`BootstrapSet` still requires at least two independent reachable seed
+descriptors. Do not weaken this requirement or duplicate one operator merely
+to satisfy the seed count.
+
 Windows:
 
 ```powershell

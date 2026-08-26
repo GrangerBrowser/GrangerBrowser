@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ipaddress
 import json
 import os
 import queue
@@ -11,9 +12,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from ._codec import atomic_write_text, parse_json_object
+from .bootstrap import PeerCache
 from .cells import (
     CELL_PAYLOAD_SIZE,
     MAX_CELLS_PER_BATCH,
@@ -66,6 +69,39 @@ NODE_IDENTITY_FILE = "node-identity.json"
 NODE_DESCRIPTOR_FILE = "node-descriptor.json"
 NODE_CACHE_FILE = "peer-cache.json"
 NODE_RECORDS_FILE = "records.json"
+
+
+@dataclass(frozen=True)
+class NodeListenerEndpoint:
+    """Local bind endpoint kept outside the signed public descriptor."""
+
+    host: str
+    port: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.host, str):
+            raise ValueError("node listener host must be text")
+        if isinstance(self.port, bool) or not isinstance(self.port, int):
+            raise ValueError("node listener port must be an integer")
+        try:
+            address = ipaddress.ip_address(self.host)
+        except ValueError as error:
+            raise ValueError("node listener must use a numeric IP address") from error
+        if address.is_multicast or address.is_link_local:
+            raise ValueError("node listener address is not supported")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("node listener port is outside the valid range")
+        object.__setattr__(self, "host", address.compressed)
+
+    @property
+    def family(self) -> int:
+        return socket.AF_INET6 if ipaddress.ip_address(self.host).version == 6 else socket.AF_INET
+
+    @property
+    def socket_address(self) -> tuple:
+        if self.family == socket.AF_INET6:
+            return (self.host, self.port, 0, 0)
+        return (self.host, self.port)
 
 
 class WanCircuitObservation:
@@ -158,6 +194,7 @@ class WanNodeServer:
         state_dir: Path,
         *,
         known_peers: list[NodeDescriptor] | tuple[NodeDescriptor, ...] = (),
+        listener_endpoint: NodeListenerEndpoint | None = None,
         capture_path: Path | None = None,
         diagnostics_path: Path | None = None,
     ) -> None:
@@ -169,6 +206,12 @@ class WanNodeServer:
         self.identity = identity
         self.descriptor = descriptor
         self.policy = descriptor.relay_policy
+        self.listener_endpoint = listener_endpoint or NodeListenerEndpoint(
+            descriptor.endpoint.host,
+            descriptor.endpoint.port,
+        )
+        if self.listener_endpoint.family != descriptor.endpoint.family:
+            raise DescriptorError("node listener and advertised endpoint families differ")
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.capture_path = Path(capture_path) if capture_path is not None else None
@@ -186,14 +229,23 @@ class WanNodeServer:
         self._diagnostics_bytes = 0
         self._diagnostics_limit = 2 * 1024 * 1024
         self.records = PersistentRecordStore(self.state_dir / NODE_RECORDS_FILE)
+        self.peer_cache = PeerCache(
+            self.state_dir / NODE_CACHE_FILE,
+            network_id=descriptor.network_id,
+            protocol_version=descriptor.protocol_version,
+        )
         self.runtime = GrangerNode(identity, descriptor, self.policy)
         self._known: dict[str, NodeDescriptor] = {descriptor.node_id: descriptor}
+        for peer in self.peer_cache.load():
+            self._known[peer.node_id] = peer
         for peer in known_peers:
             peer.verify(
                 expected_network_id=descriptor.network_id,
                 expected_protocol_version=descriptor.protocol_version,
             )
             self._known[peer.node_id] = peer
+        if known_peers:
+            self.peer_cache.ingest(known_peers, source="configured-peer")
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
         self._accept_thread: threading.Thread | None = None
@@ -266,10 +318,10 @@ class WanNodeServer:
     def start_background(self) -> None:
         if self._listener is not None:
             raise RuntimeError("WAN node is already running")
-        listener = socket.socket(self.descriptor.endpoint.family, socket.SOCK_STREAM)
+        listener = socket.socket(self.listener_endpoint.family, socket.SOCK_STREAM)
         try:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind(self.descriptor.endpoint.socket_address)
+            listener.bind(self.listener_endpoint.socket_address)
             listener.listen(min(self.policy.max_connections, 512))
             listener.settimeout(0.25)
         except Exception:
@@ -323,11 +375,17 @@ class WanNodeServer:
         with self._lock:
             return tuple(self._known.values())
 
-    def add_known_peer(self, descriptor: NodeDescriptor) -> None:
+    def add_known_peer(
+        self,
+        descriptor: NodeDescriptor,
+        *,
+        source: str = "authenticated-peer",
+    ) -> None:
         descriptor.verify(
             expected_network_id=self.descriptor.network_id,
             expected_protocol_version=self.descriptor.protocol_version,
         )
+        self.peer_cache.add(descriptor, source=source)
         with self._lock:
             previous = self._known.get(descriptor.node_id)
             if previous is None or descriptor.issued_at >= previous.issued_at:
@@ -1032,6 +1090,7 @@ def load_node(
     state_dir: Path,
     peers: tuple[NodeDescriptor, ...] = (),
     *,
+    listener_endpoint: NodeListenerEndpoint | None = None,
     capture_path: Path | None = None,
     diagnostics_path: Path | None = None,
 ) -> WanNodeServer:
@@ -1043,6 +1102,7 @@ def load_node(
         descriptor,
         root,
         known_peers=peers,
+        listener_endpoint=listener_endpoint,
         capture_path=capture_path,
         diagnostics_path=diagnostics_path,
     )
@@ -1064,6 +1124,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--state-dir", type=Path, required=True)
     run.add_argument("--ready-file", type=Path)
     run.add_argument("--peer-descriptor", type=Path, action="append", default=[])
+    run.add_argument("--listen-host")
+    run.add_argument("--listen-port", type=int)
     run.add_argument("--capture", type=Path)
     run.add_argument("--diagnostics", type=Path)
     return parser
@@ -1096,9 +1158,17 @@ def main(argv: list[str] | None = None) -> int:
             NodeDescriptor.from_json(path.read_text(encoding="utf-8"))
             for path in options.peer_descriptor
         )
+        if (options.listen_host is None) != (options.listen_port is None):
+            raise ValueError("node listener host and port must be provided together")
+        listener_endpoint = (
+            NodeListenerEndpoint(options.listen_host, options.listen_port)
+            if options.listen_host is not None
+            else None
+        )
         node = load_node(
             options.state_dir,
             peers,
+            listener_endpoint=listener_endpoint,
             capture_path=options.capture,
             diagnostics_path=options.diagnostics,
         )
@@ -1111,6 +1181,14 @@ def main(argv: list[str] | None = None) -> int:
                         "endpoint": {
                             "host": node.descriptor.endpoint.host,
                             "port": node.descriptor.endpoint.port,
+                        },
+                        "advertiseEndpoint": {
+                            "host": node.descriptor.endpoint.host,
+                            "port": node.descriptor.endpoint.port,
+                        },
+                        "listenEndpoint": {
+                            "host": node.listener_endpoint.host,
+                            "port": node.listener_endpoint.port,
                         },
                         "nodeId": node.descriptor.node_id,
                         "pid": os.getpid(),

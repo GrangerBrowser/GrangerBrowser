@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+CONFIG="${GRANGER_NODE_CONFIG:-$ROOT/config/granger-node.json}"
+PYTHON_BIN="$ROOT/runtime/venv/bin/python3"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    "$ROOT/install-granger-node.sh"
+fi
+
+export PYTHONPATH="$ROOT/runtime/src"
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+unset PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE PYTHONINSPECT
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+unset http_proxy https_proxy all_proxy no_proxy
+
+command_name="run"
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    command_name="$1"
+    shift
+fi
+case "$command_name" in
+    run)
+        exec "$PYTHON_BIN" -B -m granger_network.operator run \
+            --config "$CONFIG" \
+            --state-dir "$ROOT/state" \
+            --public-dir "$ROOT/public" \
+            --pid-file "$ROOT/run/granger-node.pid" \
+            --ready-file "$ROOT/run/ready.json" \
+            --status-file "$ROOT/run/status.json" \
+            --diagnostics "$ROOT/logs/diagnostics.jsonl" \
+            "$@"
+        ;;
+    prepare)
+        exec "$PYTHON_BIN" -B -m granger_network.operator prepare \
+            --config "$CONFIG" \
+            --state-dir "$ROOT/state" \
+            --public-dir "$ROOT/public" \
+            "$@"
+        ;;
+    inspect)
+        exec "$PYTHON_BIN" -B -m granger_network.operator inspect \
+            --state-dir "$ROOT/state" "$@"
+        ;;
+    *)
+        exec "$PYTHON_BIN" -B -m granger_network.operator run \
+            --config "$CONFIG" \
+            --state-dir "$ROOT/state" \
+            --public-dir "$ROOT/public" \
+            --pid-file "$ROOT/run/granger-node.pid" \
+            --ready-file "$ROOT/run/ready.json" \
+            --status-file "$ROOT/run/status.json" \
+            --diagnostics "$ROOT/logs/diagnostics.jsonl" \
+            "$command_name" "$@"
+        ;;
+esac

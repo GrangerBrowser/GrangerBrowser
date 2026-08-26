@@ -11,6 +11,7 @@
 *.txt text eol=lf
 *.ps1 text eol=crlf
 /packaging/linux/AppRun text eol=lf
+/GrangerNetwork/operator/linux/granger-node text eol=lf
 
 *.ico binary
 *.jpg binary
