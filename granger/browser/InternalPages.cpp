@@ -439,6 +439,13 @@ border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:1
 .settings-page .settings-panel>form>h3:not(:first-child){margin-top:16px}
 .settings-page .settings-panel>form>h3+p{margin:10px 0 13px}
 .settings-page .settings-panel>form>.setting-row:first-child{border-top:0}
+.settings-page .settings-panel>.privacy-settings-form{padding-top:0}
+.settings-page .privacy-protection-block{min-width:0;margin:0 calc(-1 * var(--settings-card-inset))}
+.settings-page .privacy-protection-block>h3{
+display:flex;align-items:center;min-height:49px;margin:0;padding:17px var(--settings-card-inset) 14px;
+border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:15px
+}
+.settings-page .privacy-protection-block>.setting-row:first-of-type{margin:0 var(--settings-card-inset);border-top:0}
 .settings-page .settings-panel>form>p:last-child:has(button,.button){
 margin:var(--settings-section-gap) calc(-1 * var(--settings-card-inset)) calc(-1 * var(--settings-card-inset));padding:var(--settings-footer-padding-y) var(--settings-card-inset);border-top:1px solid var(--ds-border-subtle);
 border-radius:0 0 var(--settings-card-radius) var(--settings-card-radius);background:rgba(255,255,255,.012)
@@ -1388,9 +1395,10 @@ QString InternalPages::settings(const InternalPageContext &context)
         const QString restrictedStatus = t("privacy.status.restricted");
         const QString exposedStatus = t("privacy.status.exposed");
         panel = QStringLiteral("<h2>%1</h2>").arg(e(t("settings.category.privacy")));
-        panel += QStringLiteral("<form action=\"https://granger.local/__action/settings/privacy-security\" method=\"get\">");
-        panel += QStringLiteral("<h3>%1</h3>").arg(e(t("privacy.section.protection")));
+        panel += QStringLiteral("<form class=\"privacy-settings-form\" action=\"https://granger.local/__action/settings/privacy-security\" method=\"get\">");
+        panel += QStringLiteral("<section class=\"privacy-protection-block\"><h3>%1</h3>").arg(e(t("privacy.section.protection")));
         panel += settingRow(t("privacy.protection_preset"), t("privacy.protection_preset.description"), preset);
+        panel += QStringLiteral("</section>");
         panel += QStringLiteral("<section class=\"settings-subsection fingerprint-summary\"><h3>%1</h3><p>%2</p><div class=\"info-list\">%3%4%5%6%7%8%9</div></section>")
                      .arg(e(t("privacy.anti_fingerprinting.title")),
                           e(t("privacy.anti_fingerprinting.description")),

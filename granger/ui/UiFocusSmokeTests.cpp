@@ -2174,6 +2174,47 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                          radius:style.borderRadius
                      };
                  })(),
+                 privacyProtectionGeometry:(()=>{
+                     const surface=form('/settings/privacy-security');
+                     const block=surface?.querySelector(':scope>.privacy-protection-block');
+                     const header=block?.querySelector(':scope>h3');
+                     const preset=block?.querySelector(':scope>.setting-row');
+                     const fingerprint=surface?.querySelector(':scope>.fingerprint-summary');
+                     if(!surface||!block||!header||!preset||!fingerprint)return {present:false};
+                     const sr=surface.getBoundingClientRect();
+                     const br=block.getBoundingClientRect();
+                     const hr=header.getBoundingClientRect();
+                     const pr=preset.getBoundingClientRect();
+                     const fr=fingerprint.getBoundingClientRect();
+                     const surfaceStyle=getComputedStyle(surface);
+                     const headerStyle=getComputedStyle(header);
+                     const presetStyle=getComputedStyle(preset);
+                     const expectedInset=parseFloat(surfaceStyle.getPropertyValue('--settings-card-inset'));
+                     const rowMinHeight=parseFloat(surfaceStyle.getPropertyValue('--settings-row-min-height'));
+                     const border=parseFloat(surfaceStyle.borderLeftWidth)||0;
+                     const near=(a,b,tolerance=1.25)=>Math.abs(a-b)<=tolerance;
+                     return {
+                         present:true,
+                         surfaceTopPadding:parseFloat(surfaceStyle.paddingTop),
+                         blockFillsInnerWidth:near(br.left,sr.left+border)
+                             &&near(br.right,sr.right-border),
+                         headerFillsBlock:near(hr.left,br.left)&&near(hr.right,br.right),
+                         headerHeight:hr.height,
+                         headerPaddingLeft:parseFloat(headerStyle.paddingLeft),
+                         headerPaddingTop:parseFloat(headerStyle.paddingTop),
+                         headerPaddingBottom:parseFloat(headerStyle.paddingBottom),
+                         headerSeparator:parseFloat(headerStyle.borderBottomWidth),
+                         presetInsetLeft:pr.left-sr.left-border,
+                         presetInsetRight:sr.right-border-pr.right,
+                         presetHeight:pr.height,
+                         presetBorderTop:parseFloat(presetStyle.borderTopWidth),
+                         expectedInset,
+                         rowMinHeight,
+                         contiguous:near(pr.top,hr.bottom),
+                         fingerprintGap:fr.top-br.bottom,
+                         ordered:hr.bottom<=pr.top+1&&br.bottom<=fr.top
+                     };
+                 })(),
                  siteRulesLayout:detailMetrics('site-rules'),
                  sitePermissionsLayout:detailMetrics('site-permissions'),
                  noHorizontalOverflow:document.documentElement.scrollWidth<=innerWidth+1
@@ -2211,6 +2252,37 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        && settingsLayout.value(QStringLiteral("enhanced")).toBool()
                        && settingsLayout.value(QStringLiteral("nativeHidden")).toBool()
                        && settingsLayout.value(QStringLiteral("accessible")).toBool());
+    const QVariantMap privacyProtectionGeometry =
+        settingsLayout.value(QStringLiteral("privacyProtectionGeometry")).toMap();
+    const auto geometryNear = [](double actual, double expected, double tolerance = 1.25) {
+        return qAbs(actual - expected) <= tolerance;
+    };
+    const bool privacyProtectionGeometryPassed =
+        privacyProtectionGeometry.value(QStringLiteral("present")).toBool()
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("surfaceTopPadding")).toDouble(), 0.0)
+        && privacyProtectionGeometry.value(QStringLiteral("blockFillsInnerWidth")).toBool()
+        && privacyProtectionGeometry.value(QStringLiteral("headerFillsBlock")).toBool()
+        && privacyProtectionGeometry.value(QStringLiteral("headerHeight")).toDouble() >= 49.0
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("headerPaddingLeft")).toDouble(),
+                        privacyProtectionGeometry.value(QStringLiteral("expectedInset")).toDouble())
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("headerPaddingTop")).toDouble(), 17.0)
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("headerPaddingBottom")).toDouble(), 14.0)
+        && privacyProtectionGeometry.value(QStringLiteral("headerSeparator")).toDouble() >= 0.5
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("presetInsetLeft")).toDouble(),
+                        privacyProtectionGeometry.value(QStringLiteral("expectedInset")).toDouble())
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("presetInsetRight")).toDouble(),
+                        privacyProtectionGeometry.value(QStringLiteral("expectedInset")).toDouble())
+        && privacyProtectionGeometry.value(QStringLiteral("presetHeight")).toDouble()
+            >= privacyProtectionGeometry.value(QStringLiteral("rowMinHeight")).toDouble()
+        && geometryNear(privacyProtectionGeometry.value(QStringLiteral("presetBorderTop")).toDouble(), 0.0)
+        && privacyProtectionGeometry.value(QStringLiteral("contiguous")).toBool()
+        && privacyProtectionGeometry.value(QStringLiteral("fingerprintGap")).toDouble() >= 31.0
+        && privacyProtectionGeometry.value(QStringLiteral("ordered")).toBool();
+    results.record(QStringLiteral("Privacy protection uses canonical Settings card geometry"),
+                   privacyProtectionGeometryPassed,
+                   QString::fromUtf8(QJsonDocument(
+                       QJsonObject::fromVariantMap(privacyProtectionGeometry))
+                                         .toJson(QJsonDocument::Compact)));
     results.record(QStringLiteral("Settings navigation maps six owner PNGs and preserves eight existing SVGs"),
                    settingsIconMappingExact,
                    settingsIconMappingMismatches.join(QStringLiteral(", ")),
