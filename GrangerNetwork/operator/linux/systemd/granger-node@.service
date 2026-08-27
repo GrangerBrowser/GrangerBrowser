@@ -41,7 +41,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 AmbientCapabilities=
 LimitNOFILE=4096
-TasksMax=64
+TasksMax=256
 MemoryHigh=96M
 MemoryMax=160M
 

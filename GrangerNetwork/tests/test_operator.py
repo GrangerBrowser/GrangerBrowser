@@ -232,6 +232,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=true", service)
         self.assertIn("ProtectSystem=strict", service)
         self.assertIn("MemoryMax=160M", service)
+        self.assertIn("TasksMax=256", service)
         self.assertNotIn("217.60.10.122", service)
         self.assertNotIn("217.60.10.122", installer)
         self.assertIn("--public-ip", installer)
