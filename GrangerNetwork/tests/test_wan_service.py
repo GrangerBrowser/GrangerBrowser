@@ -87,8 +87,10 @@ class WanServiceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="granger-wan-service-")
         self.root = Path(self.temporary.name)
         roles = (
+            "access",
             "entry",
             "middle",
+            "access",
             "service-relay",
             "middle",
             "introduction",
@@ -131,8 +133,10 @@ class WanServiceTests(unittest.TestCase):
 
     def test_static_dynamic_and_concurrent_requests_stay_inside_overlay(self) -> None:
         (
+            client_access,
             client_entry,
             client_middle,
+            service_access,
             service_entry,
             host_middle,
             introduction_node,
@@ -160,11 +164,13 @@ class WanServiceTests(unittest.TestCase):
             service,
             introduction,
             (
+                (service_access, "access"),
                 (service_entry, "service-relay"),
                 (host_middle, "middle"),
                 (introduction_node, "introduction"),
             ),
             (
+                (service_access, "access"),
                 (service_entry, "service-relay"),
                 (host_middle, "middle"),
                 (rendezvous_node, "rendezvous"),
@@ -196,6 +202,7 @@ class WanServiceTests(unittest.TestCase):
                     service,
                     introduction,
                     (
+                        (client_access, "access"),
                         (client_entry, "entry"),
                         (client_middle, "middle"),
                     ),
@@ -247,11 +254,11 @@ class WanServiceTests(unittest.TestCase):
         ]
         self.assertTrue(main_destinations)
         self.assertTrue(
-            all(address[1] == client_entry.endpoint.port for address in main_destinations)
+            all(address[1] == client_access.endpoint.port for address in main_destinations)
         )
         self.assertTrue(host_destinations)
         self.assertTrue(
-            all(address[1] == service_entry.endpoint.port for address in host_destinations)
+            all(address[1] == service_access.endpoint.port for address in host_destinations)
         )
         self.assertTrue(application_destinations)
         self.assertTrue(
@@ -265,8 +272,10 @@ class WanServiceTests(unittest.TestCase):
 
     def test_static_site_bridge_stays_inside_encrypted_overlay(self) -> None:
         (
+            client_access,
             client_entry,
             client_middle,
+            service_access,
             service_entry,
             host_middle,
             introduction_node,
@@ -303,11 +312,13 @@ class WanServiceTests(unittest.TestCase):
             service,
             introduction,
             (
+                (service_access, "access"),
                 (service_entry, "service-relay"),
                 (host_middle, "middle"),
                 (introduction_node, "introduction"),
             ),
             (
+                (service_access, "access"),
                 (service_entry, "service-relay"),
                 (host_middle, "middle"),
                 (rendezvous_node, "rendezvous"),
@@ -337,6 +348,7 @@ class WanServiceTests(unittest.TestCase):
                     service,
                     introduction,
                     (
+                        (client_access, "access"),
                         (client_entry, "entry"),
                         (client_middle, "middle"),
                     ),
@@ -367,8 +379,10 @@ class WanServiceTests(unittest.TestCase):
 
     def test_host_requests_route_recovery_when_introduction_circuit_breaks(self) -> None:
         (
+            _client_access,
             _client_entry,
             _client_middle,
+            service_access,
             service_entry,
             host_middle,
             introduction_node,
@@ -393,11 +407,13 @@ class WanServiceTests(unittest.TestCase):
             service,
             introduction,
             (
+                (service_access, "access"),
                 (service_entry, "service-relay"),
                 (host_middle, "middle"),
                 (introduction_node, "introduction"),
             ),
             (
+                (service_access, "access"),
                 (service_entry, "service-relay"),
                 (host_middle, "middle"),
                 (rendezvous_node, "rendezvous"),

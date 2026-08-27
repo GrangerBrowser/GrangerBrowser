@@ -12,9 +12,12 @@ from granger_network.cells import (
     MAX_CELLS_PER_BATCH,
     CellMultiplexer,
     CellType,
+    CoverTrafficPolicy,
+    CoverTrafficProfile,
     RelayCell,
     decode_cell,
     encode_cell,
+    cover_profile_from_environment,
 )
 from granger_network.errors import ProtocolError
 from granger_network.identity import ServiceIdentity
@@ -118,6 +121,118 @@ class RelayCellTests(unittest.TestCase):
         self.assertEqual(second.recv(64), b"response-b")
         first.close()
         second.close()
+        client_mux.close()
+        server_mux.close()
+
+    def test_cover_cells_are_fixed_authenticated_and_never_reach_a_stream(self) -> None:
+        circuit = secrets.token_bytes(16)
+        cell = RelayCell(CellType.COVER, 0, circuit, 0, 4, b"")
+        encoded = encode_cell(cell)
+        self.assertEqual(len(encoded), CELL_SIZE)
+        self.assertEqual(decode_cell(encoded), cell)
+        with self.assertRaises(ProtocolError):
+            encode_cell(RelayCell(CellType.COVER, 0, circuit, 1, 4, b""))
+        with self.assertRaises(ProtocolError):
+            encode_cell(RelayCell(CellType.COVER, 0, circuit, 0, 4, b"application"))
+
+        client_channel, server_channel = channel_pair()
+        client_mux = CellMultiplexer(
+            client_channel,
+            circuit,
+            initiator=True,
+            cover_profile=CoverTrafficProfile.HIGH_PRIVACY,
+        )
+        server_mux = CellMultiplexer(server_channel, circuit, initiator=False)
+        time.sleep(client_mux.cover_policy.quiet_after_real_seconds + 0.05)
+        self.assertTrue(client_mux.send_cover())
+        deadline = time.monotonic() + 2.0
+        while (
+            server_mux.traffic_counters["coverCellsReceived"] != 1
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        self.assertEqual(server_mux.active_streams, 0)
+        self.assertEqual(server_mux.traffic_counters["coverCellsReceived"], 1)
+        self.assertEqual(client_mux.traffic_counters["coverCellsSent"], 1)
+        client_mux.close()
+        server_mux.close()
+
+    def test_cover_profile_environment_is_strict_and_supports_low_bandwidth_off(self) -> None:
+        from unittest.mock import patch
+
+        with patch.dict("os.environ", {"GRANGER_COVER_PROFILE": "off"}):
+            self.assertIs(cover_profile_from_environment(), CoverTrafficProfile.OFF)
+        with patch.dict("os.environ", {"GRANGER_COVER_PROFILE": "high"}):
+            self.assertIs(
+                cover_profile_from_environment(),
+                CoverTrafficProfile.HIGH_PRIVACY,
+            )
+        with patch.dict("os.environ", {"GRANGER_COVER_PROFILE": "unbounded"}):
+            with self.assertRaises(ProtocolError):
+                cover_profile_from_environment()
+
+    def test_cover_budget_is_bounded_and_yields_when_real_send_owns_channel(self) -> None:
+        client_channel, server_channel = channel_pair()
+        circuit = secrets.token_bytes(16)
+        client_mux = CellMultiplexer(client_channel, circuit, initiator=True)
+        server_mux = CellMultiplexer(server_channel, circuit, initiator=False)
+        client_mux.cover_policy = CoverTrafficPolicy(
+            CoverTrafficProfile.STANDARD,
+            0.01,
+            0.02,
+            0.0,
+            2,
+        )
+        self.assertTrue(client_mux.send_cover())
+        self.assertTrue(client_mux.send_cover())
+        self.assertFalse(client_mux.send_cover())
+        with client_mux._metrics_lock:
+            client_mux._cover_send_times.clear()
+        client_mux._send_lock.acquire()
+        try:
+            self.assertFalse(client_mux.send_cover())
+        finally:
+            client_mux._send_lock.release()
+        deadline = time.monotonic() + 2.0
+        while (
+            server_mux.traffic_counters["coverCellsReceived"] != 2
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        self.assertEqual(server_mux.traffic_counters["coverCellsReceived"], 2)
+        client_mux.close()
+        server_mux.close()
+
+    def test_cover_send_failure_closes_mux_and_wakes_stream(self) -> None:
+        client_channel, server_channel = channel_pair()
+        circuit = secrets.token_bytes(16)
+        client_mux = CellMultiplexer(client_channel, circuit, initiator=True)
+        server_mux = CellMultiplexer(server_channel, circuit, initiator=False)
+        accepted: list = []
+        accept_thread = threading.Thread(
+            target=lambda: accepted.append(server_mux.accept_stream(3.0)),
+            daemon=True,
+        )
+        accept_thread.start()
+        sender = client_mux.open_stream(3.0)
+        accept_thread.join(timeout=3.0)
+        self.assertEqual(len(accepted), 1)
+        client_mux.cover_policy = CoverTrafficPolicy(
+            CoverTrafficProfile.STANDARD,
+            0.01,
+            0.02,
+            0.0,
+            2,
+        )
+
+        def fail_send(_payload: bytes, *_args, **_kwargs) -> None:
+            raise OSError("simulated transport failure")
+
+        client_channel.send_bytes = fail_send
+        self.assertFalse(client_mux.send_cover())
+        self.assertTrue(client_mux.failed)
+        with self.assertRaises(ProtocolError):
+            sender.recv(1)
         client_mux.close()
         server_mux.close()
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
+import ipaddress
 import json
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -42,6 +44,7 @@ MAX_PEER_SAMPLE_RESULTS = 32
 MAX_DISCOVERY_QUERIES = 32
 MAX_PARALLEL_DISCOVERY_REQUESTS = 4
 _ROUTING_KEY_DOMAIN = b"granger-network-v0.4/wan-routing-key\x00"
+_PRIVATE_DISCOVERY_ROUTE_DOMAIN = b"granger-network-v0.5/private-discovery-route\x00"
 
 
 def _node_id_bytes(node_id: str) -> bytes:
@@ -320,6 +323,11 @@ class WanDiscoveryClient:
         self._lock = threading.Lock()
         self._join_lock = threading.Lock()
         self._joined = False
+        self._private_routes_ready = False
+        self._route_nodes: dict[str, NodeDescriptor] = {}
+        self.direct_first_contact_requests = 0
+        self.private_discovery_requests = 0
+        self.last_private_route: tuple[str, ...] = ()
         self._health = NetworkHealth()
         self._authenticated_nodes: set[str] = set()
 
@@ -335,16 +343,176 @@ class WanDiscoveryClient:
         )
         return len({peer.node_id for peer in known}), reachable_relays
 
-    def _request(self, peer: NodeDescriptor, message: RpcType, payload: bytes, expected: RpcType) -> bytes:
+    @staticmethod
+    def _network_group(peer: NodeDescriptor) -> tuple[int, int]:
+        address = ipaddress.ip_address(peer.endpoint.host)
+        prefix = 16 if address.version == 4 else 32
+        network = ipaddress.ip_network(f"{address}/{prefix}", strict=False)
+        return address.version, int(network.network_address)
+
+    def _private_route_candidates(
+        self,
+        peer: NodeDescriptor,
+        *,
+        limit: int = 4,
+    ) -> tuple[tuple[tuple[NodeDescriptor, str], ...], ...]:
+        excluded = {peer.node_id}
+        def candidates(capability: str) -> list[NodeDescriptor]:
+            selected = {
+                node.node_id: node
+                for node in (*self.pool.candidates(capability), *self._route_nodes.values())
+                if capability in node.capabilities
+                and node.reachability == "reachable"
+                and node.node_id not in excluded
+            }
+            return list(selected.values())
+
+        accesses = [
+            node for node in candidates("access")
+        ]
+        guards = [
+            node for node in candidates("entry")
+        ]
+        middles = [
+            node for node in candidates("middle")
+        ]
+        guard_seed = hashlib.sha256(
+            _PRIVATE_DISCOVERY_ROUTE_DOMAIN + self.identity.public_key_bytes
+        ).digest()
+        guards.sort(
+            key=lambda node: hashlib.sha256(
+                guard_seed + node.node_id.encode("ascii")
+            ).digest()
+        )
+        choices: list[
+            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
+        ] = []
+        random_offset = int.from_bytes(secrets.token_bytes(4), "big")
+        for guard_index, guard in enumerate(guards):
+            for access_index, access in enumerate(accesses):
+                for middle_index, middle in enumerate(middles):
+                    route_nodes = (access, guard, middle, peer)
+                    if len({node.node_id for node in route_nodes}) != len(route_nodes):
+                        continue
+                    groups = {self._network_group(node) for node in route_nodes}
+                    choices.append(
+                        (
+                            len(route_nodes) - len(groups),
+                            guard_index,
+                            (access_index + middle_index + random_offset) % 65536,
+                            access,
+                            guard,
+                            middle,
+                        )
+                    )
+        if not choices:
+            raise DiscoveryError("private discovery ingress is unavailable")
+        choices.sort(key=lambda item: item[:3])
+        ordered_choices: list[
+            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
+        ] = []
+        remaining = list(enumerate(choices))
+        node_use: dict[str, int] = {}
+        while remaining:
+            selected_index, selected = min(
+                remaining,
+                key=lambda item: (
+                    sum(
+                        node_use.get(node.node_id, 0)
+                        for node in item[1][3:]
+                    ),
+                    item[0],
+                ),
+            )
+            ordered_choices.append(selected)
+            for node in selected[3:]:
+                node_use[node.node_id] = node_use.get(node.node_id, 0) + 1
+            remaining = [item for item in remaining if item[0] != selected_index]
+            if len(ordered_choices) >= limit:
+                break
+        routes: list[tuple[tuple[NodeDescriptor, str], ...]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for _relaxed, _guard, _offset, access, guard, middle in ordered_choices:
+            route_key = (access.node_id, guard.node_id, middle.node_id)
+            if route_key in seen:
+                continue
+            seen.add(route_key)
+            routes.append(
+                (
+                    (access, "access"),
+                    (guard, "entry"),
+                    (middle, "middle"),
+                    (peer, "discovery"),
+                )
+            )
+            if len(routes) >= limit:
+                break
+        return tuple(routes)
+
+    def _private_route(
+        self,
+        peer: NodeDescriptor,
+    ) -> tuple[tuple[NodeDescriptor, str], ...]:
+        return self._private_route_candidates(peer, limit=1)[0]
+
+    def _request(
+        self,
+        peer: NodeDescriptor,
+        message: RpcType,
+        payload: bytes,
+        expected: RpcType,
+        *,
+        direct_first_contact: bool = False,
+    ) -> bytes:
         connection = None
         try:
-            connection = connect_authenticated_peer(
-                peer,
-                self.identity,
-                PeerRole.CLIENT,
-                timeout=self.timeout,
-            )
-            response = connection.rpc.request(message, payload, expected=expected)
+            if direct_first_contact:
+                connection = connect_authenticated_peer(
+                    peer,
+                    ServiceIdentity.generate(),
+                    PeerRole.CLIENT,
+                    timeout=self.timeout,
+                )
+                self.direct_first_contact_requests += 1
+                response = connection.rpc.request(message, payload, expected=expected)
+            else:
+                if not self._joined or not self._private_routes_ready:
+                    raise DiscoveryError(
+                        "post-join discovery requires private ingress"
+                    )
+                from .circuit import CircuitBuilder
+
+                response = None
+                last_error: BaseException | None = None
+                routes = self._private_route_candidates(peer)
+                attempt_timeout = max(0.1, self.timeout / len(routes))
+                for route in routes:
+                    circuit = None
+                    try:
+                        circuit = CircuitBuilder(
+                            self.identity,
+                            PeerRole.CLIENT,
+                            timeout=attempt_timeout,
+                        ).open(route)
+                        self.private_discovery_requests += 1
+                        self.last_private_route = tuple(
+                            descriptor.node_id for descriptor, _role in circuit.route
+                        )
+                        response = circuit.endpoint.rpc.request(
+                            message,
+                            payload,
+                            expected=expected,
+                        )
+                        break
+                    except (GrangerNetworkError, OSError) as error:
+                        last_error = error
+                    finally:
+                        if circuit is not None:
+                            circuit.close()
+                if response is None:
+                    if last_error is None:
+                        raise DiscoveryError("private discovery ingress is unavailable")
+                    raise last_error
             if self.cache is not None:
                 self.cache.record_success(peer)
             with self._lock:
@@ -356,8 +524,8 @@ class WanDiscoveryClient:
                 self.cache.record_failure(peer)
             with self._lock:
                 self._failed_until[peer.node_id] = time.monotonic() + max(
-                    5.0,
-                    min(60.0, self.timeout * 4.0),
+                    60.0,
+                    min(300.0, self.timeout * 12.0),
                 )
             raise
         finally:
@@ -370,6 +538,8 @@ class WanDiscoveryClient:
         message: RpcType,
         payload: bytes,
         expected: RpcType,
+        *,
+        direct_first_contact: bool = False,
     ) -> tuple[tuple[NodeDescriptor, bytes | None], ...]:
         selected = peers[:MAX_PARALLEL_DISCOVERY_REQUESTS]
         if not selected:
@@ -379,7 +549,17 @@ class WanDiscoveryClient:
             thread_name_prefix="granger-discovery",
         ) as executor:
             requests: list[tuple[NodeDescriptor, Future[bytes]]] = [
-                (peer, executor.submit(self._request, peer, message, payload, expected))
+                (
+                    peer,
+                    executor.submit(
+                        self._request,
+                        peer,
+                        message,
+                        payload,
+                        expected,
+                        direct_first_contact=direct_first_contact,
+                    ),
+                )
                 for peer in selected
             ]
             results: list[tuple[NodeDescriptor, bytes | None]] = []
@@ -389,6 +569,67 @@ class WanDiscoveryClient:
                 except (GrangerNetworkError, OSError):
                     results.append((peer, None))
             return tuple(results)
+
+    def _prime_private_routes(
+        self,
+        contacts: tuple[NodeDescriptor, ...],
+    ) -> bool:
+        with self._lock:
+            current = time.monotonic()
+            discovery_contacts = [
+                peer
+                for peer in contacts
+                if "discovery" in peer.capabilities
+                and peer.reachability == "reachable"
+                and self._failed_until.get(peer.node_id, 0.0) <= current
+            ][:MAX_PARALLEL_DISCOVERY_REQUESTS]
+        if not discovery_contacts:
+            return False
+        for capability in ("access", "entry", "middle"):
+            with self._lock:
+                current = time.monotonic()
+                eligible_contacts = [
+                    peer
+                    for peer in discovery_contacts
+                    if self._failed_until.get(peer.node_id, 0.0) <= current
+                ]
+            if not eligible_contacts:
+                return False
+            target = hashlib.sha256(
+                _PRIVATE_DISCOVERY_ROUTE_DOMAIN
+                + capability.encode("ascii")
+                + secrets.token_bytes(32)
+            ).digest()
+            responses = self._request_batch(
+                eligible_contacts,
+                RpcType.FIND_NODE,
+                encode_find_node(target, capability),
+                RpcType.FIND_NODE,
+                direct_first_contact=True,
+            )
+            for source, content in responses:
+                if content is None:
+                    continue
+                try:
+                    learned = decode_node_list(
+                        content,
+                        expected_network_id=self.pool.network_id,
+                        expected_protocol_version=self.pool.protocol_version,
+                    )
+                except GrangerNetworkError:
+                    continue
+                if self.cache is not None:
+                    self.cache.ingest(learned, source=f"prime:{source.node_id}")
+                for candidate in learned:
+                    previous = self._route_nodes.get(candidate.node_id)
+                    if previous is None or candidate.issued_at > previous.issued_at:
+                        self._route_nodes[candidate.node_id] = candidate
+        try:
+            target_peer = discovery_contacts[0]
+            self._private_route(target_peer)
+        except (DiscoveryError, DescriptorError):
+            return False
+        return True
 
     def join_network(self) -> NetworkHealthSnapshot:
         if self._joined:
@@ -472,6 +713,7 @@ class WanDiscoveryClient:
                         RpcType.PEER_SAMPLE,
                         encode_peer_sample("discovery", MAX_PEER_SAMPLE_RESULTS),
                         RpcType.PEER_SAMPLE,
+                        direct_first_contact=True,
                     )
                     for peer, content in responses:
                         if content is None:
@@ -516,6 +758,17 @@ class WanDiscoveryClient:
                     dht_ready=False,
                     failure_reason="FIRST_CONTACT_FAILED",
                 )
+            if not self._prime_private_routes(known):
+                return self._health.update(
+                    NetworkState.OFFLINE,
+                    bootstrap_attempted=bootstrap_attempted,
+                    authenticated_peers=len(self._authenticated_nodes),
+                    known_peers=known_count,
+                    reachable_relays=relay_count,
+                    dht_ready=False,
+                    failure_reason="PRIVATE_INGRESS_UNAVAILABLE",
+                )
+            self._private_routes_ready = True
             self._joined = True
             return self._health.update(
                 NetworkState.JOINING,
@@ -539,8 +792,6 @@ class WanDiscoveryClient:
                 for peer in seeds
                 if self._failed_until.get(peer.node_id, 0.0) <= current
             ]
-        if not pending:
-            pending = seeds
         known = {peer.node_id: peer for peer in pending}
         queried: set[str] = set()
         responsive: set[str] = set()
@@ -581,13 +832,26 @@ class WanDiscoveryClient:
                     previous = known.get(candidate.node_id)
                     if previous is None or candidate.issued_at > previous.issued_at:
                         known[candidate.node_id] = candidate
-                        if candidate.node_id not in queried and "discovery" in candidate.capabilities:
+                        with self._lock:
+                            eligible = (
+                                self._failed_until.get(candidate.node_id, 0.0)
+                                <= time.monotonic()
+                            )
+                        if (
+                            candidate.node_id not in queried
+                            and "discovery" in candidate.capabilities
+                            and eligible
+                        ):
                             pending.append(candidate)
-        result = [
-            peer
-            for peer in known.values()
-            if capability in peer.capabilities and peer.reachability == "reachable"
-        ]
+        with self._lock:
+            current = time.monotonic()
+            result = [
+                peer
+                for peer in known.values()
+                if capability in peer.capabilities
+                and peer.reachability == "reachable"
+                and self._failed_until.get(peer.node_id, 0.0) <= current
+            ]
         result.sort(key=lambda peer: int.from_bytes(_node_id_bytes(peer.node_id), "big") ^ int.from_bytes(target, "big"))
         all_known = tuple(known.values())
         known_count, relay_count = self._health_counts(all_known)
@@ -641,19 +905,23 @@ class WanDiscoveryClient:
         target = wan_routing_key(kind, key)
         peers = self.find_nodes(target, "discovery")
         candidates: list[RecordEnvelope] = []
-        for peer in peers:
-            try:
-                payload = self._request(
-                    peer,
-                    RpcType.FIND_RECORD,
-                    encode_find_record(kind, key),
-                    RpcType.FIND_RECORD,
-                )
-                envelope = decode_optional_record(payload, now=now)
+        payload = encode_find_record(kind, key)
+        for offset in range(0, len(peers), MAX_PARALLEL_DISCOVERY_REQUESTS):
+            responses = self._request_batch(
+                list(peers[offset : offset + MAX_PARALLEL_DISCOVERY_REQUESTS]),
+                RpcType.FIND_RECORD,
+                payload,
+                RpcType.FIND_RECORD,
+            )
+            for _peer, content in responses:
+                if content is None:
+                    continue
+                try:
+                    envelope = decode_optional_record(content, now=now)
+                except GrangerNetworkError:
+                    continue
                 if envelope is not None and envelope.kind == kind and envelope.key == key:
                     candidates.append(envelope)
-            except (GrangerNetworkError, OSError):
-                continue
         if len(candidates) < self.minimum_replicas:
             raise ResolutionError(f"WAN record replica quorum is unavailable: {kind}:{key}")
         highest = max(candidate.sequence for candidate in candidates)

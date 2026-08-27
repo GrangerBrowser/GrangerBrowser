@@ -4,13 +4,18 @@ import hashlib
 import ipaddress
 import secrets
 from dataclasses import dataclass
+from typing import Protocol
 
 from .errors import OverlayRoutingError
 from .peer import NodeDescriptor, validate_node_id
-from .wan_discovery import WanDiscoveryClient
 
 
 ROUTE_SELECTION_DOMAIN = b"granger-network-v0.4/route-selection\x00"
+GUARD_SELECTION_DOMAIN = b"granger-network-v0.5/guard-selection\x00"
+
+
+class _Discovery(Protocol):
+    def find_nodes(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]: ...
 
 
 def _selection_target(context: bytes, capability: str) -> bytes:
@@ -39,32 +44,22 @@ class WanRouteSelection:
 
 
 class WanRouteSelector:
-    def __init__(self, discovery: WanDiscoveryClient) -> None:
+    def __init__(self, discovery: _Discovery, *, guard_seed: bytes | None = None) -> None:
         self.discovery = discovery
+        seed = secrets.token_bytes(32) if guard_seed is None else guard_seed
+        if not isinstance(seed, bytes) or len(seed) != 32:
+            raise OverlayRoutingError("guard selection seed must contain 32 bytes")
+        self.guard_seed = seed
 
-    def _choose(
-        self,
-        capability: str,
-        context: bytes,
-        excluded_ids: set[str],
-        excluded_groups: set[tuple[int, int]],
-    ) -> tuple[NodeDescriptor, bool]:
-        candidates = [
-            candidate
-            for candidate in self.discovery.find_nodes(
-                _selection_target(context, capability),
-                capability,
-            )
-            if candidate.node_id not in excluded_ids
-        ]
-        if not candidates:
-            raise OverlayRoutingError(f"no reachable {capability} relay is available")
-        diverse = [
-            candidate
-            for candidate in candidates
-            if _network_group(candidate) not in excluded_groups
-        ]
-        return (diverse[0], False) if diverse else (candidates[0], True)
+    def _guard_order(self, candidates: list[NodeDescriptor]) -> list[NodeDescriptor]:
+        return sorted(
+            candidates,
+            key=lambda candidate: hashlib.sha256(
+                GUARD_SELECTION_DOMAIN
+                + self.guard_seed
+                + candidate.node_id.encode("ascii")
+            ).digest(),
+        )
 
     def client_prefix(
         self,
@@ -89,14 +84,22 @@ class WanRouteSelector:
             raise OverlayRoutingError("route candidate limit is invalid")
         context = service_id.encode("ascii")
         used = {validate_node_id(node_id) for node_id in (excluded_ids or ())}
-        entries = [
+        accesses = [
+            node
+            for node in self.discovery.find_nodes(
+                _selection_target(context, "access"),
+                "access",
+            )
+            if node.node_id not in used
+        ]
+        entries = self._guard_order([
             node
             for node in self.discovery.find_nodes(
                 _selection_target(context, "entry"),
                 "entry",
             )
             if node.node_id not in used
-        ]
+        ])
         middles = [
             node
             for node in self.discovery.find_nodes(
@@ -105,26 +108,72 @@ class WanRouteSelector:
             )
             if node.node_id not in used
         ]
-        if not entries or not middles:
+        if not accesses or not entries or not middles:
             raise OverlayRoutingError("no complete client relay route is available")
         result: list[WanRouteSelection] = []
-        seen: set[tuple[str, str]] = set()
-        rounds = max(len(entries), len(middles))
-        for offset in range(rounds):
-            for entry_index, entry in enumerate(entries):
-                middle = middles[(entry_index + offset) % len(middles)]
-                pair = (entry.node_id, middle.node_id)
-                if entry.node_id == middle.node_id or pair in seen:
-                    continue
-                seen.add(pair)
-                result.append(
-                    WanRouteSelection(
-                        ((entry, "entry"), (middle, "middle")),
-                        _network_group(entry) == _network_group(middle),
+        seen: set[tuple[str, str, str]] = set()
+        combinations: list[
+            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
+        ] = []
+        for guard_index, entry in enumerate(entries):
+            for access_index, access in enumerate(accesses):
+                for middle_index, middle in enumerate(middles):
+                    identities = {access.node_id, entry.node_id, middle.node_id}
+                    if len(identities) != 3:
+                        continue
+                    groups = {
+                        _network_group(access),
+                        _network_group(entry),
+                        _network_group(middle),
+                    }
+                    combinations.append(
+                        (
+                            3 - len(groups),
+                            guard_index,
+                            access_index + middle_index,
+                            access,
+                            entry,
+                            middle,
+                        )
                     )
+        combinations.sort(key=lambda item: item[:3])
+        remaining = list(enumerate(combinations))
+        node_use: dict[str, int] = {}
+        ordered_combinations: list[
+            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
+        ] = []
+        while remaining and len(ordered_combinations) < limit:
+            selected_index, selected = min(
+                remaining,
+                key=lambda item: (
+                    sum(
+                        node_use.get(node.node_id, 0)
+                        for node in item[1][3:]
+                    ),
+                    item[0],
+                ),
+            )
+            ordered_combinations.append(selected)
+            for node in selected[3:]:
+                node_use[node.node_id] = node_use.get(node.node_id, 0) + 1
+            remaining = [item for item in remaining if item[0] != selected_index]
+        for relaxation, _guard_index, _offset, access, entry, middle in ordered_combinations:
+            route_ids = (access.node_id, entry.node_id, middle.node_id)
+            if route_ids in seen:
+                continue
+            seen.add(route_ids)
+            result.append(
+                WanRouteSelection(
+                    (
+                        (access, "access"),
+                        (entry, "entry"),
+                        (middle, "middle"),
+                    ),
+                    relaxation > 0,
                 )
-                if len(result) >= limit:
-                    return tuple(result)
+            )
+            if len(result) >= limit:
+                break
         if not result:
             raise OverlayRoutingError("no complete client relay route is available")
         return tuple(result)
@@ -146,16 +195,57 @@ class WanRouteSelector:
         used = {
             validate_node_id(node_id) for node_id in (excluded_ids or ())
         } | {final_node.node_id}
-        groups = {_network_group(final_node)}
-        entry, relaxed_entry = self._choose("service-relay", context, used, groups)
-        used.add(entry.node_id)
-        groups.add(_network_group(entry))
-        middle, relaxed_middle = self._choose("middle", context, used, groups)
+        accesses = [
+            node
+            for node in self.discovery.find_nodes(
+                _selection_target(context, "access"), "access"
+            )
+            if node.node_id not in used
+        ]
+        guards = self._guard_order([
+            node
+            for node in self.discovery.find_nodes(
+                _selection_target(context, "service-relay"), "service-relay"
+            )
+            if node.node_id not in used
+        ])
+        middles = [
+            node
+            for node in self.discovery.find_nodes(
+                _selection_target(context, "middle"), "middle"
+            )
+            if node.node_id not in used
+        ]
+        choices: list[
+            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
+        ] = []
+        for guard_index, guard in enumerate(guards):
+            for access_index, access in enumerate(accesses):
+                for middle_index, middle in enumerate(middles):
+                    nodes = (access, guard, middle, final_node)
+                    if len({node.node_id for node in nodes}) != len(nodes):
+                        continue
+                    groups = {_network_group(node) for node in nodes}
+                    choices.append(
+                        (
+                            len(nodes) - len(groups),
+                            guard_index,
+                            access_index + middle_index,
+                            access,
+                            guard,
+                            middle,
+                        )
+                    )
+        if not choices:
+            raise OverlayRoutingError("no complete service relay route is available")
+        choices.sort(key=lambda item: item[:3])
+        relaxation, _guard_index, _offset, access, entry, middle = choices[0]
         return WanRouteSelection(
             (
+                (access, "access"),
                 (entry, "service-relay"),
                 (middle, "middle"),
                 (final_node, final_role),
             ),
-            relaxed_entry or relaxed_middle,
+            relaxation > 0,
         )

@@ -17,9 +17,12 @@ operator runs the commands on the physical Debian machine.
 
 ## Router
 
-Forward public TCP port 62441 to `192.168.110.166:62441`. Do not forward UDP.
-The signed node descriptor advertises `95.182.105.239:62441`; the process binds
-locally to `0.0.0.0:62441`.
+Before first start, replace the RFC 5737 example address `203.0.113.20` in
+`config/granger-node.json` with the router's independently verified public
+address. Forward TCP port 62441 to the operator-selected LAN host and do not
+forward UDP. Keep private LAN addresses and unpublished operator endpoints in a
+local configuration outside source control. The process binds locally to
+`0.0.0.0:62441`.
 
 ## First start
 
@@ -108,3 +111,5 @@ closed; there is no DNS, clearnet, Tor, I2P, or direct-service fallback for a
 stream, bandwidth, burst, per-circuit byte, timeout, and memory-budget values.
 Relay participation is explicit in the capability list. Edit limits before the
 first start or restart to issue a fresh descriptor with the same identity.
+The `access` capability is the endpoint-facing first hop; `entry` and
+`service-relay` guards are reached through it.

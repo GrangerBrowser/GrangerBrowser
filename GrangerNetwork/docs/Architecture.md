@@ -30,10 +30,10 @@ Distributed discovery over authenticated peer RPC
   +--> signed node descriptors
   |
   v
-Client circuit: CLIENT -> ENTRY -> MIDDLE -> INTRODUCTION/RENDEZVOUS
-                                             ^
-                                             |
-Service circuit: HOST -> SERVICE ENTRY -> MIDDLE
+Client circuit: CLIENT -> ACCESS -> STABLE GUARD -> MIDDLE -> INTRO/RENDEZVOUS
+                                                                    ^
+                                                                    |
+Service circuit: HOST -> ACCESS -> STABLE SERVICE GUARD -> MIDDLE
   |
   v
 End-to-end wire-3 service channel
@@ -83,9 +83,10 @@ explicitly selected for a test.
 Infrastructure roles run as independent `granger_network.node` processes:
 
 - bootstrap/discovery;
-- client entry;
+- access;
+- client guard (`entry` capability);
 - middle;
-- service entry;
+- service guard (`service-relay` capability);
 - introduction;
 - rendezvous.
 
@@ -133,7 +134,7 @@ meaningful eclipse hardening, not complete Sybil resistance.
 The host performs only outbound operations:
 
 1. Load or create the long-term service identity.
-2. Discover eligible service-entry, middle, introduction and rendezvous nodes.
+2. Discover eligible access, service-guard, middle, introduction and rendezvous nodes.
 3. Build at least two independent introduction circuits.
 4. Build a separate rendezvous circuit.
 5. Register opaque introduction tokens.
@@ -179,24 +180,26 @@ channel.
 
 | Role | Knows | Does not receive |
 |---|---|---|
-| Client | service key/name, public relay descriptors, own entry endpoint | host IP, host port, backend endpoint |
-| Host | service identity, local backend, own service-entry endpoint | client IP, client port, client LAN endpoint |
-| Client entry | client socket address, next relay | host endpoint and application plaintext |
+| Client | service key/name, public relay descriptors, own access endpoint | host IP, host port, backend endpoint |
+| Host | service identity, local backend, own access endpoint | client IP, client port, client LAN endpoint |
+| Client access | client socket address, next guard | service identity, full route, host endpoint and application plaintext |
+| Client guard | access-relay socket address, next relay | client endpoint, host endpoint and application plaintext |
 | Client middle | adjacent relays | client endpoint, host endpoint, application plaintext |
-| Service entry | host socket address, next relay | client endpoint and application plaintext |
+| Service access | host socket address, next guard | service destination, client endpoint and application plaintext |
+| Service guard | access-relay socket address, next relay | host endpoint, client endpoint and application plaintext |
 | Service middle | adjacent relays | client endpoint, host backend, application plaintext |
 | Introduction | upstream relay, service ID/token, request timing | client/host endpoint pair and application plaintext |
 | Rendezvous | paired circuit timing and opaque cell streams | end-to-end plaintext and backend endpoint |
 | Discovery | signed public records and requester socket to that node | service backend and opposite endpoint |
 
-An entry relay necessarily sees the endpoint connecting to it. Endpoint privacy
-means the opposite endpoint does not receive that address; it is not invisibility
-from the endpoint's ISP or first relay.
+An access relay necessarily sees the endpoint connecting to it. The stable guard
+sees the access relay as its immediate peer. Endpoint privacy is knowledge
+separation, not invisibility from the endpoint's ISP or first access relay.
 
 ## Failure behavior
 
 Every routing stage returns a typed failure. Route attempts may choose another
-eligible entry, middle, introduction point or bootstrap peer, but cannot change
+eligible access, guard, middle, introduction point or bootstrap peer, but cannot change
 the destination transport. There is no path from `.granger` failure to:
 
 - direct TCP or UDP;
@@ -238,7 +241,7 @@ without a valid signed bootstrap/reseed set intentionally has no working
 - public independent seed/relay deployment and authenticated bundle delivery;
 - operational automatic node-descriptor rotation;
 - broader Sybil/eclipse resistance;
-- circuit rotation policy;
-- optional, measured cover traffic;
+- physical-WAN measurement of cover profiles and rotation overhead;
+- dedicated cover circuits and stronger timing-correlation defenses;
 - streaming responses and long-lived browser APIs;
 - independent security review and protocol interoperability tests.

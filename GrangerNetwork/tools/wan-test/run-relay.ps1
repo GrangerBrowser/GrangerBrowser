@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$StateDir,
     [Parameter(Mandatory)][string]$ListenHost,
     [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$ListenPort,
-    [Parameter(Mandatory)][ValidateSet("entry", "middle", "service-relay", "introduction", "rendezvous", "discovery")][string[]]$Capability,
+    [Parameter(Mandatory)][ValidateSet("access", "entry", "middle", "service-relay", "introduction", "rendezvous", "discovery")][string[]]$Capability,
     [string[]]$PeerDescriptor = @(),
     [string]$Python = "python",
     [ValidateRange(60, 86400)][int]$DescriptorLifetime = 86400,

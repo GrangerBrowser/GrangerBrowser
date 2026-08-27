@@ -32,6 +32,7 @@ MAX_NODE_DESCRIPTOR_LIFETIME = 24 * 60 * 60
 MAX_NODE_CLOCK_SKEW = 120
 NODE_CAPABILITIES = frozenset(
     {
+        "access",
         "bootstrap",
         "discovery",
         "entry",
@@ -42,8 +43,9 @@ NODE_CAPABILITIES = frozenset(
     }
 )
 RELAY_CAPABILITIES = frozenset(
-    {"entry", "middle", "introduction", "rendezvous", "service-relay"}
+    {"access", "entry", "middle", "introduction", "rendezvous", "service-relay"}
 )
+CIRCUIT_CAPABILITIES = RELAY_CAPABILITIES | {"discovery"}
 NODE_REACHABILITY = frozenset({"reachable", "non-reachable", "unknown"})
 _NODE_ID = re.compile(r"^[a-z2-7]{52}$")
 _NODE_NETWORK = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
@@ -497,11 +499,13 @@ class GrangerNode:
         if (
             not isinstance(circuit_id, bytes)
             or len(circuit_id) != 16
-            or capability not in RELAY_CAPABILITIES
+            or capability not in CIRCUIT_CAPABILITIES
         ):
             raise ResourceLimitError("relay circuit request is invalid")
-        if not self.policy.enabled or capability not in self.descriptor.capabilities:
+        if capability not in self.descriptor.capabilities:
             raise ResourceLimitError("node did not opt in to the requested relay role")
+        if capability in RELAY_CAPABILITIES and not self.policy.enabled:
+            raise ResourceLimitError("node did not opt in to relay participation")
         with self._lock:
             if circuit_id in self._circuits:
                 raise ResourceLimitError("relay circuit identifier is already active")

@@ -19,7 +19,15 @@ from .rendezvous_control import validate_service_id
 MAX_CONTROL_DOCUMENT = 64 * 1024
 MAX_RENDEZVOUS_GRANT_LIFETIME = 5 * 60
 RENDEZVOUS_GRANT_DOMAIN = b"granger-network-v0.4/rendezvous-grant\x00"
-RENDEZVOUS_REGISTER_DOMAIN = b"granger-network-v0.4/rendezvous-register\x00"
+RENDEZVOUS_COOKIE_TAG_DOMAIN = b"granger-network-v0.4/rendezvous-cookie-tag\x00"
+
+
+def rendezvous_cookie_tag(cookie: bytes) -> bytes:
+    if not isinstance(cookie, bytes) or len(cookie) != 32:
+        raise ProtocolError("rendezvous cookie must contain 32 bytes")
+    import hashlib
+
+    return hashlib.sha256(RENDEZVOUS_COOKIE_TAG_DOMAIN + cookie).digest()
 
 
 def encode_intro_registration(
@@ -212,79 +220,58 @@ class RendezvousGrant:
 
 @dataclass(frozen=True)
 class RendezvousRegistration:
-    service_id: str
-    identity_public_key: bytes
-    cookie: bytes
+    cookie_tag: bytes
+    nonce: bytes
     expires_at: int
     cell_circuit_id: bytes
-    signature: bytes
 
-    def unsigned_bytes(self) -> bytes:
+    def verify(self, now: int | None = None) -> None:
+        if (
+            len(self.cookie_tag) != 32
+            or len(self.nonce) != 16
+            or len(self.cell_circuit_id) != 16
+        ):
+            raise ProtocolError("rendezvous registration field length is invalid")
+        current = int(time.time()) if now is None else now
+        if self.expires_at <= current or self.expires_at > current + MAX_RENDEZVOUS_GRANT_LIFETIME:
+            raise ReplayError("rendezvous registration is expired or too long")
+
+    def encode(self) -> bytes:
+        self.verify()
         return (
-            BinaryWriter(256)
-            .text_u16(validate_service_id(self.service_id), 64)
-            .fixed(self.identity_public_key, 32)
-            .fixed(self.cookie, 32)
+            BinaryWriter(96)
+            .fixed(self.cookie_tag, 32)
+            .fixed(self.nonce, 16)
             .u64(self.expires_at)
             .fixed(self.cell_circuit_id, 16)
             .build()
         )
 
-    def verify(self, now: int | None = None) -> None:
-        if len(self.identity_public_key) != 32 or len(self.cookie) != 32 or len(self.cell_circuit_id) != 16:
-            raise ProtocolError("rendezvous registration field length is invalid")
-        from .address import service_id_from_public_key
-
-        if self.service_id != service_id_from_public_key(self.identity_public_key):
-            raise IdentityVerificationError("rendezvous registration identity is invalid")
-        current = int(time.time()) if now is None else now
-        if self.expires_at <= current or self.expires_at > current + MAX_RENDEZVOUS_GRANT_LIFETIME:
-            raise ReplayError("rendezvous registration is expired or too long")
-        try:
-            Ed25519PublicKey.from_public_bytes(self.identity_public_key).verify(
-                self.signature,
-                RENDEZVOUS_REGISTER_DOMAIN + self.unsigned_bytes(),
-            )
-        except (InvalidSignature, ValueError) as error:
-            raise IdentityVerificationError("rendezvous registration signature is invalid") from error
-
-    def encode(self) -> bytes:
-        return self.unsigned_bytes() + self.signature
-
     @classmethod
     def create(
         cls,
-        identity: ServiceIdentity,
-        service_id: str,
         cookie: bytes,
         expires_at: int,
         cell_circuit_id: bytes,
+        nonce: bytes | None = None,
     ) -> "RendezvousRegistration":
-        unsigned = cls(
-            service_id,
-            identity.public_key_bytes,
-            cookie,
+        result = cls(
+            rendezvous_cookie_tag(cookie),
+            secrets.token_bytes(16) if nonce is None else nonce,
             expires_at,
             cell_circuit_id,
-            b"\x00" * 64,
-        )
-        result = replace(
-            unsigned,
-            signature=identity.sign(RENDEZVOUS_REGISTER_DOMAIN + unsigned.unsigned_bytes()),
         )
         result.verify()
         return result
 
     @classmethod
     def decode(cls, content: bytes, now: int | None = None) -> "RendezvousRegistration":
-        reader = BinaryReader(content, 384)
+        reader = BinaryReader(content, 96)
         result = cls(
-            validate_service_id(reader.text_u16(64)),
             reader.fixed(32),
-            reader.fixed(32),
+            reader.fixed(16),
             reader.u64(),
             reader.fixed(16),
-            reader.fixed(64),
         )
         reader.finish()
         result.verify(now=now)
@@ -293,26 +280,36 @@ class RendezvousRegistration:
 
 @dataclass(frozen=True)
 class RendezvousJoin:
-    service_id: str
-    cookie: bytes
+    cookie_tag: bytes
     nonce: bytes
     cell_circuit_id: bytes
 
     def encode(self) -> bytes:
         return (
-            BinaryWriter(192)
-            .text_u16(validate_service_id(self.service_id), 64)
-            .fixed(self.cookie, 32)
+            BinaryWriter(80)
+            .fixed(self.cookie_tag, 32)
             .fixed(self.nonce, 16)
             .fixed(self.cell_circuit_id, 16)
             .build()
         )
 
     @classmethod
+    def create(
+        cls,
+        cookie: bytes,
+        cell_circuit_id: bytes,
+        nonce: bytes | None = None,
+    ) -> "RendezvousJoin":
+        return cls(
+            rendezvous_cookie_tag(cookie),
+            secrets.token_bytes(16) if nonce is None else nonce,
+            cell_circuit_id,
+        )
+
+    @classmethod
     def decode(cls, content: bytes) -> "RendezvousJoin":
-        reader = BinaryReader(content, 192)
+        reader = BinaryReader(content, 80)
         result = cls(
-            validate_service_id(reader.text_u16(64)),
             reader.fixed(32),
             reader.fixed(16),
             reader.fixed(16),

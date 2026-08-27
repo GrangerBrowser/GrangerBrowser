@@ -11,11 +11,14 @@ import re
 import socket
 import sys
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from ._codec import parse_json_object
 from .address import normalize_name
 from .client import GrangerClient, GrangerResponse
+from .cells import CoverTrafficProfile, cover_profile_from_environment
 from .descriptor import ServiceDescriptor
 from .errors import (
     DescriptorError,
@@ -146,6 +149,37 @@ class _LocalDemo:
         self.host.stop()
 
 
+@dataclass(frozen=True)
+class CircuitRotationPolicy:
+    max_age_seconds: float = 10 * 60
+    max_requests: int = 128
+    max_transferred_bytes: int = 64 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_age_seconds, bool)
+            or not isinstance(self.max_age_seconds, (int, float))
+            or not 1 <= self.max_age_seconds <= 24 * 60 * 60
+            or isinstance(self.max_requests, bool)
+            or not isinstance(self.max_requests, int)
+            or not 1 <= self.max_requests <= 4096
+            or isinstance(self.max_transferred_bytes, bool)
+            or not isinstance(self.max_transferred_bytes, int)
+            or not 64 * 1024 <= self.max_transferred_bytes <= 1024 * 1024 * 1024
+        ):
+            raise ValueError("circuit rotation policy is invalid")
+
+
+@dataclass
+class _GatewaySessionSlot:
+    connected: WanClientConnection
+    created_at: float
+    active_requests: int = 0
+    request_count: int = 0
+    transferred_bytes: int = 0
+    retired: bool = False
+
+
 class _WanGateway:
     def __init__(
         self,
@@ -154,6 +188,7 @@ class _WanGateway:
         *,
         trust_anchor_path: Path | None = None,
         rollback_state_path: Path | None = None,
+        rotation_policy: CircuitRotationPolicy | None = None,
     ) -> None:
         config = load_browser_wan_config(
             config_path,
@@ -173,11 +208,93 @@ class _WanGateway:
         self._resolver = WanDistributedResolver(self._runtime.discovery, config.alias_pins)
         self._route_attempts = config.route_attempts
         self._timeout = config.timeout
-        self._sessions: dict[str, WanClientConnection] = {}
+        self._sessions: dict[str, _GatewaySessionSlot] = {}
+        self._session_locks = tuple(threading.Lock() for _ in range(32))
+        self._rotation_policy = rotation_policy or CircuitRotationPolicy()
+        self._cover_profile = cover_profile_from_environment()
+        self._rotation_count = 0
+        self._closed = False
         self._lock = threading.Lock()
 
     def network_health(self) -> dict[str, object]:
-        return self._runtime.discovery.health().to_document()
+        result = self._runtime.discovery.health().to_document()
+        with self._lock:
+            result["activeServiceCircuits"] = len(self._sessions)
+            result["circuitRotations"] = self._rotation_count
+            result["coverActive"] = bool(self._sessions) and (
+                self._cover_profile is not CoverTrafficProfile.OFF
+            )
+            result["coverProfile"] = self._cover_profile.value
+        return result
+
+    def _service_lock(self, name: str) -> threading.Lock:
+        return self._session_locks[hash(name) % len(self._session_locks)]
+
+    def _rotation_due(self, slot: _GatewaySessionSlot, now: float) -> bool:
+        policy = self._rotation_policy
+        return (
+            now - slot.created_at >= policy.max_age_seconds
+            or slot.request_count >= policy.max_requests
+            or slot.transferred_bytes >= policy.max_transferred_bytes
+            or slot.connected.session.application_mux.failed
+        )
+
+    def _acquire_session(
+        self,
+        name: str,
+    ) -> tuple[_GatewaySessionSlot, _GatewaySessionSlot | None]:
+        service_lock = self._service_lock(name)
+        with service_lock:
+            with self._lock:
+                if self._closed:
+                    raise RendezvousError("Granger WAN gateway is closed")
+                slot = self._sessions.get(name)
+                replace = slot is None or self._rotation_due(slot, time.monotonic())
+            retired: _GatewaySessionSlot | None = None
+            if replace:
+                connected = connect_service(
+                    self._runtime,
+                    self._resolver,
+                    name,
+                    route_attempts=self._route_attempts,
+                    timeout=self._timeout,
+                )
+                replacement = _GatewaySessionSlot(connected, time.monotonic())
+                with self._lock:
+                    if self._closed:
+                        connected.session.close()
+                        raise RendezvousError("Granger WAN gateway is closed")
+                    previous = self._sessions.get(name)
+                    self._sessions[name] = replacement
+                    slot = replacement
+                    if previous is not None:
+                        previous.retired = True
+                        self._rotation_count += 1
+                        if previous.active_requests == 0:
+                            retired = previous
+            assert slot is not None
+            with self._lock:
+                slot.active_requests += 1
+            return slot, retired
+
+    def _release_session(
+        self,
+        name: str,
+        slot: _GatewaySessionSlot,
+        *,
+        transferred_bytes: int,
+        failed: bool,
+    ) -> _GatewaySessionSlot | None:
+        with self._lock:
+            slot.active_requests -= 1
+            if failed:
+                if self._sessions.get(name) is slot:
+                    self._sessions.pop(name, None)
+                slot.retired = True
+            else:
+                slot.request_count += 1
+                slot.transferred_bytes += transferred_bytes
+            return slot if slot.retired and slot.active_requests == 0 else None
 
     def fetch_gateway(
         self,
@@ -187,41 +304,51 @@ class _WanGateway:
         headers: dict[str, str],
         body: bytes,
     ) -> GrangerResponse:
-        with self._lock:
-            connected = self._sessions.get(name)
-            if connected is None:
-                connected = connect_service(
-                    self._runtime,
-                    self._resolver,
-                    name,
-                    route_attempts=self._route_attempts,
-                    timeout=self._timeout,
-                )
-                self._sessions[name] = connected
+        slot, retired = self._acquire_session(name)
+        if retired is not None:
+            retired.connected.session.close()
+        failed = False
+        transferred = 0
         try:
-            response = connected.session.fetch(
+            response = slot.connected.session.fetch(
                 path,
                 method=method,
                 headers=headers,
                 body=body,
+            )
+            transferred = (
+                len(body)
+                + len(path.encode("utf-8"))
+                + len(response.body)
+                + sum(
+                    len(key.encode("utf-8")) + len(value.encode("utf-8"))
+                    for key, value in (*headers.items(), *response.headers.items())
+                )
             )
             return GrangerResponse(
                 response.status,
                 response.reason,
                 response.headers,
                 response.body,
-                connected.service.canonical_name,
+                slot.connected.service.canonical_name,
             )
         except (GrangerNetworkError, OSError, TimeoutError, ValueError):
-            with self._lock:
-                if self._sessions.get(name) is connected:
-                    self._sessions.pop(name, None)
-                    connected.session.close()
+            failed = True
             raise
+        finally:
+            ready_to_close = self._release_session(
+                name,
+                slot,
+                transferred_bytes=transferred,
+                failed=failed,
+            )
+            if ready_to_close is not None:
+                ready_to_close.connected.session.close()
 
     def close(self) -> None:
         with self._lock:
-            sessions = tuple(self._sessions.values())
+            self._closed = True
+            sessions = tuple(slot.connected for slot in self._sessions.values())
             self._sessions.clear()
         for connected in sessions:
             connected.session.close()

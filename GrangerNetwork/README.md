@@ -14,10 +14,10 @@ cross-network test has not yet been completed and is explicitly **UNVERIFIED**.
 
 ```text
 CLIENT
-  -> client entry -> client middle -> rendezvous
-                                      ^
-                                      |
-HOST -> service entry -> service middle
+  -> client access -> stable client guard -> client middle -> rendezvous
+                                                            ^
+                                                            |
+HOST -> service access -> stable service guard -> service middle
 ```
 
 The host also maintains at least two independent outbound introduction
@@ -87,9 +87,9 @@ python3 -m venv .venv
 ## Real-socket acceptance
 
 The acceptance harness creates separate identities, state roots, ports and OS
-processes for three bootstrap nodes, discovery nodes, client entries, five
-middle relays, two service entries, two introduction points, a rendezvous,
-host, clients, a loopback forum and optionally Granger Browser:
+processes for three bootstrap nodes, discovery nodes, access relays, stable
+client and service guards, middle relays, two introduction points, a
+rendezvous, host, clients, a loopback forum and optionally Granger Browser:
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
@@ -128,6 +128,10 @@ Real local socket path:
 $env:PYTHONPATH = "$PWD\src"
 python benchmarks\wan_benchmark.py --iterations 7 --output wan-benchmark.json
 ```
+
+Use `--cover-profile off` and `--cover-profile standard` for comparable local
+measurements. The current route contains access, guard and middle relays on
+each endpoint side; historical three-hop reports are not directly comparable.
 
 Logical discovery and circuit-state scale:
 
@@ -224,7 +228,9 @@ mock service state. See [Hosting.md](docs/Hosting.md).
   implemented. Remote bundle download and automatic authority distribution are
   intentionally not implemented; node descriptors still require rotation.
 - Traffic timing, volume and session duration remain observable.
-- Cover traffic and periodic circuit rotation are not enabled.
+- Bounded fixed-cell cover traffic and browser circuit rotation are implemented
+  and locally tested. Dedicated cover circuits and physical-WAN traffic-analysis
+  measurements are not implemented.
 - Responses are buffered up to bounded limits; streaming large files and
   WebSocket integration are not implemented.
 - Qt custom schemes expose successful fetches as status 200. The original

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import secrets
 import struct
 import threading
 import time
 from collections import deque
-from enum import IntEnum
+from dataclasses import dataclass
+from enum import Enum, IntEnum
 
 from .errors import ProtocolError, ResourceLimitError
 from .protocol import VERSION_3, SecureChannel
@@ -31,6 +33,55 @@ class CellType(IntEnum):
     CLOSE = 3
     RESET = 4
     WINDOW_UPDATE = 5
+    COVER = 6
+
+
+class CoverTrafficProfile(str, Enum):
+    OFF = "off"
+    LIGHT = "light"
+    STANDARD = "standard"
+    HIGH_PRIVACY = "high-privacy"
+
+
+@dataclass(frozen=True)
+class CoverTrafficPolicy:
+    profile: CoverTrafficProfile
+    minimum_interval_seconds: float
+    maximum_interval_seconds: float
+    quiet_after_real_seconds: float
+    max_cells_per_minute: int
+
+    @classmethod
+    def for_profile(
+        cls,
+        profile: CoverTrafficProfile | str,
+    ) -> "CoverTrafficPolicy":
+        try:
+            normalized = (
+                profile
+                if isinstance(profile, CoverTrafficProfile)
+                else CoverTrafficProfile(str(profile).strip().lower())
+            )
+        except ValueError as error:
+            raise ProtocolError("cover traffic profile is invalid") from error
+        values = {
+            CoverTrafficProfile.OFF: (0.0, 0.0, 0.0, 0),
+            CoverTrafficProfile.LIGHT: (7.5, 15.0, 2.0, 6),
+            CoverTrafficProfile.STANDARD: (3.5, 8.0, 1.5, 14),
+            CoverTrafficProfile.HIGH_PRIVACY: (1.5, 4.0, 0.75, 32),
+        }
+        return cls(normalized, *values[normalized])
+
+
+def cover_profile_from_environment(
+    default: CoverTrafficProfile = CoverTrafficProfile.STANDARD,
+) -> CoverTrafficProfile:
+    value = os.environ.get("GRANGER_COVER_PROFILE", default.value).strip().lower()
+    aliases = {"high": CoverTrafficProfile.HIGH_PRIVACY.value}
+    try:
+        return CoverTrafficProfile(aliases.get(value, value))
+    except ValueError as error:
+        raise ProtocolError("GRANGER_COVER_PROFILE is invalid") from error
 
 
 class RelayCell:
@@ -84,10 +135,12 @@ def encode_cell(cell: RelayCell, padding_factory=secrets.token_bytes) -> bytes:
         raise ProtocolError("relay cell flags are invalid")
     if not isinstance(cell.circuit_id, bytes) or len(cell.circuit_id) != 16:
         raise ProtocolError("relay cell circuit identifier is invalid")
+    is_cover = cell.cell_type is CellType.COVER
     if (
         isinstance(cell.stream_id, bool)
         or not isinstance(cell.stream_id, int)
-        or not 1 <= cell.stream_id <= 0xFFFFFFFF
+        or (is_cover and cell.stream_id != 0)
+        or (not is_cover and not 1 <= cell.stream_id <= 0xFFFFFFFF)
     ):
         raise ProtocolError("relay cell stream identifier is invalid")
     if (
@@ -98,6 +151,8 @@ def encode_cell(cell: RelayCell, padding_factory=secrets.token_bytes) -> bytes:
         raise ProtocolError("relay cell sequence is invalid")
     if not isinstance(cell.payload, bytes) or len(cell.payload) > CELL_PAYLOAD_SIZE:
         raise ProtocolError("relay cell payload exceeds its fixed cell capacity")
+    if is_cover and cell.payload:
+        raise ProtocolError("relay COVER cell contains application data")
     header = CELL_HEADER.pack(
         CELL_MAGIC,
         CELL_VERSION,
@@ -138,7 +193,13 @@ def decode_cell(content: bytes) -> RelayCell:
         raise ProtocolError("relay cell type is unknown") from error
     if flags & ~CELL_ALLOWED_FLAGS or (cell_type is not CellType.OPEN and flags):
         raise ProtocolError("relay cell flags are invalid")
-    if not 1 <= stream_id <= 0xFFFFFFFF or payload_size > CELL_PAYLOAD_SIZE:
+    is_cover = cell_type is CellType.COVER
+    if (
+        (is_cover and stream_id != 0)
+        or (not is_cover and not 1 <= stream_id <= 0xFFFFFFFF)
+        or payload_size > CELL_PAYLOAD_SIZE
+        or (is_cover and payload_size != 0)
+    ):
         raise ProtocolError("relay cell field is outside its limit")
     return RelayCell(
         cell_type,
@@ -274,8 +335,13 @@ class MuxStream:
             raise ProtocolError("multiplexed stream receive size is invalid")
         deadline = self._wait_deadline()
         with self._condition:
-            self._wait(lambda: bool(self._buffer) or self._remote_closed, deadline)
-            if not self._buffer and self._remote_closed:
+            self._wait(
+                lambda: bool(self._buffer)
+                or self._remote_closed
+                or self._local_closed,
+                deadline,
+            )
+            if not self._buffer and (self._remote_closed or self._local_closed):
                 return b""
             result = bytes(self._buffer[:size])
             del self._buffer[:size]
@@ -330,6 +396,7 @@ class CellMultiplexer:
         initiator: bool,
         stream_window: int = DEFAULT_STREAM_WINDOW,
         max_streams: int = MAX_STREAMS_PER_MULTIPLEXER,
+        cover_profile: CoverTrafficProfile | str = CoverTrafficProfile.OFF,
     ) -> None:
         if not isinstance(channel, SecureChannel) or channel.protocol_version != VERSION_3:
             raise ProtocolError("relay cells require a wire 3 channel")
@@ -349,21 +416,38 @@ class CellMultiplexer:
         self.initiator = initiator
         self.stream_window = stream_window
         self.max_streams = max_streams
+        self.cover_policy = CoverTrafficPolicy.for_profile(cover_profile)
         self._streams: dict[int, MuxStream] = {}
         self._accept_queue: deque[MuxStream] = deque()
         self._condition = threading.Condition()
         self._send_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
         self._tx_sequence = 0
         self._rx_sequence = 0
         self._next_stream_id = 1 if initiator else 2
         self._failed: BaseException | None = None
         self._closed = False
+        self._real_send_waiters = 0
+        self._last_real_send = time.monotonic()
+        self._real_cells_sent = 0
+        self._cover_cells_sent = 0
+        self._cover_cells_received = 0
+        self._cover_send_times: deque[float] = deque()
+        self._cover_stop = threading.Event()
+        self._cover_thread: threading.Thread | None = None
         self._reader = threading.Thread(
             target=self._read_loop,
             name=f"granger-cell-{circuit_id.hex()[:8]}",
             daemon=True,
         )
         self._reader.start()
+        if self.cover_policy.profile is not CoverTrafficProfile.OFF:
+            self._cover_thread = threading.Thread(
+                target=self._cover_loop,
+                name=f"granger-cover-{circuit_id.hex()[:8]}",
+                daemon=True,
+            )
+            self._cover_thread.start()
 
     @property
     def failed(self) -> bool:
@@ -374,6 +458,17 @@ class CellMultiplexer:
     def active_streams(self) -> int:
         with self._condition:
             return len(self._streams)
+
+    @property
+    def traffic_counters(self) -> dict[str, int | str]:
+        with self._metrics_lock:
+            return {
+                "coverBytesSent": self._cover_cells_sent * CELL_SIZE,
+                "coverCellsReceived": self._cover_cells_received,
+                "coverCellsSent": self._cover_cells_sent,
+                "profile": self.cover_policy.profile.value,
+                "realCellsSent": self._real_cells_sent,
+            }
 
     def _send(self, cell_type: CellType, stream_id: int, payload: bytes, flags: int = 0) -> None:
         self._send_batch(((cell_type, stream_id, payload, flags),))
@@ -398,26 +493,91 @@ class CellMultiplexer:
     ) -> None:
         if not 1 <= len(cells) <= MAX_CELLS_PER_BATCH:
             raise ProtocolError("relay cell batch count is invalid")
-        with self._send_lock:
+        with self._metrics_lock:
+            self._real_send_waiters += 1
+        self._send_lock.acquire()
+        try:
+            with self._metrics_lock:
+                self._real_send_waiters -= 1
             if self._failed is not None or self._closed:
                 raise ProtocolError("relay multiplexer is closed")
-            if self._tx_sequence > MAX_CELL_SEQUENCE - (len(cells) - 1):
-                raise ProtocolError("relay cell transmit sequence is exhausted")
-            encoded = b"".join(
-                encode_cell(
-                    RelayCell(
-                        cell_type,
-                        flags,
-                        self.circuit_id,
-                        stream_id,
-                        self._tx_sequence + index,
-                        payload,
-                    )
+            self._transmit_locked(cells)
+            with self._metrics_lock:
+                self._last_real_send = time.monotonic()
+                self._real_cells_sent += len(cells)
+        finally:
+            self._send_lock.release()
+
+    def _transmit_locked(
+        self,
+        cells: tuple[tuple[CellType, int, bytes, int], ...],
+    ) -> None:
+        if self._tx_sequence > MAX_CELL_SEQUENCE - (len(cells) - 1):
+            raise ProtocolError("relay cell transmit sequence is exhausted")
+        encoded = b"".join(
+            encode_cell(
+                RelayCell(
+                    cell_type,
+                    flags,
+                    self.circuit_id,
+                    stream_id,
+                    self._tx_sequence + index,
+                    payload,
                 )
-                for index, (cell_type, stream_id, payload, flags) in enumerate(cells)
             )
-            self.channel.send_bytes(encoded)
-            self._tx_sequence += len(cells)
+            for index, (cell_type, stream_id, payload, flags) in enumerate(cells)
+        )
+        self.channel.send_bytes(encoded)
+        self._tx_sequence += len(cells)
+
+    def send_cover(self) -> bool:
+        policy = self.cover_policy
+        if policy.profile is CoverTrafficProfile.OFF:
+            return False
+        now = time.monotonic()
+        with self._metrics_lock:
+            while self._cover_send_times and now - self._cover_send_times[0] >= 60.0:
+                self._cover_send_times.popleft()
+            if (
+                self._real_send_waiters
+                or now - self._last_real_send < policy.quiet_after_real_seconds
+                or len(self._cover_send_times) >= policy.max_cells_per_minute
+            ):
+                return False
+        if not self._send_lock.acquire(blocking=False):
+            return False
+        try:
+            now = time.monotonic()
+            with self._metrics_lock:
+                if (
+                    self._real_send_waiters
+                    or now - self._last_real_send < policy.quiet_after_real_seconds
+                ):
+                    return False
+            if self._failed is not None or self._closed:
+                return False
+            self._transmit_locked(((CellType.COVER, 0, b"", 0),))
+            with self._metrics_lock:
+                self._cover_send_times.append(now)
+                self._cover_cells_sent += 1
+            return True
+        except (OSError, ProtocolError) as error:
+            if not self._closed:
+                self._fail(error)
+            return False
+        finally:
+            self._send_lock.release()
+
+    def _cover_loop(self) -> None:
+        policy = self.cover_policy
+        random_source = secrets.SystemRandom()
+        while not self._cover_stop.wait(
+            random_source.uniform(
+                policy.minimum_interval_seconds,
+                policy.maximum_interval_seconds,
+            )
+        ):
+            self.send_cover()
 
     def open_stream(self, timeout: float = 10.0) -> MuxStream:
         with self._condition:
@@ -488,6 +648,10 @@ class CellMultiplexer:
                 self._fail(error)
 
     def _handle_cell(self, cell: RelayCell) -> None:
+        if cell.cell_type is CellType.COVER:
+            with self._metrics_lock:
+                self._cover_cells_received += 1
+            return
         with self._condition:
             stream = self._streams.get(cell.stream_id)
             if cell.cell_type is CellType.OPEN:
@@ -545,6 +709,7 @@ class CellMultiplexer:
             self._closed = True
             streams = tuple(self._streams.values())
             self._condition.notify_all()
+        self._cover_stop.set()
         for stream in streams:
             stream._fail(ProtocolError("relay multiplexer closed"))
         self.channel.destroy()
@@ -554,3 +719,8 @@ class CellMultiplexer:
             pass
         if self._reader is not threading.current_thread():
             self._reader.join(timeout=2.0)
+        if (
+            self._cover_thread is not None
+            and self._cover_thread is not threading.current_thread()
+        ):
+            self._cover_thread.join(timeout=1.0)

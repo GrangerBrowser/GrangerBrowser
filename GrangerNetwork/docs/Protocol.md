@@ -127,11 +127,12 @@ out-of-state messages fail closed.
 ## Distributed lookup
 
 Bootstrap peers provide an initial authenticated route to the discovery mesh.
-First contact requests a bounded `PEER_SAMPLE` from authenticated discovery
-peers. Responses contain signed node descriptors, never an unsigned endpoint
-list. The client then asks peers for node descriptors nearest to a domain-separated XOR
-key and then sends `FIND_RECORD` or `STORE_RECORD` to the nearest eligible
-discovery nodes.
+Direct first contact is allowed only to an identity-pinned node from a verified
+signed reseed/bootstrap set. It requests a bounded `PEER_SAMPLE`; responses
+contain signed node descriptors, never an unsigned endpoint list. After join,
+the client reaches discovery peers through access/guard/middle circuits, asks
+for descriptors nearest to a domain-separated XOR key, and sends `FIND_RECORD`
+or `STORE_RECORD` to the nearest eligible discovery nodes.
 
 Default publication replication is three and default read quorum is two.
 Responses are independently parsed and signature-verified. A lookup succeeds
@@ -144,24 +145,25 @@ network unavailable.
 
 ## Circuit construction
 
-A client circuit has two relays before rendezvous:
+A client circuit has three relays before rendezvous:
 
 ```text
-client -> entry -> middle -> rendezvous
+client -> access -> stable guard -> middle -> rendezvous
 ```
 
-A service circuit has three infrastructure roles:
+A service circuit has three relays before its terminal infrastructure role:
 
 ```text
-service -> service-entry -> middle -> introduction-or-rendezvous
+service -> access -> stable service guard -> middle -> introduction-or-rendezvous
 ```
 
-The circuit builder connects only to the first node. It then sends one
+The circuit builder connects only to the access node. It then sends one
 `EXTEND_CIRCUIT` request at a time. The request gives the current relay only its
 own role, an independent incoming/outgoing circuit ID, the next role, and the
-next signed descriptor. A new authenticated wire-3 channel is established
-through each resulting stream before the following extension. No relay receives
-the complete route list.
+next signed descriptor. A new authenticated wire-3 channel with a per-hop
+ephemeral identity is established through each resulting stream before the
+following extension. No relay receives the complete route list or persistent
+endpoint identity.
 
 Node identities may not repeat within a route. Selection prefers distinct IPv4
 /16 or IPv6 /32 network groups and reports when that diversity preference had
@@ -192,8 +194,11 @@ cell sequences, a bounded receive window, explicit window updates, bounded
 queues, and a maximum stream count. Sending batches contain at most 64 cells.
 
 Fixed cells reduce direct application-size disclosure on each cell. They do not
-hide cell count, direction, timing, connection lifetime, or total volume. There
-is no default cover traffic or artificial delay.
+hide cell count, direction, timing, connection lifetime, or total volume.
+Authenticated empty `COVER` cells may be sent under a bounded profile; real
+cells have priority and cover generation has strict quiet-window and
+per-minute limits. No artificial delay is applied to real scroll or request
+traffic.
 
 ## Introduction and rendezvous
 
@@ -204,7 +209,7 @@ the introduction node IDs and opaque tokens.
 The client:
 
 1. Resolves and verifies the service and introduction records.
-2. Builds a client entry/middle prefix.
+2. Builds a client access/guard/middle prefix.
 3. Sends a fresh 16-byte introduction nonce and the selected opaque token.
 4. Receives a short-lived service-signed rendezvous grant.
 5. Verifies that the grant is bound to the request nonce, service identity,

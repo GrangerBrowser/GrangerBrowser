@@ -19,9 +19,10 @@ tests:
 
 ```text
 Bootstrap/discovery A, B (C recommended)
-Client entry A, B
+Access relay A, B, C
+Client guard A, B
 Middle A, B, C
-Service entry A, B
+Service guard A, B
 Introduction A, B
 Rendezvous A, B
 Windows client on network 1
@@ -120,7 +121,8 @@ While captures continue:
    direct attempt. Restart it and verify refreshed access.
 2. Stop the active client middle. The old circuit must fail; a different valid
    route may recover.
-3. Stop the active client entry. Recovery may use another entry only.
+3. Stop the active client access relay, then the active guard. Recovery may use
+   another verified access/guard path only.
 4. Stop the rendezvous. New requests may recover through another verified
    rendezvous after descriptor/route refresh.
 5. Stop bootstrap A, then all bootstrap nodes while retaining a valid peer
@@ -130,9 +132,9 @@ While captures continue:
    network unavailable and make no other connection.
 7. Test malformed, expired, replayed, substituted, and wrong-authority data.
 
-Every recovery route must remain client-entry/middle/rendezvous plus the
-service half. Direct client-to-host and host-to-client connections must remain
-zero.
+Every recovery route must remain client-access/guard/middle/rendezvous plus the
+independent service access/guard/middle half. Direct client-to-host and
+host-to-client connections must remain zero.
 
 ## Packet analysis
 
@@ -153,10 +155,12 @@ direct fallback after each induced failure: 0
 orphan Granger child processes after shutdown: 0
 ```
 
-Expected traffic includes endpoint-to-entry TCP and relay-to-adjacent-relay TCP.
-Public relay IPs in descriptors are not leaks. Any endpoint-to-opposite-endpoint
-packet, `.granger` DNS query, UDP fallback, or plaintext application marker is a
-test failure requiring root-cause analysis.
+Expected traffic includes endpoint-to-access TCP and relay-to-adjacent-relay
+TCP. The access relay inevitably sees its immediate endpoint IP, while the next
+guard must see only the access relay. Public relay IPs in descriptors are not
+leaks. Any endpoint-to-opposite-endpoint packet, `.granger` DNS query, UDP
+fallback, or plaintext application marker is a test failure requiring
+root-cause analysis.
 
 ## Acceptance record
 

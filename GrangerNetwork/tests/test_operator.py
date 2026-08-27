@@ -41,6 +41,7 @@ class OperatorTests(unittest.TestCase):
                     "advertise": {"host": "203.0.113.90", "port": selected_port},
                     "bootstrap": {"authorityPins": [], "bundles": []},
                     "capabilities": [
+                        "access",
                         "bootstrap",
                         "discovery",
                         "entry",

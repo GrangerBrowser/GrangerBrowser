@@ -725,7 +725,10 @@ def serve_hosted_service(
         replication_factor=browser_config.replication_factor,
         minimum_replicas=browser_config.minimum_replicas,
     )
-    selector = WanRouteSelector(runtime.discovery)
+    selector = WanRouteSelector(
+        runtime.discovery,
+        guard_seed=runtime.identity.public_key_bytes,
+    )
     generation = 0
     recovery_cycles = 0
     _write_status(

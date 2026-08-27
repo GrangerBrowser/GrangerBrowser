@@ -48,10 +48,10 @@ browser, or live-process level.
 
 ```text
 CLIENT
-  -> CLIENT ENTRY -> CLIENT MIDDLE -> RENDEZVOUS
-                                         ^
-                                         |
-HOST -> SERVICE ENTRY -> SERVICE MIDDLE --+
+  -> CLIENT ACCESS -> STABLE CLIENT GUARD -> CLIENT MIDDLE -> RENDEZVOUS
+                                                               ^
+                                                               |
+HOST -> SERVICE ACCESS -> STABLE SERVICE GUARD -> SERVICE MIDDLE
 ```
 
 The service also keeps independent outbound circuits to at least two
@@ -62,15 +62,17 @@ opaque streams; a separate wire-3 session protects application data end to end.
 
 | Role | What it sees | What it does not receive |
 | --- | --- | --- |
-| Client | Own address, entry endpoint, public relay descriptors, service identity, own requests/responses, local timing | Host endpoint or local backend address |
-| Service host | Own address, service-entry endpoint, own records, decrypted requests, loopback backend | Client endpoint |
-| Client entry | Client transport endpoint, next relay, encrypted cells, timing and volume | Host endpoint, service plaintext, full route |
+| Client | Own address, access endpoint, public relay descriptors, service identity, own requests/responses, local timing | Host endpoint or local backend address |
+| Service host | Own address, service-access endpoint, own records, decrypted requests, loopback backend | Client endpoint |
+| Client access | Client transport endpoint, next guard, encrypted cells, timing and volume | Service identity, host endpoint, service plaintext, full route |
+| Client guard | Access-relay endpoint, next relay, encrypted cells, timing and volume | Client transport endpoint, host endpoint, service plaintext, full route |
 | Client middle | Adjacent relays, encrypted cells, timing and volume | Either endpoint, plaintext, full route |
-| Service entry | Host transport endpoint, next relay, encrypted cells, timing and volume | Client endpoint, plaintext, full route |
+| Service access | Host transport endpoint, next guard, encrypted cells, timing and volume | Service destination, client endpoint, plaintext, full route |
+| Service guard | Access-relay endpoint, next relay, encrypted cells, timing and volume | Host transport endpoint, client endpoint, plaintext, full route |
 | Service middle | Adjacent relays, encrypted cells, timing and volume | Either endpoint, plaintext, full route |
 | Introduction | Adjacent service relay, client-side introduction request, service ID/token, timing | Client or host endpoint from protocol data, application plaintext |
 | Rendezvous | Its two adjacent relay connections, cookie, circuit IDs, timing and volume | Client/host endpoint from protocol data, end-to-end keys, application plaintext |
-| Discovery peer | Public node descriptors, signed service/intro/alias records, lookup timing | Service backend endpoint or client endpoint |
+| Discovery peer | Public node descriptors, signed service/intro/alias records, lookup timing; a signed seed also sees a fresh endpoint during first contact | Service backend endpoint; post-join endpoint address |
 | Bootstrap authority | Signed seed set contents and issue schedule | Service request traffic unless separately operating relays |
 
 Transport peers naturally see the network endpoint directly connected to them.
@@ -132,11 +134,12 @@ payload length within one cell but not total volume or burst structure.
 
 ### Colluding relays
 
-Client entry plus service entry can combine endpoint knowledge. Adjacent or
-strategically placed relays can reconstruct more route metadata. Selection
-avoids repeated identities and prefers different network prefixes, but it does
-not yet enforce operator, family, autonomous-system, jurisdiction, or ownership
-diversity.
+Client access plus service access can combine endpoint addresses, but neither
+alone receives the service destination. Correlation with guards, middles,
+introduction/rendezvous roles, or a broad network observer can reconstruct more
+route metadata. Selection avoids repeated identities, keeps a stable guard, and
+prefers different network prefixes, but it does not yet prove operator, family,
+autonomous-system, jurisdiction, or ownership diversity.
 
 ### Malicious bootstrap
 
@@ -158,8 +161,8 @@ protection remain unsolved.
 
 ### Client or host ISP and local observer
 
-The client-side observer sees a connection to the client entry. The host-side
-observer sees outbound connections to service relays/introduction points. Each
+The client-side observer sees a connection to the client access relay. The
+host-side observer sees outbound connections to service access relays. Each
 can inspect timing, sizes, duration, and recognizable protocol behavior. They
 do not see end-to-end application plaintext from encryption alone.
 
@@ -167,8 +170,9 @@ do not see end-to-end application plaintext from encryption alone.
 
 An observer able to see both sides can correlate start times, fixed-cell bursts,
 direction, total bytes, duration, route rebuilds, and application behavior.
-There is no default cover traffic, constant-rate padding, or timing
-normalization. Multi-hop routing does not defeat this attacker.
+The default bounded cover profile perturbs quiet-link cadence but is not
+constant-rate padding or complete timing normalization. Multi-hop routing and
+bounded cover do not defeat this attacker.
 
 ### Compromised endpoint
 

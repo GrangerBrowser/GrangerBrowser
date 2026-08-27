@@ -330,6 +330,12 @@ def initialize_topology(root: Path) -> tuple[list[NodeDescriptor], dict[str, Pat
         ("discovery-a", ("discovery",)),
         ("discovery-b", ("discovery",)),
         ("discovery-c", ("discovery",)),
+        ("access-a", ("access",)),
+        ("access-b", ("access",)),
+        ("access-c", ("access",)),
+        ("access-d", ("access",)),
+        ("access-e", ("access",)),
+        ("access-f", ("access",)),
         ("client-entry-a", ("entry",)),
         ("client-entry-b", ("entry",)),
         ("middle-a", ("middle",)),
@@ -1135,19 +1141,19 @@ def run_acceptance(
             for descriptor in descriptors_by_name.values()
             if "entry" in descriptor.capabilities
         }
+        all_access_ports = {
+            descriptor.endpoint.port
+            for descriptor in descriptors_by_name.values()
+            if "access" in descriptor.capabilities
+        }
         all_service_entry_ports = {
             descriptor.endpoint.port
             for descriptor in descriptors_by_name.values()
             if "service-relay" in descriptor.capabilities
         }
-        host_entry_ports = {
-            descriptors_by_id[route[0]].endpoint.port
-            for readiness in (initial_host_ready, host_ready)
-            for route in (*readiness["introductionRoutes"], readiness["rendezvousRoute"])
-        }
         backend_port = int(backend_ready["port"])
-        allowed_client_ports = discovery_ports | all_client_entry_ports
-        allowed_host_ports = discovery_ports | host_entry_ports | {backend_port}
+        allowed_client_ports = discovery_ports | all_access_ports
+        allowed_host_ports = discovery_ports | all_access_ports | {backend_port}
         all_overlay_ports = {descriptor.endpoint.port for descriptor in descriptors}
         all_overlay_endpoints = {
             (descriptor.endpoint.host, descriptor.endpoint.port)
@@ -1195,6 +1201,14 @@ def run_acceptance(
                 )
             )
             process_ids.extend(static_recovery_process_ids)
+        client_reports = (
+            client_a_report,
+            unrestricted_report,
+            client_b_report,
+            client_c_report,
+            client_d_report,
+            cached_report,
+        )
         checks = {
             "allBootstrapDownCacheRecovered": cached_exit == 0
             and cached_report.get("status") == 200
@@ -1230,11 +1244,16 @@ def run_acceptance(
                 and hosting_browser_result.get("directFallback") is False
                 and not hosting_browser_result.get("harness", {}).get("hostProcessOrphan", True)
             ),
-            "clientConnectedOnlyToBootstrapAndEntry": bool(client_ports)
+            "clientConnectedOnlyToBootstrapAndAccess": bool(client_ports)
             and client_ports.issubset(allowed_client_ports),
             "clientDidNotConnectToHostBackend": backend_port not in client_ports,
             "clientDidNotConnectToServiceEntry": client_ports.isdisjoint(
                 all_service_entry_ports
+            ),
+            "coverTrafficConfigured": all(
+                document.get("coverProfile") == "standard"
+                and int(document.get("coverCellsSent", -1)) >= 0
+                for document in client_reports
             ),
             "dnsCalls": len(dns_events) == 0,
             "forumAssets": all(
@@ -1254,7 +1273,7 @@ def run_acceptance(
             "hostRestartRecovered": client_b_report.get("status") == 200
             and MESSAGE.encode("ascii") in client_b_messages
             and initial_host_ready["pid"] != host_ready["pid"],
-            "hostConnectedOnlyToBootstrapEntryAndBackend": bool(host_ports)
+            "hostConnectedOnlyToBootstrapAccessAndBackend": bool(host_ports)
             and host_ports.issubset(allowed_host_ports),
             "hostDidNotConnectToClientEntry": host_ports.isdisjoint(
                 all_client_entry_ports
@@ -1322,31 +1341,41 @@ def run_acceptance(
                 "clientDestinationPorts": sorted(client_ports),
                 "clientRoutes": [
                     [
+                        client_a_report["clientAccessNodeId"],
                         client_a_report["clientEntryNodeId"],
                         client_a_report["clientMiddleNodeId"],
                         initial_host_ready["rendezvousNodeId"],
                     ],
                     [
+                        client_b_report["clientAccessNodeId"],
                         client_b_report["clientEntryNodeId"],
                         client_b_report["clientMiddleNodeId"],
                         host_ready["rendezvousNodeId"],
                     ],
                     [
+                        client_c_report["clientAccessNodeId"],
                         client_c_report["clientEntryNodeId"],
                         client_c_report["clientMiddleNodeId"],
                         host_ready["rendezvousNodeId"],
                     ],
                     [
+                        client_d_report["clientAccessNodeId"],
                         client_d_report["clientEntryNodeId"],
                         client_d_report["clientMiddleNodeId"],
                         host_ready["rendezvousNodeId"],
                     ],
                     [
+                        cached_report["clientAccessNodeId"],
                         cached_report["clientEntryNodeId"],
                         cached_report["clientMiddleNodeId"],
                         host_ready["rendezvousNodeId"],
                     ],
                 ],
+                "coverCellsSent": sum(
+                    int(document.get("coverCellsSent", 0))
+                    for document in client_reports
+                ),
+                "coverProfile": "standard",
                 "eventCount": len(all_events),
                 "hostDestinationPorts": sorted(host_ports),
                 "hostingBrowserDestinationPorts": sorted(hosting_browser_ports),

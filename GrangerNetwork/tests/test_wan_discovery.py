@@ -33,13 +33,13 @@ class WanDiscoveryTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.now = int(time.time())
         self.authority = ServiceIdentity.generate()
-        self.identities = [ServiceIdentity.generate() for _ in range(3)]
+        self.identities = [ServiceIdentity.generate() for _ in range(6)]
         self.descriptors = [
             NodeDescriptor.create(
                 identity,
                 RendezvousEndpoint("127.0.0.1", available_port()),
-                ("bootstrap", "discovery"),
-                RelayPolicy(enabled=False, max_bandwidth_kib_per_second=64 * 1024),
+                ("access", "bootstrap", "discovery", "entry", "middle"),
+                RelayPolicy(enabled=True, max_bandwidth_kib_per_second=64 * 1024),
                 issued_at=self.now,
                 lifetime=3600,
             )
@@ -98,7 +98,7 @@ class WanDiscoveryTests(unittest.TestCase):
         self.assertEqual(gethostbyname_ex.call_count, 0)
         self.assertTrue(all(node.accepted_connections > 0 for node in self.nodes))
         self.assertTrue(all(node.rpc_requests > 0 for node in self.nodes))
-        self.assertEqual(len(self.cache.load(now=self.now)), 3)
+        self.assertEqual(len(self.cache.load(now=self.now)), 6)
         health = self.client.health()
         self.assertEqual(health.state, NetworkState.CONNECTED)
         self.assertTrue(health.dht_ready)
@@ -113,12 +113,18 @@ class WanDiscoveryTests(unittest.TestCase):
             lifetime=1800,
         )
         self.client.publish(service, now=self.now)
-        self.nodes[0].stop()
+        replica_indexes = [
+            index
+            for index, node in enumerate(self.nodes)
+            if node.records.fetch(SERVICE_RECORD, service.service_id) is not None
+        ]
+        self.assertEqual(len(replica_indexes), 3)
+        self.nodes[replica_indexes[0]].stop()
         self.assertEqual(
             self.client.lookup(SERVICE_RECORD, service.service_id, now=self.now),
             service,
         )
-        self.nodes[1].stop()
+        self.nodes[replica_indexes[1]].stop()
         with self.assertRaises(ResolutionError):
             self.client.lookup(SERVICE_RECORD, service.service_id, now=self.now)
 
@@ -190,15 +196,20 @@ class WanDiscoveryTests(unittest.TestCase):
             lifetime=1800,
         )
         self.client.publish(service, now=self.now)
-        first = self.nodes[0]
+        stored_index = next(
+            index
+            for index, node in enumerate(self.nodes)
+            if node.records.fetch(SERVICE_RECORD, service.service_id) is not None
+        )
+        first = self.nodes[stored_index]
         first.stop()
         replacement = WanNodeServer(
-            self.identities[0],
-            self.descriptors[0],
-            self.root / "node-0",
+            self.identities[stored_index],
+            self.descriptors[stored_index],
+            self.root / f"node-{stored_index}",
             known_peers=self.descriptors,
         )
-        self.nodes[0] = replacement
+        self.nodes[stored_index] = replacement
         self.assertEqual(
             replacement.records.fetch(SERVICE_RECORD, service.service_id),
             encode_record(service, now=self.now),

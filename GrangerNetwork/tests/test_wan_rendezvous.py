@@ -41,8 +41,10 @@ class WanRendezvousTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="granger-wan-rendezvous-")
         self.root = Path(self.temporary.name)
         definitions = (
+            "access",
             "entry",
             "middle",
+            "access",
             "service-relay",
             "middle",
             "introduction",
@@ -75,8 +77,10 @@ class WanRendezvousTests(unittest.TestCase):
         for node in self.nodes:
             node.start_background()
         (
+            self.client_access,
             self.client_entry,
             self.client_middle,
+            self.service_access,
             self.service_entry,
             self.host_middle,
             self.introduction_node,
@@ -107,6 +111,7 @@ class WanRendezvousTests(unittest.TestCase):
         client_builder = CircuitBuilder(client_identity, PeerRole.CLIENT, timeout=5.0)
         host_intro = host_builder.open(
             (
+                (self.service_access, "access"),
                 (self.service_entry, "service-relay"),
                 (self.host_middle, "middle"),
                 (self.introduction_node, "introduction"),
@@ -114,6 +119,7 @@ class WanRendezvousTests(unittest.TestCase):
         )
         host_rendezvous = host_builder.open(
             (
+                (self.service_access, "access"),
                 (self.service_entry, "service-relay"),
                 (self.host_middle, "middle"),
                 (self.rendezvous_node, "rendezvous"),
@@ -123,15 +129,17 @@ class WanRendezvousTests(unittest.TestCase):
         expires_at = int(time.time()) + 120
         host_cell_id = secrets.token_bytes(16)
         registration = RendezvousRegistration.create(
-            self.service_identity,
-            self.service.service_id,
             cookie,
             expires_at,
             host_cell_id,
         )
+        registration_wire = registration.encode()
+        self.assertNotIn(cookie, registration_wire)
+        self.assertNotIn(self.service.service_id.encode("ascii"), registration_wire)
+        self.assertNotIn(self.service.identity_public_key, registration_wire)
         host_rendezvous.endpoint.rpc.request(
             RpcType.RENDEZVOUS_REGISTER,
-            registration.encode(),
+            registration_wire,
             expected=RpcType.RENDEZVOUS_REGISTER,
         )
         host_mux = CellMultiplexer(
@@ -174,6 +182,7 @@ class WanRendezvousTests(unittest.TestCase):
         host_intro_thread.start()
         client_intro = client_builder.open(
             (
+                (self.client_access, "access"),
                 (self.client_entry, "entry"),
                 (self.client_middle, "middle"),
                 (self.introduction_node, "introduction"),
@@ -203,20 +212,23 @@ class WanRendezvousTests(unittest.TestCase):
 
         client_rendezvous = client_builder.open(
             (
+                (self.client_access, "access"),
                 (self.client_entry, "entry"),
                 (self.client_middle, "middle"),
                 (grant.rendezvous, "rendezvous"),
             )
         )
         client_cell_id = secrets.token_bytes(16)
+        rendezvous_join = RendezvousJoin.create(
+            grant.cookie,
+            client_cell_id,
+        )
+        join_wire = rendezvous_join.encode()
+        self.assertNotIn(grant.cookie, join_wire)
+        self.assertNotIn(self.service.service_id.encode("ascii"), join_wire)
         client_rendezvous.endpoint.rpc.request(
             RpcType.RENDEZVOUS_JOIN,
-            RendezvousJoin(
-                self.service.service_id,
-                grant.cookie,
-                secrets.token_bytes(16),
-                client_cell_id,
-            ).encode(),
+            join_wire,
             expected=RpcType.RENDEZVOUS_JOIN,
         )
         client_mux = CellMultiplexer(
@@ -261,12 +273,28 @@ class WanRendezvousTests(unittest.TestCase):
         self.assertEqual(server_channel.receive_bytes(), marker)
         server_channel.send_bytes(b"response:" + marker)
         self.assertEqual(client_channel.receive_bytes(), b"response:" + marker)
-        rendezvous_observations = self.nodes[5].circuit_observations
+        rendezvous_observations = self.nodes[-1].circuit_observations
         self.assertTrue(rendezvous_observations)
         self.assertTrue(all(not observation.contains(marker) for observation in rendezvous_observations))
         self.assertNotEqual(
             self.nodes[0].peer_addresses,
-            self.nodes[2].peer_addresses,
+            self.nodes[3].peer_addresses,
+        )
+        self.assertEqual(
+            host_intro.hop_authentication_keys[-1],
+            self.service_identity.public_key_bytes,
+        )
+        self.assertNotIn(
+            self.service_identity.public_key_bytes,
+            host_intro.hop_authentication_keys[:-1],
+        )
+        self.assertNotIn(
+            self.service_identity.public_key_bytes,
+            host_rendezvous.hop_authentication_keys,
+        )
+        self.assertNotIn(
+            client_identity.public_key_bytes,
+            client_rendezvous.hop_authentication_keys,
         )
 
         client_channel.destroy()

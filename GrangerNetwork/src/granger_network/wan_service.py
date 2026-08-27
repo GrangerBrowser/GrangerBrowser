@@ -103,8 +103,12 @@ class WanServiceClient:
     ) -> None:
         service.verify()
         introduction.verify_for(service)
-        if len(client_route_prefix) < 2:
-            raise OverlayRoutingError("client WAN route prefix requires entry and middle relays")
+        if len(client_route_prefix) < 3 or tuple(
+            role for _node, role in client_route_prefix[:3]
+        ) != ("access", "entry", "middle"):
+            raise OverlayRoutingError(
+                "client WAN route prefix requires access, guard, and middle relays"
+            )
         self.identity = identity
         self.service = service
         self.introduction = introduction
@@ -121,9 +125,12 @@ class WanServiceClient:
         builder = CircuitBuilder(self.identity, PeerRole.CLIENT, timeout=self.timeout)
         session_started = time.perf_counter_ns()
         introduction_started = session_started
-        intro_circuit = builder.open((*self.route_prefix, (introduction_node, "introduction")))
-        request_nonce = secrets.token_bytes(16)
+        intro_circuit: BuiltCircuit | None = None
         try:
+            intro_circuit = builder.open(
+                (*self.route_prefix, (introduction_node, "introduction"))
+            )
+            request_nonce = secrets.token_bytes(16)
             response = intro_circuit.endpoint.rpc.request(
                 RpcType.INTRO_REQUEST,
                 encode_intro_request(
@@ -140,8 +147,13 @@ class WanServiceClient:
                 self.service,
                 request_nonce=request_nonce,
             )
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            raise OverlayRoutingError(
+                f"introduction stage failed ({type(error).__name__})"
+            ) from error
         finally:
-            intro_circuit.close()
+            if intro_circuit is not None:
+                intro_circuit.close()
         introduction_finished = time.perf_counter_ns()
 
         rendezvous_circuit: BuiltCircuit | None = None
@@ -156,10 +168,8 @@ class WanServiceClient:
             cell_circuit_id = secrets.token_bytes(16)
             rendezvous_circuit.endpoint.rpc.request(
                 RpcType.RENDEZVOUS_JOIN,
-                RendezvousJoin(
-                    self.service.service_id,
+                RendezvousJoin.create(
                     grant.cookie,
-                    secrets.token_bytes(16),
                     cell_circuit_id,
                 ).encode(),
                 expected=RpcType.RENDEZVOUS_JOIN,
@@ -201,7 +211,7 @@ class WanServiceClient:
                     "sessionMs": (rendezvous_finished - session_started) / 1_000_000,
                 },
             )
-        except Exception:
+        except Exception as error:
             if application_mux is not None:
                 application_mux.close()
             if channel is not None:
@@ -210,7 +220,9 @@ class WanServiceClient:
                 rendezvous_mux.close()
             if rendezvous_circuit is not None:
                 rendezvous_circuit.close()
-            raise
+            raise OverlayRoutingError(
+                f"rendezvous stage failed ({type(error).__name__})"
+            ) from error
 
 
 class WanServiceHost:
@@ -249,7 +261,10 @@ class WanServiceHost:
         else:
             introduction_routes = tuple(tuple(route) for route in raw_introduction_routes)
         if any(
-            len(route) < 3 or route[-1][1] != "introduction"
+            len(route) < 4
+            or tuple(role for _node, role in route[:3])
+            != ("access", "service-relay", "middle")
+            or route[-1][1] != "introduction"
             for route in introduction_routes
         ):
             raise OverlayRoutingError("service introduction route is invalid")
@@ -261,7 +276,12 @@ class WanServiceHost:
             raise OverlayRoutingError(
                 "service introduction routes do not match the signed descriptor"
             )
-        if len(rendezvous_route) < 3 or rendezvous_route[-1][1] != "rendezvous":
+        if (
+            len(rendezvous_route) < 4
+            or tuple(role for _node, role in rendezvous_route[:3])
+            != ("access", "service-relay", "middle")
+            or rendezvous_route[-1][1] != "rendezvous"
+        ):
             raise OverlayRoutingError("service rendezvous route is invalid")
         self.identity = identity
         self.service = service
@@ -439,8 +459,6 @@ class WanServiceHost:
             if self._recovery.is_set():
                 raise OverlayRoutingError("service route recovery was requested")
             registration = RendezvousRegistration.create(
-                self.identity,
-                self.service.service_id,
                 cookie,
                 expires_at,
                 cell_circuit_id,

@@ -3,14 +3,14 @@
 ## Deployment roles
 
 Reachable infrastructure may opt into one or more roles: `bootstrap`,
-`discovery`, `entry`, `middle`, `service-relay`, `introduction`, and
+`discovery`, `access`, `entry`, `middle`, `service-relay`, `introduction`, and
 `rendezvous`. Ordinary clients and service hosts are not listeners or relays by
 default.
 
 A useful test network needs at least two bootstrap/discovery nodes and enough
-distinct relay identities to create client, service, introduction, and
-rendezvous paths after one failure. One machine can run multiple test processes,
-but that does not provide operator or network independence.
+distinct access, guard, middle, introduction, and rendezvous identities to
+create client and service paths after one failure. One machine can run multiple
+test processes, but that does not provide operator or network independence.
 
 ## Node state
 

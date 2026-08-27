@@ -21,7 +21,9 @@ from .cells import (
     CELL_PAYLOAD_SIZE,
     MAX_CELLS_PER_BATCH,
     CellMultiplexer,
+    CoverTrafficProfile,
     MuxStream,
+    cover_profile_from_environment,
 )
 from .circuit import decode_extend_circuit, decode_open_circuit, encode_open_circuit
 from .errors import (
@@ -197,6 +199,7 @@ class WanNodeServer:
         listener_endpoint: NodeListenerEndpoint | None = None,
         capture_path: Path | None = None,
         diagnostics_path: Path | None = None,
+        cover_profile: CoverTrafficProfile | str | None = None,
     ) -> None:
         descriptor.verify()
         if descriptor.identity_public_key != identity.public_key_bytes:
@@ -206,6 +209,11 @@ class WanNodeServer:
         self.identity = identity
         self.descriptor = descriptor
         self.policy = descriptor.relay_policy
+        self.cover_profile = (
+            cover_profile_from_environment()
+            if cover_profile is None
+            else CoverTrafficProfile(cover_profile)
+        )
         self.listener_endpoint = listener_endpoint or NodeListenerEndpoint(
             descriptor.endpoint.host,
             descriptor.endpoint.port,
@@ -260,8 +268,8 @@ class WanNodeServer:
         self.circuit_observations: list[WanCircuitObservation] = []
         self._introduction_registry = IntroductionRegistry()
         self._introduction_sessions: dict[str, _IntroductionSession] = {}
-        self._rendezvous_slots: dict[tuple[str, bytes], _RendezvousSlot] = {}
-        self._used_rendezvous_joins: set[tuple[str, bytes, bytes]] = set()
+        self._rendezvous_slots: dict[bytes, _RendezvousSlot] = {}
+        self._used_rendezvous_joins: set[tuple[bytes, bytes]] = set()
         self.records.store(self._record_for_descriptor(descriptor))
 
     def _capture_relay_payload(self, payload: bytes) -> None:
@@ -463,6 +471,7 @@ class WanNodeServer:
                 opened.circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                cover_profile=self.cover_profile,
             )
             stream = multiplexer.accept_stream(self.policy.connection_timeout_seconds)
             stream.settimeout(float(self.policy.idle_timeout_seconds))
@@ -523,12 +532,14 @@ class WanNodeServer:
                 extension.incoming_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                cover_profile=self.cover_profile,
             )
             outgoing_mux = CellMultiplexer(
                 outbound.channel,
                 extension.outgoing_circuit_id,
                 initiator=True,
                 max_streams=self.policy.max_streams,
+                cover_profile=self.cover_profile,
             )
             outgoing = outgoing_mux.open_stream(self.policy.connection_timeout_seconds)
             incoming = incoming_mux.accept_stream(self.policy.connection_timeout_seconds)
@@ -746,9 +757,7 @@ class WanNodeServer:
         if peer.remote.role is not PeerRole.SERVICE:
             raise ProtocolError("rendezvous registration requires a service peer")
         registration = RendezvousRegistration.decode(request.payload)
-        if registration.identity_public_key != peer.remote.public_key:
-            raise ProtocolError("rendezvous registration service identity was substituted")
-        key = (registration.service_id, registration.cookie)
+        key = registration.cookie_tag
         slot = _RendezvousSlot(registration, upstream, accounting_circuit_id)
         with self._lock:
             previous = self._rendezvous_slots.get(key)
@@ -769,6 +778,7 @@ class WanNodeServer:
                 registration.cell_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                cover_profile=self.cover_profile,
             )
             slot.host_stream = slot.host_mux.accept_stream(self.policy.connection_timeout_seconds)
             slot.host_ready.set()
@@ -801,7 +811,7 @@ class WanNodeServer:
         if "rendezvous" not in self.descriptor.capabilities:
             raise ResourceLimitError("node did not advertise rendezvous capability")
         joined = RendezvousJoin.decode(request.payload)
-        replay_key = (joined.service_id, joined.cookie, joined.nonce)
+        replay_key = (joined.cookie_tag, joined.nonce)
         with self._lock:
             if replay_key in self._used_rendezvous_joins:
                 raise ProtocolError("rendezvous join nonce was replayed")
@@ -810,7 +820,7 @@ class WanNodeServer:
                 self._used_rendezvous_joins = set(
                     list(self._used_rendezvous_joins)[-8192:]
                 )
-            slot = self._rendezvous_slots.get((joined.service_id, joined.cookie))
+            slot = self._rendezvous_slots.get(joined.cookie_tag)
         if slot is None or slot.registration.expires_at <= int(time.time()):
             self._send_error(peer, request, "RENDEZVOUS_UNAVAILABLE")
             return
@@ -829,6 +839,7 @@ class WanNodeServer:
                 joined.cell_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                cover_profile=self.cover_profile,
             )
             slot.client_stream = slot.client_mux.accept_stream(self.policy.connection_timeout_seconds)
             slot.client_upstream = upstream

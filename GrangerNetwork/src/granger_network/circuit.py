@@ -4,10 +4,15 @@ import secrets
 from dataclasses import dataclass
 
 from .binary import BinaryReader, BinaryWriter
-from .cells import CellMultiplexer, MuxStream
+from .cells import (
+    CellMultiplexer,
+    CoverTrafficProfile,
+    MuxStream,
+    cover_profile_from_environment,
+)
 from .errors import OverlayRoutingError, ProtocolError
 from .identity import ServiceIdentity
-from .peer import NodeDescriptor, RELAY_CAPABILITIES
+from .peer import CIRCUIT_CAPABILITIES, NodeDescriptor
 from .peer_rpc import (
     AuthenticatedPeer,
     PeerRole,
@@ -36,7 +41,7 @@ class CircuitExtendRequest:
 
 
 def _validate_role(role: str) -> str:
-    if not isinstance(role, str) or role not in RELAY_CAPABILITIES:
+    if not isinstance(role, str) or role not in CIRCUIT_CAPABILITIES:
         raise ProtocolError("circuit relay role is invalid")
     return role
 
@@ -98,6 +103,7 @@ class BuiltCircuit:
     multiplexers: list[CellMultiplexer]
     streams: list[MuxStream]
     circuit_ids: tuple[bytes, ...]
+    hop_authentication_keys: tuple[bytes, ...]
     _closed: bool = False
 
     @property
@@ -137,6 +143,8 @@ class CircuitBuilder:
         *,
         timeout: float = 10.0,
         max_streams: int = 128,
+        cover_profile: CoverTrafficProfile | str | None = None,
+        identity_factory=ServiceIdentity.generate,
     ) -> None:
         if role not in {PeerRole.CLIENT, PeerRole.SERVICE}:
             raise OverlayRoutingError("endpoint circuit role is invalid")
@@ -144,6 +152,22 @@ class CircuitBuilder:
         self.role = role
         self.timeout = timeout
         self.max_streams = max_streams
+        self.cover_profile = (
+            cover_profile_from_environment()
+            if cover_profile is None
+            else CoverTrafficProfile(cover_profile)
+        )
+        if not callable(identity_factory):
+            raise OverlayRoutingError("circuit identity factory is invalid")
+        self.identity_factory = identity_factory
+
+    def _hop_identity(self, role: str) -> ServiceIdentity:
+        if self.role is PeerRole.SERVICE and role == "introduction":
+            return self.identity
+        identity = self.identity_factory()
+        if not isinstance(identity, ServiceIdentity):
+            raise OverlayRoutingError("circuit identity factory returned an invalid identity")
+        return identity
 
     def open(
         self,
@@ -166,14 +190,17 @@ class CircuitBuilder:
         multiplexers: list[CellMultiplexer] = []
         streams: list[MuxStream] = []
         circuit_ids: list[bytes] = []
+        hop_keys: list[bytes] = []
         try:
+            first_identity = self._hop_identity(normalized[0][1])
+            hop_keys.append(first_identity.public_key_bytes)
             peer = connect_authenticated_peer(
                 normalized[0][0],
-                self.identity,
+                first_identity,
                 self.role,
                 timeout=self.timeout,
             )
-            peer.channel.connection.settimeout(None)
+            peer.channel.connection.settimeout(self.timeout)
             for index in range(len(normalized) - 1):
                 current, current_role = normalized[index]
                 next_node, next_role = normalized[index + 1]
@@ -193,29 +220,42 @@ class CircuitBuilder:
                 )
                 if response.payload:
                     raise ProtocolError("circuit creation response has an unexpected payload")
+                peer.channel.connection.settimeout(None)
                 multiplexer = CellMultiplexer(
                     peer.channel,
                     incoming_id,
                     initiator=True,
                     max_streams=self.max_streams,
+                    cover_profile=self.cover_profile,
                 )
                 stream = multiplexer.open_stream(self.timeout)
                 multiplexers.append(multiplexer)
                 streams.append(stream)
                 circuit_ids.extend((incoming_id, outgoing_id))
+                next_identity = self._hop_identity(next_role)
+                hop_keys.append(next_identity.public_key_bytes)
                 peer = authenticate_client_stream(
                     stream,
                     next_node,
-                    self.identity,
+                    next_identity,
                     self.role,
                 )
+                if index + 1 < len(normalized) - 1:
+                    stream.settimeout(self.timeout)
+                else:
+                    stream.settimeout(None)
+            for multiplexer in multiplexers:
+                multiplexer.channel.connection.settimeout(None)
+            for stream in streams:
                 stream.settimeout(None)
+            peer.channel.connection.settimeout(None)
             return BuiltCircuit(
                 normalized,
                 peer,
                 multiplexers,
                 streams,
                 tuple(circuit_ids),
+                tuple(hop_keys),
             )
         except Exception:
             if peer is not None:

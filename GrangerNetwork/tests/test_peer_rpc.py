@@ -41,7 +41,15 @@ def make_descriptor(
         capabilities,
         RelayPolicy(
             enabled=any(
-                capability in {"entry", "middle", "introduction", "rendezvous", "service-relay"}
+                capability
+                in {
+                    "access",
+                    "entry",
+                    "middle",
+                    "introduction",
+                    "rendezvous",
+                    "service-relay",
+                }
                 for capability in capabilities
             ),
             max_bandwidth_kib_per_second=64 * 1024,

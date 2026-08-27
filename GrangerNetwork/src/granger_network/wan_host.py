@@ -88,7 +88,10 @@ def run_host(options: argparse.Namespace) -> int:
         replication_factor=options.replication_factor,
         minimum_replicas=options.minimum_replicas,
     )
-    selector = WanRouteSelector(runtime.discovery)
+    selector = WanRouteSelector(
+        runtime.discovery,
+        guard_seed=runtime.identity.public_key_bytes,
+    )
     bridge = LoopbackHttpBridge(LoopbackHttpTarget.parse(options.upstream))
     generation = 0
     recovery_cycles = 0

@@ -25,7 +25,7 @@ class WanCircuitTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="granger-wan-circuit-")
         self.root = Path(self.temporary.name)
-        definitions = ("entry", "middle", "rendezvous")
+        definitions = ("access", "entry", "middle", "rendezvous")
         self.identities = [ServiceIdentity.generate() for _ in definitions]
         self.descriptors = [
             NodeDescriptor.create(
@@ -62,7 +62,8 @@ class WanCircuitTests(unittest.TestCase):
 
     def test_telescoped_real_socket_circuit_reaches_final_node(self) -> None:
         marker = b"GRANGER_APPLICATION_MARKER_MUST_STAY_OPAQUE"
-        builder = CircuitBuilder(ServiceIdentity.generate(), PeerRole.CLIENT, timeout=4.0)
+        endpoint_identity = ServiceIdentity.generate()
+        builder = CircuitBuilder(endpoint_identity, PeerRole.CLIENT, timeout=4.0)
         circuit = builder.open(self.route)
         try:
             response = circuit.endpoint.rpc.request(
@@ -71,18 +72,26 @@ class WanCircuitTests(unittest.TestCase):
                 expected=RpcType.PONG,
             )
             self.assertEqual(response.payload, marker)
-            self.assertEqual(circuit.hop_count, 3)
-            self.assertEqual(len(circuit.unique_node_ids), 3)
+            self.assertEqual(circuit.hop_count, 4)
+            self.assertEqual(len(circuit.unique_node_ids), 4)
             self.assertEqual(len(set(circuit.circuit_ids)), len(circuit.circuit_ids))
+            self.assertEqual(len(circuit.hop_authentication_keys), 4)
+            self.assertEqual(len(set(circuit.hop_authentication_keys)), 4)
+            self.assertNotIn(
+                endpoint_identity.public_key_bytes,
+                circuit.hop_authentication_keys,
+            )
             self.assertTrue(circuit.all_cells_fixed_size)
             self.assertEqual(len(self.nodes[0].circuit_observations), 1)
             self.assertEqual(len(self.nodes[1].circuit_observations), 1)
-            for node in self.nodes[:2]:
+            self.assertEqual(len(self.nodes[2].circuit_observations), 1)
+            for node in self.nodes[:3]:
                 observation = node.circuit_observations[0]
                 self.assertGreater(observation.bytes_forwarded, 0)
                 self.assertFalse(observation.contains(marker))
             self.assertEqual(self.nodes[0].circuit_observations[0].downstream, self.descriptors[1].node_id)
             self.assertEqual(self.nodes[1].circuit_observations[0].downstream, self.descriptors[2].node_id)
+            self.assertEqual(self.nodes[2].circuit_observations[0].downstream, self.descriptors[3].node_id)
         finally:
             circuit.close()
         deadline = time.monotonic() + 5.0
@@ -91,17 +100,34 @@ class WanCircuitTests(unittest.TestCase):
         self.assertTrue(all(node.runtime.active_circuits == 0 for node in self.nodes))
 
     def test_unreachable_middle_fails_closed_without_shorter_route(self) -> None:
-        self.nodes[1].stop()
+        self.nodes[2].stop()
         builder = CircuitBuilder(ServiceIdentity.generate(), PeerRole.CLIENT, timeout=1.0)
         with self.assertRaises((OSError, ProtocolError, OverlayRoutingError)):
             builder.open(self.route)
-        self.assertEqual(self.nodes[2].accepted_connections, 0)
+        self.assertEqual(self.nodes[3].accepted_connections, 0)
+
+    def test_completed_circuit_does_not_inherit_build_timeout(self) -> None:
+        circuit = CircuitBuilder(
+            ServiceIdentity.generate(),
+            PeerRole.CLIENT,
+            timeout=0.2,
+        ).open(self.route)
+        try:
+            time.sleep(0.35)
+            response = circuit.endpoint.rpc.request(
+                RpcType.PING,
+                b"idle-circuit",
+                expected=RpcType.PONG,
+            )
+            self.assertEqual(response.payload, b"idle-circuit")
+        finally:
+            circuit.close()
 
     def test_route_repetition_is_rejected_before_connect(self) -> None:
         builder = CircuitBuilder(ServiceIdentity.generate(), PeerRole.CLIENT, timeout=1.0)
         repeated = (
-            (self.descriptors[0], "entry"),
-            (self.descriptors[0], "entry"),
+            (self.descriptors[0], "access"),
+            (self.descriptors[0], "access"),
         )
         accepted_before = self.nodes[0].accepted_connections
         with self.assertRaisesRegex(OverlayRoutingError, "repeats"):

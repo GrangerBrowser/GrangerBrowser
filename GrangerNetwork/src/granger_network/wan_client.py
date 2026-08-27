@@ -40,7 +40,10 @@ def connect_service(
         raise ValueError("WAN route attempt count is invalid")
     service = resolver.resolve(name)
     introduction = resolver.resolve_introduction(service)
-    selector = WanRouteSelector(runtime.discovery)
+    selector = WanRouteSelector(
+        runtime.discovery,
+        guard_seed=runtime.identity.public_key_bytes,
+    )
     failures: list[str] = []
     attempts = 0
     introduction_nodes = []
@@ -79,7 +82,13 @@ def connect_service(
                     attempts,
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                failures.append(type(error).__name__)
+                detail = str(error)
+                if isinstance(error, OverlayRoutingError) and detail.startswith(
+                    ("introduction stage failed", "rendezvous stage failed")
+                ):
+                    failures.append(detail)
+                else:
+                    failures.append(type(error).__name__)
         if attempts >= route_attempts:
             break
     raise OverlayRoutingError(
@@ -145,8 +154,14 @@ def run_fetch(options: argparse.Namespace) -> int:
                 json.dumps(
                     {
                         "canonicalName": service.canonical_name,
-                        "clientEntryNodeId": prefix.route[0][0].node_id,
-                        "clientMiddleNodeId": prefix.route[1][0].node_id,
+                        "clientAccessNodeId": prefix.route[0][0].node_id,
+                        "clientEntryNodeId": prefix.route[1][0].node_id,
+                        "clientMiddleNodeId": prefix.route[2][0].node_id,
+                        "coverCellsSent": sum(
+                            int(multiplexer.traffic_counters["coverCellsSent"])
+                            for multiplexer in session.circuit.multiplexers
+                        ),
+                        "coverProfile": session.circuit.multiplexers[0].cover_policy.profile.value,
                         "diversityRelaxed": prefix.diversity_relaxed,
                         "pid": os.getpid(),
                         "responseBytes": len(response.body),
@@ -181,8 +196,14 @@ def run_demo(options: argparse.Namespace) -> int:
         messages = session.fetch("/messages")
         report = {
             "canonicalName": service.canonical_name,
-            "clientEntryNodeId": prefix.route[0][0].node_id,
-            "clientMiddleNodeId": prefix.route[1][0].node_id,
+            "clientAccessNodeId": prefix.route[0][0].node_id,
+            "clientEntryNodeId": prefix.route[1][0].node_id,
+            "clientMiddleNodeId": prefix.route[2][0].node_id,
+            "coverCellsSent": sum(
+                int(multiplexer.traffic_counters["coverCellsSent"])
+                for multiplexer in session.circuit.multiplexers
+            ),
+            "coverProfile": session.circuit.multiplexers[0].cover_policy.profile.value,
             "diversityRelaxed": prefix.diversity_relaxed,
             "messagePresent": options.message.encode("utf-8") in messages.body,
             "pageStatus": page.status,
