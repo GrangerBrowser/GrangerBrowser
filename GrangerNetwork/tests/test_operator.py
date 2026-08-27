@@ -233,6 +233,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", service)
         self.assertIn("MemoryMax=160M", service)
         self.assertIn("TasksMax=256", service)
+        self.assertIn("TimeoutStopSec=120s", service)
         self.assertIn("RuntimeDirectory=granger-node/%i", service)
         self.assertIn("/run/granger-node/%i/status.json", service)
         self.assertNotIn("217.60.10.122", service)
