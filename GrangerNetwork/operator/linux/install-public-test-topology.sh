@@ -176,12 +176,12 @@ for node in "${NODE_NAMES[@]}"; do
 done
 for node in "${NODE_NAMES[@]}"; do
     for _attempt in $(seq 1 40); do
-        [[ -s "/run/granger-node/$node-ready.json" ]] && break
+        [[ -s "/run/granger-node/$node/ready.json" ]] && break
         systemctl is-active --quiet "granger-node@$node.service" \
             || fail "$node did not remain active"
         sleep 0.25
     done
-    [[ -s "/run/granger-node/$node-ready.json" ]] || fail "$node did not become ready"
+    [[ -s "/run/granger-node/$node/ready.json" ]] || fail "$node did not become ready"
 done
 
 printf 'SINGLE-PHYSICAL-HOST TEST TOPOLOGY installed.\n'

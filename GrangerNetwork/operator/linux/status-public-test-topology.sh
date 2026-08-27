@@ -9,6 +9,6 @@ CONFIG_ROOT="/etc/granger-node"
 while IFS= read -r node; do
     [[ -n "$node" ]] || continue
     printf '%s: %s\n' "$node" "$(systemctl is-active "granger-node@$node.service" || true)"
-    status="/run/granger-node/$node-status.json"
+    status="/run/granger-node/$node/status.json"
     [[ ! -r "$status" ]] || cat -- "$status"
 done <"$CONFIG_ROOT/topology-nodes"
