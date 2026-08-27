@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from granger_network.identity import ServiceIdentity
 from granger_network.node import NodeListenerEndpoint, initialize_node, load_node
@@ -242,6 +243,35 @@ class OperatorTests(unittest.TestCase):
         self.assertIn('STATE_ROOT="/var/lib/granger-node"', installer)
         self.assertIn('$STATE_ROOT/private/authorities', installer)
         self.assertNotIn("privateKey", installer)
+
+    def test_node_shutdown_uses_one_shared_thread_join_deadline(self) -> None:
+        state = self.root / "shutdown-node"
+        initialize_node(
+            state,
+            RendezvousEndpoint("203.0.113.95", self._free_port()),
+            ("bootstrap", "discovery"),
+            RelayPolicy(max_connections=8),
+        )
+        node = load_node(state)
+
+        class WaitingThread:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+
+            def join(self, timeout: float | None = None) -> None:
+                assert timeout is not None
+                self.timeouts.append(timeout)
+
+        workers = [WaitingThread(), WaitingThread(), WaitingThread()]
+        node._threads = set(workers)  # type: ignore[assignment]
+        with patch(
+            "granger_network.node.time.monotonic",
+            side_effect=(100.0, 100.5, 102.75, 103.1),
+        ):
+            node.stop()
+        observed = [timeout for worker in workers for timeout in worker.timeouts]
+        self.assertEqual(len(observed), 2)
+        self.assertCountEqual(observed, (2.5, 0.25))
 
 
 if __name__ == "__main__":

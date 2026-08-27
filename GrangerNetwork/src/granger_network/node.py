@@ -1056,12 +1056,16 @@ class WanNodeServer:
             except OSError:
                 pass
             connection.close()
+        join_deadline = time.monotonic() + 3.0
         if self._accept_thread is not None and self._accept_thread is not threading.current_thread():
-            self._accept_thread.join(timeout=3.0)
+            self._accept_thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
             self._accept_thread = None
         for thread in threads:
             if thread is not threading.current_thread():
-                thread.join(timeout=3.0)
+                remaining = join_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                thread.join(timeout=remaining)
 
     def __enter__(self) -> "WanNodeServer":
         self.start_background()
