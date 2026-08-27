@@ -35,6 +35,7 @@ from .introduction import AliasRecord, IntroductionDescriptor
 from .network_health import NetworkHealth, NetworkHealthSnapshot, NetworkState
 from .peer import RELAY_CAPABILITIES
 from .rendezvous_control import validate_service_id
+from .wan_routing import order_diverse_relay_combinations
 
 
 WAN_DISCOVERY_VERSION = 1
@@ -407,29 +408,7 @@ class WanDiscoveryClient:
                     )
         if not choices:
             raise DiscoveryError("private discovery ingress is unavailable")
-        choices.sort(key=lambda item: item[:3])
-        ordered_choices: list[
-            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
-        ] = []
-        remaining = list(enumerate(choices))
-        node_use: dict[str, int] = {}
-        while remaining:
-            selected_index, selected = min(
-                remaining,
-                key=lambda item: (
-                    sum(
-                        node_use.get(node.node_id, 0)
-                        for node in item[1][3:]
-                    ),
-                    item[0],
-                ),
-            )
-            ordered_choices.append(selected)
-            for node in selected[3:]:
-                node_use[node.node_id] = node_use.get(node.node_id, 0) + 1
-            remaining = [item for item in remaining if item[0] != selected_index]
-            if len(ordered_choices) >= limit:
-                break
+        ordered_choices = order_diverse_relay_combinations(choices, limit=limit)
         routes: list[tuple[tuple[NodeDescriptor, str], ...]] = []
         seen: set[tuple[str, str, str]] = set()
         for _relaxed, _guard, _offset, access, guard, middle in ordered_choices:

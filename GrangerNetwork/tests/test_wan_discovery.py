@@ -152,6 +152,69 @@ class WanDiscoveryTests(unittest.TestCase):
         self.assertGreaterEqual(health.bootstrap_attempted, 2)
         self.assertGreaterEqual(health.authenticated_peers, 2)
 
+    def test_private_discovery_retries_cover_guard_middle_pairs(self) -> None:
+        role_nodes: dict[str, list[NodeDescriptor]] = {
+            "access": [],
+            "entry": [],
+            "middle": [],
+        }
+        port = 45000
+        for role in role_nodes:
+            for index in range(2):
+                role_nodes[role].append(
+                    NodeDescriptor.create(
+                        ServiceIdentity.generate(),
+                        RendezvousEndpoint(f"127.{port - 44999}.0.{index + 1}", port),
+                        ("bootstrap", role),
+                        RelayPolicy(enabled=True),
+                        issued_at=self.now,
+                        lifetime=3600,
+                    )
+                )
+                port += 1
+        peer = NodeDescriptor.create(
+            ServiceIdentity.generate(),
+            RendezvousEndpoint("127.7.0.1", port),
+            ("bootstrap", "discovery"),
+            RelayPolicy(enabled=True),
+            issued_at=self.now,
+            lifetime=3600,
+        )
+        bootstrap = BootstrapSet.create(
+            self.authority,
+            [node for nodes in role_nodes.values() for node in nodes] + [peer],
+            issued_at=self.now,
+            lifetime=1800,
+        )
+        client = WanDiscoveryClient(
+            ServiceIdentity.generate(),
+            BootstrapPool(bootstrap, PeerCache(self.root / "route-peers.json")),
+            timeout=0.1,
+        )
+
+        routes = client._private_route_candidates(peer, limit=4)
+        self.assertEqual(len(routes), 4)
+        self.assertEqual(
+            {
+                (route[1][0].node_id, route[2][0].node_id)
+                for route in routes
+            },
+            {
+                (guard.node_id, middle.node_id)
+                for guard in role_nodes["entry"]
+                for middle in role_nodes["middle"]
+            },
+        )
+        for failed_guard in role_nodes["entry"]:
+            for failed_middle in role_nodes["middle"]:
+                self.assertTrue(
+                    any(
+                        route[1][0].node_id != failed_guard.node_id
+                        and route[2][0].node_id != failed_middle.node_id
+                        for route in routes
+                    )
+                )
+
     def test_malformed_signed_record_is_rejected_by_remote_store(self) -> None:
         service_identity = ServiceIdentity.generate()
         service = ServiceDescriptor.create_remote(

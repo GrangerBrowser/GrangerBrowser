@@ -43,6 +43,55 @@ class WanRouteSelection:
     diversity_relaxed: bool
 
 
+RelayCombination = tuple[
+    int,
+    int,
+    int,
+    NodeDescriptor,
+    NodeDescriptor,
+    NodeDescriptor,
+]
+
+
+def order_diverse_relay_combinations(
+    combinations: list[RelayCombination],
+    *,
+    limit: int,
+) -> tuple[RelayCombination, ...]:
+    combinations.sort(key=lambda item: item[:3])
+    remaining = list(enumerate(combinations))
+    node_use: dict[str, int] = {}
+    pair_use: dict[tuple[str, str], int] = {}
+    ordered: list[RelayCombination] = []
+
+    def pair_keys(combination: RelayCombination) -> tuple[tuple[str, str], ...]:
+        nodes = combination[3:]
+        return tuple(
+            (nodes[left].node_id, nodes[right].node_id)
+            for left in range(len(nodes))
+            for right in range(left + 1, len(nodes))
+        )
+
+    while remaining and len(ordered) < limit:
+        selected_index, selected = min(
+            remaining,
+            key=lambda item: (
+                max(pair_use.get(pair, 0) for pair in pair_keys(item[1])),
+                sum(pair_use.get(pair, 0) for pair in pair_keys(item[1])),
+                max(node_use.get(node.node_id, 0) for node in item[1][3:]),
+                sum(node_use.get(node.node_id, 0) for node in item[1][3:]),
+                item[0],
+            ),
+        )
+        ordered.append(selected)
+        for node in selected[3:]:
+            node_use[node.node_id] = node_use.get(node.node_id, 0) + 1
+        for pair in pair_keys(selected):
+            pair_use[pair] = pair_use.get(pair, 0) + 1
+        remaining = [item for item in remaining if item[0] != selected_index]
+    return tuple(ordered)
+
+
 class WanRouteSelector:
     def __init__(self, discovery: _Discovery, *, guard_seed: bytes | None = None) -> None:
         self.discovery = discovery
@@ -136,27 +185,10 @@ class WanRouteSelector:
                             middle,
                         )
                     )
-        combinations.sort(key=lambda item: item[:3])
-        remaining = list(enumerate(combinations))
-        node_use: dict[str, int] = {}
-        ordered_combinations: list[
-            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
-        ] = []
-        while remaining and len(ordered_combinations) < limit:
-            selected_index, selected = min(
-                remaining,
-                key=lambda item: (
-                    sum(
-                        node_use.get(node.node_id, 0)
-                        for node in item[1][3:]
-                    ),
-                    item[0],
-                ),
-            )
-            ordered_combinations.append(selected)
-            for node in selected[3:]:
-                node_use[node.node_id] = node_use.get(node.node_id, 0) + 1
-            remaining = [item for item in remaining if item[0] != selected_index]
+        ordered_combinations = order_diverse_relay_combinations(
+            combinations,
+            limit=limit,
+        )
         for relaxation, _guard_index, _offset, access, entry, middle in ordered_combinations:
             route_ids = (access.node_id, entry.node_id, middle.node_id)
             if route_ids in seen:

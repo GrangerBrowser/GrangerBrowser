@@ -53,6 +53,17 @@ class WanRouteSelectionTests(unittest.TestCase):
             {candidate.route[1][0].node_id for candidate in candidates},
             {entry.node_id for entry in entries},
         )
+        self.assertEqual(
+            {
+                (candidate.route[1][0].node_id, candidate.route[2][0].node_id)
+                for candidate in candidates
+            },
+            {
+                (entry.node_id, middle.node_id)
+                for entry in entries
+                for middle in middles
+            },
+        )
 
 
 if __name__ == "__main__":
