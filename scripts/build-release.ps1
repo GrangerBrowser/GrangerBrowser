@@ -70,6 +70,11 @@ if ((Test-Path -LiteralPath $previous) -and -not (Test-Path -LiteralPath $canoni
 Remove-StagingDirectory -PackageDirectory $staging
 Remove-StagingDirectory -PackageDirectory $uiStaging
 
+$sourcePrivacyScan = & (Join-Path $PSScriptRoot "test-release-privacy.ps1") `
+    -TrackedRoot $projectRoot -RequireMarkerFile `
+    -Report (Join-Path $projectRoot "output/release-privacy-source.json")
+if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
+
 try {
     & (Join-Path $PSScriptRoot "compile-release.ps1") -QtRoot $QtRoot -BuildDirectory $BuildDirectory -Clean
     if ($LASTEXITCODE -ne 0) { throw "Compile script failed." }
@@ -105,6 +110,11 @@ try {
 
     & (Join-Path $PSScriptRoot "test-release.ps1") -PackageDirectory "release/.staging"
     if ($LASTEXITCODE -ne 0) { throw "Release acceptance failed." }
+
+    $privacyScan = & (Join-Path $PSScriptRoot "test-release-privacy.ps1") `
+        -Root $staging -RequireMarkerFile `
+        -Report (Join-Path $projectRoot "output/release-privacy-windows.json")
+    if (-not $privacyScan.ok) { throw "Release privacy gate failed." }
 
     $activeReleaseProcesses = @(Get-PackageProcesses -PackageDirectory $canonical)
     if ($activeReleaseProcesses.Count -ne 0) {
@@ -145,6 +155,7 @@ try {
         PortableArchiveSize = $portableArchive.ArchiveSize
         PortableArchiveSHA256 = $portableArchive.ArchiveSHA256
         WindowsPortability = $portability
+        ReleasePrivacyScan = Join-Path $projectRoot "output/release-privacy-windows.json"
         Acceptance = Join-Path $projectRoot "output/release acceptance/path with spaces/release-acceptance.json"
         PythonRuntimeArtifacts = 0
         TemporaryStagingRemoved = (-not (Test-Path -LiteralPath $staging) -and

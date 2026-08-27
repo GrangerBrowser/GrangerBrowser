@@ -21,7 +21,7 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
 }
 
-for command_name in cmake ninja curl sha256sum file ldd readelf jq; do
+for command_name in cmake ninja curl sha256sum file ldd readelf jq python3; do
     require_command "$command_name"
 done
 [[ "$(uname -s)" == "Linux" ]] || fail "this script must run natively on Linux"
@@ -37,6 +37,12 @@ qt_version="$($qt_root/bin/qmake -query QT_VERSION)"
 
 mkdir -p "$output_root" "$tools_root"
 output_root="$(realpath -m "$output_root")"
+privacy_marker_file="${GRANGER_PRIVATE_MARKER_FILE:-$project_root/output/private-markers.txt}"
+python3 "$project_root/scripts/test-release-privacy.py" \
+    --git-tracked-root "$project_root" \
+    --marker-file "$privacy_marker_file" \
+    --require-marker-file \
+    --report "$output_root/release-privacy-source.json"
 for path in "$build_dir" "$appdir" "$runtime_root" "$tools_root" "$artifact"; do
     resolved="$(realpath -m "$path")"
     case "$resolved" in
@@ -240,6 +246,12 @@ manifest_tmp="$output_root/release-manifest.json.tmp"
 ) | jq -R -s '{algorithm:"SHA-256", files:(split("\n") | map(select(length > 0)))}' \
     >"$manifest_tmp"
 mv -- "$manifest_tmp" "$appdir/usr/bin/release-manifest.json"
+
+python3 "$project_root/scripts/test-release-privacy.py" \
+    --root "$appdir" \
+    --marker-file "$privacy_marker_file" \
+    --require-marker-file \
+    --report "$output_root/release-privacy-linux.json"
 
 rm -f -- "$artifact"
 (

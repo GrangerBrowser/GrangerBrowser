@@ -208,6 +208,10 @@ Remove-TemporaryDirectory -Path $staging
 $resultRoot = Join-Path $projectRoot "output/local-release-acceptance"
 if (Test-Path -LiteralPath $resultRoot) { Remove-Item -LiteralPath $resultRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
+$sourcePrivacyScan = & (Join-Path $PSScriptRoot "test-release-privacy.ps1") `
+    -TrackedRoot $projectRoot -RequireMarkerFile `
+    -Report (Join-Path $resultRoot "tracked-source-privacy.json")
+if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
 $promoted = $false
 try {
     & (Join-Path $PSScriptRoot "compile-release.ps1") -QtRoot $QtRoot `
@@ -253,6 +257,11 @@ try {
         -PackageDirectory "release/.local-staging" -AllowLocalGrangerRuntime
     if ($LASTEXITCODE -ne 0) { throw "Complete staged release acceptance failed." }
     Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
+
+    $privacyScan = & (Join-Path $PSScriptRoot "test-release-privacy.ps1") `
+        -Root $staging -RequireMarkerFile `
+        -Report (Join-Path $resultRoot "staging-release-privacy.json")
+    if (-not $privacyScan.ok) { throw "Staged release privacy gate failed." }
 
     $runningCanonical = @(Get-PackageProcesses -PackageDirectory $canonical)
     if ($runningCanonical.Count -ne 0) {
