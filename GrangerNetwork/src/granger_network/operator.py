@@ -463,6 +463,55 @@ def _status_document(
     }
 
 
+def _stopped_status_document(
+    node: WanNodeServer,
+    status_file: Path,
+    *,
+    started_at: int,
+) -> dict[str, object]:
+    try:
+        previous = json.loads(Path(status_file).read_text(encoding="utf-8"))
+        if not isinstance(previous, dict):
+            raise ValueError("operator status document must be an object")
+        document: dict[str, object] = dict(previous)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        document = {
+            "acceptedConnections": node.accepted_connections,
+            "activeCircuits": 0,
+            "advertise": {
+                "host": node.descriptor.endpoint.host,
+                "port": node.descriptor.endpoint.port,
+            },
+            "capabilities": list(node.descriptor.capabilities),
+            "descriptorExpiresAt": node.descriptor.expires_at,
+            "identityPersistent": True,
+            "listen": {
+                "host": node.listener_endpoint.host,
+                "port": node.listener_endpoint.port,
+            },
+            "network": {
+                "dhtReady": False,
+                "failureReason": "STOPPED",
+                "state": "OFFLINE",
+            },
+            "nodeId": node.descriptor.node_id,
+            "peerCache": {
+                "loadError": "",
+                "peers": 0,
+                "successfulPeers": 0,
+                "version": 2,
+            },
+            "rejectedConnections": node.rejected_connections,
+            "rpcRequests": node.rpc_requests,
+            "version": 1,
+        }
+    document["activeCircuits"] = 0
+    document["pid"] = os.getpid()
+    document["startedAt"] = started_at
+    document["state"] = "STOPPED"
+    return document
+
+
 def run_operator(
     config: OperatorConfig,
     state_dir: Path,
@@ -555,7 +604,7 @@ def run_operator(
         atomic_write_text(
             status_file,
             json.dumps(
-                _status_document(node, supervisor, state="STOPPED", started_at=started_at),
+                _stopped_status_document(node, status_file, started_at=started_at),
                 ensure_ascii=True,
                 indent=2,
                 sort_keys=True,

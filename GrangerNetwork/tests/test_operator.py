@@ -14,7 +14,11 @@ from unittest.mock import patch
 
 from granger_network.identity import ServiceIdentity
 from granger_network.node import NodeListenerEndpoint, initialize_node, load_node
-from granger_network.operator import load_operator_config, prepare_node
+from granger_network.operator import (
+    _stopped_status_document,
+    load_operator_config,
+    prepare_node,
+)
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
 
@@ -300,6 +304,38 @@ class OperatorTests(unittest.TestCase):
         release.set()
         holder.join(timeout=1.0)
         self.assertLess(elapsed, 2.0)
+
+    def test_stopped_status_reuses_snapshot_without_runtime_locks(self) -> None:
+        state = self.root / "locked-status-node"
+        initialize_node(
+            state,
+            RendezvousEndpoint("203.0.113.97", self._free_port()),
+            ("bootstrap", "discovery"),
+            RelayPolicy(max_connections=8),
+        )
+        node = load_node(state)
+        status_file = self.root / "status.json"
+        status_file.write_text(
+            json.dumps(
+                {
+                    "activeCircuits": 3,
+                    "network": {"dhtReady": True, "state": "CONNECTED"},
+                    "peerCache": {"peers": 4, "version": 2},
+                    "state": "RUNNING",
+                    "version": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with node.runtime._lock, node.peer_cache._lock:
+            started = time.monotonic()
+            document = _stopped_status_document(node, status_file, started_at=123)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.25)
+        self.assertEqual(document["state"], "STOPPED")
+        self.assertEqual(document["activeCircuits"], 0)
+        self.assertEqual(document["startedAt"], 123)
+        self.assertEqual(document["peerCache"], {"peers": 4, "version": 2})
 
 
 if __name__ == "__main__":
