@@ -240,7 +240,9 @@ post-quantum secure.
   operator. There is no complete Sybil resistance, reputation, ASN diversity,
   or global revocation.
 - Timing, volume, session duration, and first/last relay relationships leak.
-- No cover traffic or periodic circuit rotation.
+- Bounded cover cells and request/age-based circuit rotation do not provide
+  constant-rate traffic shaping or defeat a global timing observer. Dedicated
+  cover circuits and deliberate timing normalization are not implemented.
 - TCP head-of-line blocking and network-level denial of service remain.
 - Application responses are bounded and buffered; large streaming and
   WebSocket traffic are not implemented.
