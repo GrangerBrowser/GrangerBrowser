@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import platform
 import socket
 import statistics
@@ -16,7 +17,12 @@ from pathlib import Path
 import cryptography
 
 from granger_network._codec import atomic_write_text
-from granger_network.cells import CELL_SIZE, MAX_CELLS_PER_BATCH
+from granger_network.bootstrap import BootstrapPool, BootstrapSet, PeerCache
+from granger_network.cells import (
+    CELL_SIZE,
+    MAX_CELLS_PER_BATCH,
+    CoverTrafficProfile,
+)
 from granger_network.circuit import CircuitBuilder
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
@@ -27,6 +33,7 @@ from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import PeerRole, RpcType, connect_authenticated_peer
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_service import WanServiceClient, WanServiceHost
+from granger_network.wan_discovery import WanDiscoveryClient
 
 
 ONE_MIB = 1024 * 1024
@@ -45,6 +52,25 @@ class BenchmarkHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
             return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        if self.path != "/echo":
+            self.send_error(404)
+            return
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400)
+            return
+        if not 0 <= size <= 64 * 1024:
+            self.send_error(413)
+            return
+        body = self.rfile.read(size)
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
@@ -79,8 +105,10 @@ class WanBenchmarkFixture:
         self.backend_thread = threading.Thread(target=self.backend.serve_forever, daemon=True)
         self.backend_thread.start()
         roles = (
+            "access",
             "entry",
             "middle",
+            "access",
             "service-relay",
             "middle",
             "introduction",
@@ -116,8 +144,10 @@ class WanBenchmarkFixture:
         for node in self.nodes:
             node.start_background()
         (
+            self.client_access,
             self.client_entry,
             self.client_middle,
+            self.service_access,
             self.service_entry,
             self.service_middle,
             self.introduction_node,
@@ -141,11 +171,13 @@ class WanBenchmarkFixture:
             self.service,
             self.introduction,
             (
+                (self.service_access, "access"),
                 (self.service_entry, "service-relay"),
                 (self.service_middle, "middle"),
                 (self.introduction_node, "introduction"),
             ),
             (
+                (self.service_access, "access"),
                 (self.service_entry, "service-relay"),
                 (self.service_middle, "middle"),
                 (self.rendezvous_node, "rendezvous"),
@@ -163,6 +195,7 @@ class WanBenchmarkFixture:
     @property
     def client_route(self) -> tuple[tuple[NodeDescriptor, str], ...]:
         return (
+            (self.client_access, "access"),
             (self.client_entry, "entry"),
             (self.client_middle, "middle"),
         )
@@ -192,7 +225,7 @@ def benchmark_peer_handshake(fixture: WanBenchmarkFixture, iterations: int) -> d
     for _ in range(iterations):
         started = time.perf_counter_ns()
         peer = connect_authenticated_peer(
-            fixture.client_entry,
+            fixture.client_access,
             identity,
             PeerRole.CLIENT,
             timeout=10.0,
@@ -243,6 +276,121 @@ def benchmark_sessions(fixture: WanBenchmarkFixture, iterations: int) -> tuple[d
         },
         active,
     )
+
+
+def benchmark_post(session, iterations: int) -> dict:
+    payload = b"granger-post-benchmark" * 64
+    latencies: list[float] = []
+    for _ in range(iterations):
+        started = time.perf_counter_ns()
+        response = session.fetch(
+            "/echo",
+            method="POST",
+            headers={"content-type": "application/octet-stream"},
+            body=payload,
+        )
+        latencies.append((time.perf_counter_ns() - started) / 1_000_000)
+        if response.status != 200 or response.body != payload:
+            raise RuntimeError("WAN POST benchmark response was corrupted")
+    return latency_summary(latencies)
+
+
+def benchmark_cover_idle(session, seconds: float = 9.0) -> dict[str, float | int | str]:
+    multiplexers = session.circuit.multiplexers
+    before = sum(int(mux.traffic_counters["coverCellsSent"]) for mux in multiplexers)
+    started = time.perf_counter()
+    time.sleep(seconds)
+    elapsed = time.perf_counter() - started
+    after = sum(int(mux.traffic_counters["coverCellsSent"]) for mux in multiplexers)
+    cells = after - before
+    return {
+        "elapsedSeconds": elapsed,
+        "endpointDirectionCells": cells,
+        "fixedCellBytes": cells * CELL_SIZE,
+        "profile": multiplexers[0].cover_policy.profile.value,
+    }
+
+
+def benchmark_join(iterations: int) -> dict[str, object]:
+    temporary = tempfile.TemporaryDirectory(prefix="granger-join-benchmark-")
+    root = Path(temporary.name)
+    authority = ServiceIdentity.generate()
+    identities = [ServiceIdentity.generate() for _ in range(6)]
+    capabilities = ("access", "bootstrap", "discovery", "entry", "middle")
+    descriptors = [
+        NodeDescriptor.create(
+            identity,
+            RendezvousEndpoint("127.0.0.1", available_port()),
+            capabilities,
+            RelayPolicy(
+                enabled=True,
+                max_circuits=256,
+                max_streams=256,
+                max_connections=512,
+                max_bandwidth_kib_per_second=256 * 1024,
+            ),
+            lifetime=3600,
+        )
+        for identity in identities
+    ]
+    nodes = [
+        WanNodeServer(
+            identity,
+            descriptor,
+            root / f"node-{index}",
+            known_peers=descriptors,
+        )
+        for index, (identity, descriptor) in enumerate(
+            zip(identities, descriptors, strict=True)
+        )
+    ]
+    for node in nodes:
+        node.start_background()
+    bootstrap = BootstrapSet.create(authority, descriptors, lifetime=1800)
+    cold: list[float] = []
+    warm: list[float] = []
+    direct_first_contact = 0
+    private_discovery = 0
+    try:
+        for index in range(iterations):
+            cache = PeerCache(root / f"cache-{index}.json")
+            cold_client = WanDiscoveryClient(
+                ServiceIdentity.generate(),
+                BootstrapPool(bootstrap, cache),
+                cache=cache,
+                timeout=5.0,
+            )
+            started = time.perf_counter_ns()
+            cold_health = cold_client.join_network()
+            cold.append((time.perf_counter_ns() - started) / 1_000_000)
+            if cold_health.failure_reason:
+                raise RuntimeError("cold WAN join failed")
+            direct_first_contact += cold_client.direct_first_contact_requests
+            private_discovery += cold_client.private_discovery_requests
+
+            warm_client = WanDiscoveryClient(
+                ServiceIdentity.generate(),
+                BootstrapPool(bootstrap, cache),
+                cache=cache,
+                timeout=5.0,
+            )
+            started = time.perf_counter_ns()
+            warm_health = warm_client.join_network()
+            warm.append((time.perf_counter_ns() - started) / 1_000_000)
+            if warm_health.failure_reason:
+                raise RuntimeError("warm WAN join failed")
+            direct_first_contact += warm_client.direct_first_contact_requests
+            private_discovery += warm_client.private_discovery_requests
+    finally:
+        for node in nodes:
+            node.stop()
+        temporary.cleanup()
+    return {
+        "cold": latency_summary(cold),
+        "directFirstContactRequests": direct_first_contact,
+        "privateDiscoveryRequests": private_discovery,
+        "warm": latency_summary(warm),
+    }
 
 
 def transfer(session, requests: int, size: int) -> dict[str, float | int]:
@@ -335,16 +483,23 @@ def benchmark_idle_allocations(fixture: WanBenchmarkFixture, count: int = 3) -> 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark the real Granger WAN socket path")
     parser.add_argument("--iterations", type=int, default=7)
+    parser.add_argument(
+        "--cover-profile",
+        choices=[profile.value for profile in CoverTrafficProfile],
+        default=CoverTrafficProfile.STANDARD.value,
+    )
     parser.add_argument("--output", type=Path)
     options = parser.parse_args(argv)
     if not 3 <= options.iterations <= 30:
         parser.error("iterations must be between 3 and 30")
+    os.environ["GRANGER_COVER_PROFILE"] = options.cover_profile
     fixture = WanBenchmarkFixture()
     try:
         session_results, session = benchmark_sessions(fixture, options.iterations)
         try:
             report = {
                 "cryptography": cryptography.__version__,
+                "coverProfile": options.cover_profile,
                 "fixedCellBytes": CELL_SIZE,
                 "maximumCellsPerProtectedBatch": MAX_CELLS_PER_BATCH,
                 "limitations": [
@@ -353,18 +508,21 @@ def main(argv: list[str] | None = None) -> int:
                     "loopback results are not physical WAN latency",
                 ],
                 "memory": benchmark_idle_allocations(fixture),
+                "networkJoin": benchmark_join(options.iterations),
                 "peerHandshakeAndPing": benchmark_peer_handshake(
                     fixture, options.iterations
                 ),
                 "platform": platform.platform(),
                 "python": platform.python_version(),
                 "service": session_results,
-                "telescopedThreeHopCircuit": benchmark_circuit(
+                "telescopedFourHopCircuit": benchmark_circuit(
                     fixture, options.iterations
                 ),
+                "postLatency": benchmark_post(session, options.iterations),
                 "throughput1MiB": transfer(session, 1, ONE_MIB),
                 "throughput10MiB": transfer(session, 10, ONE_MIB),
                 "concurrentStreams": benchmark_concurrent_streams(session),
+                "coverIdleWindow": benchmark_cover_idle(session),
                 "version": 1,
             }
         finally:

@@ -38,7 +38,8 @@ Default parameters use 20 route constructions and transfer 64 frames of
 | Payload throughput | 25.55 MiB/s |
 | Relay plaintext marker observed | No |
 
-Padding, uniform frames, batching, and cover traffic were disabled.
+Padding, uniform frames, batching, and cover traffic were disabled in this
+historical v0.3 baseline.
 
 ## Interpretation
 
@@ -46,7 +47,9 @@ Eleven hybrid handshakes already impose measurable setup work before network
 latency, loss, congestion, and process isolation are added. The throughput
 number is an in-process best case and must not be used as an Internet estimate.
 
-Padding and cover traffic could add bandwidth, CPU, memory, latency,
-distinguishability, and denial-of-service costs. They remain disabled until
-independent-node packet distributions and explicit overhead budgets are
-available. The benchmark script makes that policy visible in its JSON output.
+Padding and cover traffic can add bandwidth, CPU, memory, latency,
+distinguishability, and denial-of-service costs. Current v0.5 local-socket
+benchmarks measure the four-hop endpoint route with cover explicitly set to
+`off` or `standard`; those results are not directly comparable with this old
+three-hop, in-process baseline. Physical-WAN packet distributions remain
+unverified.
