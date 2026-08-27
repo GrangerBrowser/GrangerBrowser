@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
 import ipaddress
 import json
@@ -523,31 +522,44 @@ class WanDiscoveryClient:
         selected = peers[:MAX_PARALLEL_DISCOVERY_REQUESTS]
         if not selected:
             return ()
-        with ThreadPoolExecutor(
-            max_workers=len(selected),
-            thread_name_prefix="granger-discovery",
-        ) as executor:
-            requests: list[tuple[NodeDescriptor, Future[bytes]]] = [
-                (
+        outcomes: list[bytes | BaseException | None] = [None] * len(selected)
+
+        def request_peer(index: int, peer: NodeDescriptor) -> None:
+            try:
+                outcomes[index] = self._request(
                     peer,
-                    executor.submit(
-                        self._request,
-                        peer,
-                        message,
-                        payload,
-                        expected,
-                        direct_first_contact=direct_first_contact,
-                    ),
+                    message,
+                    payload,
+                    expected,
+                    direct_first_contact=direct_first_contact,
                 )
-                for peer in selected
-            ]
-            results: list[tuple[NodeDescriptor, bytes | None]] = []
-            for peer, request in requests:
-                try:
-                    results.append((peer, request.result()))
-                except (GrangerNetworkError, OSError):
-                    results.append((peer, None))
-            return tuple(results)
+            except BaseException as error:
+                outcomes[index] = error
+
+        workers = [
+            threading.Thread(
+                target=request_peer,
+                args=(index, peer),
+                name=f"granger-discovery-{index}",
+                daemon=True,
+            )
+            for index, peer in enumerate(selected)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        results: list[tuple[NodeDescriptor, bytes | None]] = []
+        for peer, outcome in zip(selected, outcomes, strict=True):
+            if isinstance(outcome, (GrangerNetworkError, OSError)):
+                results.append((peer, None))
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            elif outcome is None:
+                raise RuntimeError("discovery request worker did not return a result")
+            else:
+                results.append((peer, outcome))
+        return tuple(results)
 
     def _prime_private_routes(
         self,

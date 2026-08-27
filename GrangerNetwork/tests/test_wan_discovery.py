@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -103,6 +104,23 @@ class WanDiscoveryTests(unittest.TestCase):
         self.assertEqual(health.state, NetworkState.CONNECTED)
         self.assertTrue(health.dht_ready)
         self.assertGreaterEqual(health.authenticated_peers, 2)
+
+    def test_discovery_batch_workers_do_not_block_process_shutdown(self) -> None:
+        daemon_states: list[bool] = []
+
+        def request(*_args, **_kwargs) -> bytes:
+            daemon_states.append(threading.current_thread().daemon)
+            return b"response"
+
+        with patch.object(self.client, "_request", side_effect=request):
+            results = self.client._request_batch(
+                list(self.descriptors[:3]),
+                RpcType.FIND_NODE,
+                b"request",
+                RpcType.FIND_NODE,
+            )
+        self.assertEqual([content for _peer, content in results], [b"response"] * 3)
+        self.assertEqual(daemon_states, [True] * 3)
 
     def test_one_bootstrap_failure_keeps_quorum_and_two_failures_close_route(self) -> None:
         service_identity = ServiceIdentity.generate()
