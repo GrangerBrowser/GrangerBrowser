@@ -219,6 +219,26 @@ class OperatorTests(unittest.TestCase):
         self.assertFalse(any(b'"privateKey"' in path.read_bytes() for path in public.iterdir()))
         self.assertTrue(json.loads(verified.stdout)["ok"])
 
+    def test_linux_systemd_deployment_is_bounded_and_unprivileged(self) -> None:
+        operator_root = Path(__file__).resolve().parents[1] / "operator" / "linux"
+        service = (operator_root / "systemd" / "granger-node@.service").read_text(
+            encoding="utf-8"
+        )
+        installer = (operator_root / "install-public-test-topology.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("User=granger", service)
+        self.assertIn("Restart=on-failure", service)
+        self.assertIn("NoNewPrivileges=true", service)
+        self.assertIn("ProtectSystem=strict", service)
+        self.assertIn("MemoryMax=160M", service)
+        self.assertNotIn("217.60.10.122", service)
+        self.assertNotIn("217.60.10.122", installer)
+        self.assertIn("--public-ip", installer)
+        self.assertIn('STATE_ROOT="/var/lib/granger-node"', installer)
+        self.assertIn('$STATE_ROOT/private/authorities', installer)
+        self.assertNotIn("privateKey", installer)
+
 
 if __name__ == "__main__":
     unittest.main()

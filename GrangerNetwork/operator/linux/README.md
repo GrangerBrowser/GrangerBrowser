@@ -15,6 +15,44 @@ The package contains an offline wheelhouse. Setup does not download Python
 packages. Linux execution and public reachability remain unverified until the
 operator runs the commands on the physical Debian machine.
 
+## Public single-host smoke topology
+
+For a controlled public deployment, the package includes a systemd template
+and an installer for four isolated logical routers on one Debian host. This is
+the minimum functional topology for the current client and service route shape,
+but it provides no physical-host, operator, network-prefix, or ASN diversity.
+It must be described as a **SINGLE-PHYSICAL-HOST TEST TOPOLOGY**, not as an
+anonymous or production deployment.
+
+Run as root with an explicitly verified public IPv4 address:
+
+```bash
+./install-public-test-topology.sh \
+  --public-ip 203.0.113.20 \
+  --base-port 62441 \
+  --nodes 4
+```
+
+The installer creates the non-login `granger` user, installs the offline
+runtime under `/opt/granger-node`, writes root-controlled configuration under
+`/etc/granger-node`, and keeps node and authority private keys under
+`/var/lib/granger-node`. Each router has a separate identity, state directory,
+TCP listener, and `granger-node@.service` instance. The public browser bundle
+is written to `/var/lib/granger-node/public-bundle`; only that directory may be
+copied to clients.
+
+Check or stop the topology with:
+
+```bash
+./status-public-test-topology.sh
+sudo ./stop-public-test-topology.sh
+```
+
+`install-granger-firewall.sh` installs a live nftables allowlist for SSH and
+the selected Granger TCP range. Open a second SSH connection after applying it
+and before configuring persistent nftables loading. Provider-side firewall
+rules remain a separate operator responsibility.
+
 ## Router
 
 Before first start, replace the RFC 5737 example address `203.0.113.20` in
@@ -59,10 +97,11 @@ descriptor must be included in the next signed bootstrap generation.
 ## First-node boundary
 
 One node can listen as a first bootstrap and relay, but a valid Granger
-`BootstrapSet` intentionally requires at least two independent reachable seed
-descriptors. The first node alone does not prove a healthy DHT or public WAN.
-Do not replace the second descriptor with another process under the same
-operator merely to satisfy the count.
+`BootstrapSet` intentionally requires at least two reachable seed descriptors.
+Independent physical operators remain required for real path diversity. The
+four-process deployment above is permitted only as a controlled functional
+smoke topology and does not prove decentralization, anonymity, or resilience
+against the host operator.
 
 After a second independent operator supplies its public descriptor, create the
 signed public bundle:

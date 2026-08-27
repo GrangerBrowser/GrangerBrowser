@@ -110,6 +110,8 @@ $manifest = [ordered]@{
     }
     grangerNodePort = 62441
     networkId = "granger-network-v0.4"
+    deploymentMode = "single-physical-host-test-topology"
+    logicalRouterCount = 4
     physicalLinuxStart = "UNVERIFIED"
     protocolVersion = 3
     publicWan = "UNVERIFIED"
