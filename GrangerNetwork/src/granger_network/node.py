@@ -1030,9 +1030,22 @@ class WanNodeServer:
 
     def stop(self) -> None:
         self._stop.set()
-        with self._lock:
-            introduction_sessions = tuple(self._introduction_sessions.values())
-            rendezvous_slots = tuple(self._rendezvous_slots.values())
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
+        if self._lock.acquire(timeout=1.0):
+            try:
+                introduction_sessions = tuple(self._introduction_sessions.values())
+                rendezvous_slots = tuple(self._rendezvous_slots.values())
+                connections = list(self._connections)
+                threads = list(self._threads)
+            finally:
+                self._lock.release()
+        else:
+            introduction_sessions = ()
+            rendezvous_slots = ()
+            connections = []
+            threads = []
         for session in introduction_sessions:
             session.closed.set()
             try:
@@ -1044,12 +1057,6 @@ class WanNodeServer:
             slot.host_ready.set()
             slot.client_ready.set()
             slot.done.set()
-        if self._listener is not None:
-            self._listener.close()
-            self._listener = None
-        with self._lock:
-            connections = list(self._connections)
-            threads = list(self._threads)
         for connection in connections:
             try:
                 connection.shutdown(socket.SHUT_RDWR)

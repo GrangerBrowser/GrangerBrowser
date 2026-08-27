@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -272,6 +273,33 @@ class OperatorTests(unittest.TestCase):
         observed = [timeout for worker in workers for timeout in worker.timeouts]
         self.assertEqual(len(observed), 2)
         self.assertCountEqual(observed, (2.5, 0.25))
+
+    def test_node_shutdown_does_not_wait_indefinitely_for_runtime_lock(self) -> None:
+        state = self.root / "locked-shutdown-node"
+        initialize_node(
+            state,
+            RendezvousEndpoint("203.0.113.96", self._free_port()),
+            ("bootstrap", "discovery"),
+            RelayPolicy(max_connections=8),
+        )
+        node = load_node(state)
+        locked = threading.Event()
+        release = threading.Event()
+
+        def hold_runtime_lock() -> None:
+            with node._lock:
+                locked.set()
+                release.wait(5.0)
+
+        holder = threading.Thread(target=hold_runtime_lock, daemon=True)
+        holder.start()
+        self.assertTrue(locked.wait(1.0))
+        started = time.monotonic()
+        node.stop()
+        elapsed = time.monotonic() - started
+        release.set()
+        holder.join(timeout=1.0)
+        self.assertLess(elapsed, 2.0)
 
 
 if __name__ == "__main__":
