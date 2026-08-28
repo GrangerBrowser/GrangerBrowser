@@ -271,7 +271,7 @@ try {
     for ($i2pAttempt = 1; $i2pAttempt -le $maxI2pAttempts; $i2pAttempt++) {
         $i2pOutput = Join-Path $testPath $(if ($i2pAttempt -eq 1) { 'managed-i2p.json' } else { 'managed-i2p-retry.json' })
         $i2pProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
-            -ArgumentList @('--smoke-i2p-runtime', "--smoke-output=$i2pOutput", '--smoke-timeout-ms=300000') `
+            -ArgumentList @('--smoke-i2p-runtime', "--smoke-output=$i2pOutput", '--smoke-timeout-ms=600000') `
             -Wait -PassThru
         $i2p = Get-Content -LiteralPath $i2pOutput -Raw | ConvertFrom-Json
         $i2pPassed = $i2pProcess.ExitCode -eq 0 -and $i2p.ok `

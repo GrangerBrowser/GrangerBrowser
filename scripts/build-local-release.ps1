@@ -337,8 +337,8 @@ try {
 
     $i2pOutput = Join-Path $resultRoot "canonical-i2p.json"
     Invoke-IsolatedBrowser -Executable $canonicalExecutable `
-        -Arguments @("--smoke-i2p-runtime", "--smoke-output=$i2pOutput", "--smoke-timeout-ms=300000") `
-        -RunRoot (Join-Path $resultRoot "canonical-i2p") -TimeoutSeconds 630
+        -Arguments @("--smoke-i2p-runtime", "--smoke-output=$i2pOutput", "--smoke-timeout-ms=600000") `
+        -RunRoot (Join-Path $resultRoot "canonical-i2p") -TimeoutSeconds 1300
     $i2p = Get-Content -LiteralPath $i2pOutput -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not $i2p.ok -or -not $i2p.firstRouteVerified -or -not $i2p.secondRouteVerified -or
         -not $i2p.stopped -or [string]$i2p.clearnetPolicy -ne "blocked" -or

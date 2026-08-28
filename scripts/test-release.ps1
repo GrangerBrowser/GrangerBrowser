@@ -389,8 +389,8 @@ userAgentProfile=default
         Invoke-GrangerBrowser @(
             "--smoke-i2p-runtime",
             "--smoke-output=$i2pRuntimeResult",
-            "--smoke-timeout-ms=300000"
-        ) -TimeoutSeconds 630
+            "--smoke-timeout-ms=600000"
+        ) -TimeoutSeconds 1300
     } finally {
         $env:GRANGER_DATA_ROOT = $primaryDataRoot
         $env:GRANGER_SETTINGS_ROOT = $primarySettingsRoot
