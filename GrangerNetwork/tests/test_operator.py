@@ -233,6 +233,9 @@ class OperatorTests(unittest.TestCase):
         installer = (operator_root / "install-public-test-topology.sh").read_text(
             encoding="utf-8"
         )
+        distributed_installer = (operator_root / "install-public-router.sh").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("User=granger", service)
         self.assertIn("Restart=on-failure", service)
         self.assertIn("NoNewPrivileges=true", service)
@@ -248,6 +251,15 @@ class OperatorTests(unittest.TestCase):
         self.assertIn('STATE_ROOT="/var/lib/granger-node"', installer)
         self.assertIn('$STATE_ROOT/private/authorities', installer)
         self.assertNotIn("privateKey", installer)
+        self.assertIn("--public-ip", distributed_installer)
+        self.assertIn("--public-bootstrap", distributed_installer)
+        self.assertIn('STATE_ROOT="/var/lib/granger-node"', distributed_installer)
+        self.assertIn('CONFIG_ROOT="/etc/granger-node"', distributed_installer)
+        self.assertIn("operator_bundle.py\" verify", distributed_installer)
+        self.assertIn('systemctl enable "granger-node@$NODE_NAME.service"', distributed_installer)
+        self.assertNotIn("217.60.10.122", distributed_installer)
+        self.assertNotIn('operator_bundle.py" create', distributed_installer)
+        self.assertNotIn("private/authorities", distributed_installer)
 
     def test_node_shutdown_uses_one_shared_thread_join_deadline(self) -> None:
         state = self.root / "shutdown-node"

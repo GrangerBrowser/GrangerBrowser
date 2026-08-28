@@ -15,6 +15,37 @@ The package contains an offline wheelhouse. Setup does not download Python
 packages. Linux execution and public reachability remain unverified until the
 operator runs the commands on the physical Debian machine.
 
+## Distributed public router
+
+For a fleet with one persistent router identity per physical VPS, install the
+same package independently on every host. Generate each identity on its own
+host and use the same TCP port on distinct public addresses:
+
+```bash
+sudo ./install-public-router.sh \
+  --node-name node-b \
+  --public-ip 198.51.100.20 \
+  --port 62441
+```
+
+The first pass intentionally starts without reseed material and exports only
+`/var/lib/granger-node/public/node-b/node-descriptor.json`. Collect those public
+descriptors through authenticated SSH, create one signed bootstrap generation
+with the existing authority, then install the verified public bundle on every
+router:
+
+```bash
+sudo /opt/granger-node/install-public-router.sh \
+  --node-name node-b \
+  --public-ip 198.51.100.20 \
+  --port 62441 \
+  --public-bootstrap /root/verified-public-bootstrap
+```
+
+The installer validates the signatures before activation, keeps the identity
+under `/var/lib/granger-node`, and preserves the previous public bundle as a
+rollback copy. It never creates or distributes bootstrap authority keys.
+
 ## Public single-host smoke topology
 
 For a controlled public deployment, the package includes a systemd template
