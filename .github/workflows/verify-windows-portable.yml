@@ -8,7 +8,6 @@ on:
       tag:
         description: Release tag to verify
         required: true
-        default: v0.4.1
       asset_name:
         description: Optional exact asset name
         required: false

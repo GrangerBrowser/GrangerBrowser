@@ -158,7 +158,8 @@ as a successful results page.
 
 ## Windows portable 0.4.1
 
-The published release is [Granger Browser 0.4.1](https://github.com/zakhar-git/Granger-Browser/releases/tag/v0.4.1).
+This section records the historical Granger Browser 0.4.1 artifact. It is not a
+download link for the current `GrangerBrowser/GrangerBrowser` repository.
 
 | Artifact | Size | SHA-256 |
 | --- | ---: | --- |

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$Repository = "zakhar-git/Granger-Browser",
-    [string]$Tag = "v0.4.1",
+    [string]$Repository = "GrangerBrowser/GrangerBrowser",
+    [Parameter(Mandatory)]
+    [string]$Tag,
     [string]$AssetName,
     [switch]$LegacySmoke,
     [string]$OutputDirectory = "output/remote-release-verification"

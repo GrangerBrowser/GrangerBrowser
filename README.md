@@ -8,7 +8,7 @@ Native C++20 · Qt 6 · Chromium · Tor · I2P
 
 <br>
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-202124?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/zakhar-git/Granger-Browser/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-202124?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/GrangerBrowser/GrangerBrowser)
 [![C++](https://img.shields.io/badge/C%2B%2B-20-202124?style=for-the-badge&logo=cplusplus&logoColor=white)](#build-from-source)
 [![Qt](https://img.shields.io/badge/Qt-6.11.2-202124?style=for-the-badge&logo=qt&logoColor=41CD52)](#technology)
 [![Status](https://img.shields.io/badge/Status-Beta-B33951?style=for-the-badge)](#project-status)
@@ -16,7 +16,7 @@ Native C++20 · Qt 6 · Chromium · Tor · I2P
 
 <br>
 
-**[Download latest build](https://github.com/zakhar-git/Granger-Browser/releases/latest)** ·
+**[Source repository](https://github.com/GrangerBrowser/GrangerBrowser)** ·
 **[Build from source](BUILDING.md)** ·
 **[Security](SECURITY.md)** ·
 **[Documentation](docs/)**
@@ -45,10 +45,13 @@ Granger does **not** claim to provide perfect anonymity, make a device untraceab
 
 It is an actively developed browser and should currently be treated as **beta software**.
 
-The source tree also contains an experimental, local-development Granger
-Network integration for identity-bound `.granger` services. It is not part of
-the current public installer or release assets. Its single-rendezvous design
-does not hide peer IP addresses or traffic metadata from that rendezvous.
+The source tree also contains the experimental Granger Network integration for
+identity-bound `.granger` services and Sites & Hosting. The current protocol uses
+signed service descriptors, DHT discovery, authenticated wire v3 relay circuits,
+separate introduction and rendezvous roles, and fail-closed routing with no
+clearnet fallback. It is not part of a current public binary release and does not
+provide a blanket anonymity guarantee; its privacy properties depend on enough
+independent, correctly operated relay nodes being available.
 
 ---
 
@@ -199,13 +202,19 @@ The interface includes:
 
 ---
 
-## Download Granger Browser
+## Source and release builds
 
-### Windows Installer — Recommended
+The canonical public repository is
+**[GrangerBrowser/GrangerBrowser](https://github.com/GrangerBrowser/GrangerBrowser)**.
 
-### **[Download GrangerSetup.exe](https://github.com/zakhar-git/Granger-Browser/releases/latest/download/GrangerSetup.exe)**
+There is currently no supported binary release published in the new repository.
+Local release candidates and development artifacts are not public downloads. Build
+the current source using [BUILDING.md](BUILDING.md), or wait for a versioned asset
+to appear on the project's [Releases page](https://github.com/GrangerBrowser/GrangerBrowser/releases).
 
-The easiest way to install Granger Browser:
+When a Windows release is published, its release entry will provide the exact
+installer and portable asset names together with SHA-256 checksums. A normal
+installer flow is:
 
 1. Download `GrangerSetup.exe`.
 2. Run it.
@@ -218,7 +227,9 @@ No manual Qt, Visual C++, Python, Tor, or additional DLL installation is require
 
 ### Portable
 
-Download `Granger-Browser-vX.X.X-windows-x64.zip` from **[GitHub Releases](https://github.com/zakhar-git/Granger-Browser/releases/latest)**, verify `SHA256SUMS.txt`, extract the entire archive, and run `GrangerBrowser.exe`.
+Download the versioned `Granger-Browser-vX.X.X-windows-x64.zip` asset from the
+project's **[GitHub Releases](https://github.com/GrangerBrowser/GrangerBrowser/releases)**,
+verify `SHA256SUMS.txt`, extract the entire archive, and run `GrangerBrowser.exe`.
 
 The installer and portable download use the same complete Qt, WebEngine, ICU, Visual C++ and Tor runtime package. See [docs/INSTALLER.md](docs/INSTALLER.md) for installer architecture and rebuild details.
 
@@ -681,12 +692,12 @@ C++20 · Qt 6 · Chromium · Tor
 
 <br>
 
-[Download](https://github.com/zakhar-git/Granger-Browser/releases/latest)
+[Repository](https://github.com/GrangerBrowser/GrangerBrowser)
 ·
 [Build](BUILDING.md)
 ·
 [Security](SECURITY.md)
 ·
-[Issues](https://github.com/zakhar-git/Granger-Browser/issues)
+[Issues](https://github.com/GrangerBrowser/GrangerBrowser/issues)
 
 </div>
