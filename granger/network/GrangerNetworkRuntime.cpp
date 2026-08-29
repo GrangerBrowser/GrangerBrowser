@@ -408,15 +408,18 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
         && qApp->property("granger.networkLocalDemo").toBool();
     const bool explicitRegistry = qApp
         && qApp->property("granger.networkRegistryExplicit").toBool();
-    const bool wanConfigured = GrangerWanConfigPaths::appendProcessArguments(&arguments);
-    if (wanConfigured) {
-        arguments.append({QStringLiteral("--state-dir"),
-                          QDir(registryRoot).filePath(QStringLiteral("wan"))});
-    } else if (localDemo) {
+    bool wanConfigured = false;
+    if (localDemo) {
         arguments.append({QStringLiteral("--registry"), registryRoot});
         arguments.append(QStringLiteral("--local-demo"));
     } else if (explicitRegistry) {
         arguments.append({QStringLiteral("--registry"), registryRoot});
+    } else {
+        wanConfigured = GrangerWanConfigPaths::appendProcessArguments(&arguments);
+        if (wanConfigured) {
+            arguments.append({QStringLiteral("--state-dir"),
+                              QDir(registryRoot).filePath(QStringLiteral("wan"))});
+        }
     }
     process->setArguments(arguments);
     connect(process, &QProcess::readyReadStandardOutput,
