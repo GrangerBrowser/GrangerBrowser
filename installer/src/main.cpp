@@ -581,15 +581,33 @@ bool IsSafeArchivePath(std::wstring path)
     return true;
 }
 
+std::wstring ExtendedLengthPath(const fs::path &input)
+{
+    std::wstring path = fs::absolute(input).lexically_normal().wstring();
+    if (path.rfind(LR"(\\?\)", 0) == 0) return path;
+    return path.rfind(LR"(\\)", 0) == 0
+        ? LR"(\\?\UNC\)" + path.substr(2)
+        : LR"(\\?\)" + path;
+}
+
+bool TryGetRegularFileSize(const fs::path &path, uint64_t &size)
+{
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    const std::wstring extendedPath = ExtendedLengthPath(path);
+    if (!GetFileAttributesExW(extendedPath.c_str(), GetFileExInfoStandard, &attributes)
+        || (attributes.dwFileAttributes
+            & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return false;
+    }
+    size = (static_cast<uint64_t>(attributes.nFileSizeHigh) << 32)
+        | static_cast<uint64_t>(attributes.nFileSizeLow);
+    return true;
+}
+
 void RejectReparsePoints(const fs::path &root)
 {
     for (const auto &entry : fs::recursive_directory_iterator(root)) {
-        std::wstring path = fs::absolute(entry.path()).wstring();
-        if (path.rfind(LR"(\\?\)", 0) != 0) {
-            path = path.rfind(LR"(\\)", 0) == 0
-                ? LR"(\\?\UNC\)" + path.substr(2)
-                : LR"(\\?\)" + path;
-        }
+        const std::wstring path = ExtendedLengthPath(entry.path());
         const DWORD attributes = GetFileAttributesW(path.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) {
             throw InstallerError("Unable to inspect an extracted package entry");
@@ -762,7 +780,9 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
             static_cast<uint64_t>(record.GetNamedNumber(L"Size")),
             Lower(record.GetNamedString(L"SHA256").c_str())));
         const fs::path file = runtimeRoot / relative;
-        if (!fs::is_regular_file(file) || fs::file_size(file) != static_cast<uint64_t>(record.GetNamedNumber(L"Size"))) {
+        uint64_t fileSize = 0;
+        if (!TryGetRegularFileSize(file, fileSize)
+            || fileSize != static_cast<uint64_t>(record.GetNamedNumber(L"Size"))) {
             throw InstallerError("Extracted browser runtime does not match release-manifest.json: "
                                  + WideToUtf8(relative));
         }
