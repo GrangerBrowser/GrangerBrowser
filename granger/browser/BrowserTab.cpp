@@ -27,6 +27,9 @@
 namespace granger {
 
 namespace {
+constexpr int kStandardLoadingWatchdogMs = 45 * 1000;
+constexpr int kGrangerLoadingWatchdogMs = 6 * 60 * 1000 + 5000;
+
 class LetterboxedWebView final : public QWebEngineView {
 public:
     explicit LetterboxedWebView(QWidget *parent = nullptr)
@@ -158,7 +161,10 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
             stalledAddress,
             Localization::text(QStringLiteral("error.page_unavailable")),
             Localization::text(QStringLiteral("error.loading_timeout")),
-            Localization::text(QStringLiteral("error.loading_timeout_detail")),
+            Localization::text(
+                GrangerNetworkUrl::isCustomUrl(m_lastRequestedUrl)
+                    ? QStringLiteral("error.granger_loading_timeout_detail")
+                    : QStringLiteral("error.loading_timeout_detail")),
             QStringLiteral("https://granger.local/__action/error/retry?url=%1")
                 .arg(QString::fromLatin1(QUrl::toPercentEncoding(stalledAddress))),
             Localization::text(QStringLiteral("common.retry")));
@@ -170,7 +176,9 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
         cancelPendingNavigationFailure();
         m_finalResponseWasHttpError = false;
         m_loading = true;
-        m_loadingWatchdog->start(45000);
+        m_loadingWatchdog->start(
+            GrangerNetworkUrl::isCustomUrl(m_lastRequestedUrl)
+                ? kGrangerLoadingWatchdogMs : kStandardLoadingWatchdogMs);
         emit loadingChanged(true);
         emit loadProgressChanged(0);
         emit loadStarted();

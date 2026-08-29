@@ -395,6 +395,7 @@
   "error.page_unavailable": "Страница недоступна",
   "error.loading_timeout": "Страница перестала отвечать во время загрузки.",
   "error.loading_timeout_detail": "Granger Browser остановил навигацию через 45 секунд. Повторите, когда маршрут или сайт снова будет отвечать.",
+  "error.granger_loading_timeout_detail": "Granger Network не успела установить приватный маршрут до истечения ограниченного времени ожидания. Повторите позже.",
   "error.could_not_reach": "Granger Browser не удалось открыть эту страницу.",
   "error.navigation": "Ошибка перехода",
   "error.final_navigation": "Итоговый переход не завершился.",

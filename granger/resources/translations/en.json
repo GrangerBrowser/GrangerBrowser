@@ -395,6 +395,7 @@
   "error.page_unavailable": "Page unavailable",
   "error.loading_timeout": "The page stopped responding while loading.",
   "error.loading_timeout_detail": "Granger Browser stopped this navigation after 45 seconds. Retry when the route or site is responsive.",
+  "error.granger_loading_timeout_detail": "Granger Network did not establish a private route before the bounded navigation timeout. Try again later.",
   "error.could_not_reach": "Granger Browser could not reach this page.",
   "error.navigation": "Navigation error",
   "error.final_navigation": "The final navigation did not complete.",

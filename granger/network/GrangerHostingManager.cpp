@@ -25,7 +25,7 @@
 namespace granger {
 namespace {
 constexpr int kDefaultMaxFileBytes = 8 * 1024 * 1024;
-constexpr int kHostingStartupTimeoutMs = 120000;
+constexpr int kHostingStartupTimeoutMs = 1800000;
 const QRegularExpression kServiceId(QStringLiteral("^[a-f0-9]{32}$"));
 const QRegularExpression kServiceTitle(QStringLiteral("^[^\\x00-\\x1f\\x7f]{1,80}$"));
 

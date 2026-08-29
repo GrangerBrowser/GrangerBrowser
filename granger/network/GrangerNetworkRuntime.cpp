@@ -36,7 +36,7 @@ constexpr int kMaximumRequestBody = 2 * 1024 * 1024;
 constexpr int kRequestBodyTimeoutMs = 5000;
 constexpr int kMaximumResponseLine = 4 * 1024 * 1024;
 constexpr int kCompatibilityRequestTimeoutMs = 15000;
-constexpr int kWanRequestTimeoutMs = 120000;
+constexpr int kWanRequestTimeoutMs = 6 * 60 * 1000;
 
 QString safeErrorMessage(const QString &code)
 {

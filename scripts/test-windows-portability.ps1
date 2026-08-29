@@ -441,10 +441,17 @@ if (Test-Path -LiteralPath $localRuntimeMetadataPath -PathType Leaf) {
     }
     foreach ($entry in $localRuntimeMetadata.RuntimeFiles) {
         $relativePath = ([string]$entry.Path).Replace('/', '\')
-        if (-not $relativePath.StartsWith("runtime\python\", [StringComparison]::OrdinalIgnoreCase) -or
+        $insidePythonRuntime = $relativePath.StartsWith(
+            "runtime\python\", [StringComparison]::OrdinalIgnoreCase)
+        $insideSignedWanRuntime = [bool]$localRuntimeMetadata.SignedWanBundle -and (
+            $relativePath.StartsWith(
+                "runtime\granger-network\bundle\", [StringComparison]::OrdinalIgnoreCase) -or
+            $relativePath.StartsWith(
+                "runtime\granger-network\trust\", [StringComparison]::OrdinalIgnoreCase))
+        if (-not ($insidePythonRuntime -or $insideSignedWanRuntime) -or
             [IO.Path]::IsPathRooted($relativePath) -or
             @($relativePath.Split('\') | Where-Object { $_ -eq '..' }).Count -ne 0) {
-            throw "Local runtime metadata escaped runtime/python: $relativePath"
+            throw "Local runtime metadata escaped an approved runtime root: $relativePath"
         }
         $candidate = Join-Path $packageRoot $relativePath
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {

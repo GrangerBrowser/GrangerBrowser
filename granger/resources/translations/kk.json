@@ -395,6 +395,7 @@
   "error.page_unavailable": "Бет қолжетімсіз",
   "error.loading_timeout": "Жүктеу кезінде бет жауап беруді тоқтатты.",
   "error.loading_timeout_detail": "Granger Browser навигацияны 45 секундтан кейін тоқтатты. Маршрут немесе сайт қайта жауап бергенде қайталаңыз.",
+  "error.granger_loading_timeout_detail": "Granger Network шектеулі күту уақыты аяқталғанша жеке маршрутты орната алмады. Кейінірек қайталаңыз.",
   "error.could_not_reach": "Granger Browser бұл бетке жете алмады.",
   "error.navigation": "Шарлау қатесі",
   "error.final_navigation": "Соңғы шарлау аяқталмады.",
