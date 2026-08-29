@@ -253,11 +253,15 @@ try {
         $torPassed = $torProcess.ExitCode -eq 0 -and $tor.ok -and $tor.routeVerified `
             -and $tor.bootstrapProgress -eq 100
         if ($torPassed) { break }
+        $configurationValid = $tor.configVerificationOutput -match 'Configuration was valid'
+        $retryableBootstrapTimeout = $torAttempt -lt $maxTorAttempts `
+            -and $tor.bootstrapProgress -gt 0 -and $tor.bootstrapProgress -lt 100 `
+            -and $configurationValid -and $tor.reason -match 'bootstrap timed out'
         $retryableVerificationFailure = $torAttempt -lt $maxTorAttempts `
             -and $tor.bootstrapProgress -eq 100 -and -not $tor.routeVerified `
-            -and $tor.configVerificationOutput -match 'Configuration was valid' `
+            -and $configurationValid `
             -and $tor.reason -match 'route verification|check endpoint|timed out'
-        if (-not $retryableVerificationFailure) { break }
+        if (-not ($retryableBootstrapTimeout -or $retryableVerificationFailure)) { break }
         Start-Sleep -Seconds 2
     }
     if (-not $torPassed) {
