@@ -108,18 +108,22 @@ identifiers supplied by the user or browser.
 
 A malicious static source can contain active HTML/JavaScript and is treated as
 untrusted web content. Hosting validation prevents filesystem escape and
-executable-file publication; it does not make page script trustworthy. A
+high-confidence secret publication; it does not make page script trustworthy. A
 malicious local application receives request content and an opaque per-session
 identifier, but forwarding/client/relay IP headers are removed.
 
 ### Malicious hosted source
 
-Static request paths are decoded once and resolved under a canonical source
-root. Traversal, absolute paths, network paths, unsupported extensions,
-oversized files, and symlink escapes fail closed. The selected source directory
-remains trusted local input: a compromised local process able to modify allowed
-files can change the published site. Content is not snapshotted or signed as an
-authoring-time file manifest.
+Static request paths are decoded once and resolved under a canonical publication
+snapshot root. Traversal, absolute paths, network paths, oversized files,
+symlinks, junctions, reparse points, and manifest mismatches fail closed. There
+is no extension whitelist. A bounded text preflight detects private-key markers
+and local-user paths but cannot prove that arbitrary content contains no secret.
+The service copies approved files to an atomic snapshot with a relative-path
+manifest and deterministic SHA-256. Later source edits do not alter the active
+snapshot; an explicit update creates a new snapshot while preserving identity.
+A compromised local process that can modify service state or race authoring files
+remains outside this protection boundary; copy-time hash mismatches abort.
 
 ### Malicious relay
 

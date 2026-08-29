@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from granger_network.descriptor import ServiceDescriptor
-from granger_network.errors import OverlayRoutingError
+from granger_network.errors import OverlayRoutingError, ProtocolError
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
 from granger_network.hosting import StaticSiteBridge
 from granger_network.identity import ServiceIdentity
@@ -147,6 +147,76 @@ class WanOperationTimeoutTests(unittest.TestCase):
         with patch("granger_network.wan_service.CircuitBuilder.open", return_value=FakeCircuit()):
             with self.assertRaisesRegex(OverlayRoutingError, "introduction stage failed during request"):
                 client.connect(descriptors[3])
+
+    def test_startup_failure_reports_every_identity_in_the_failed_route(self) -> None:
+        identities = [ServiceIdentity.generate() for _ in range(5)]
+        capabilities = (
+            ("access",),
+            ("service-relay",),
+            ("middle",),
+            ("introduction",),
+            ("rendezvous",),
+        )
+        descriptors = tuple(
+            NodeDescriptor.create(
+                identity,
+                RendezvousEndpoint("127.0.0.1", available_port()),
+                capability,
+                RelayPolicy(enabled=True, max_bandwidth_kib_per_second=64 * 1024),
+                lifetime=3600,
+            )
+            for identity, capability in zip(identities, capabilities, strict=True)
+        )
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "wan-service",
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [descriptors[3].node_id],
+            sequence=1,
+            lifetime=900,
+        )
+        introduction_route = tuple(zip(
+            descriptors[:4],
+            ("access", "service-relay", "middle", "introduction"),
+            strict=True,
+        ))
+        rendezvous_route = tuple(zip(
+            (*descriptors[:3], descriptors[4]),
+            ("access", "service-relay", "middle", "rendezvous"),
+            strict=True,
+        ))
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            introduction_route,
+            rendezvous_route,
+            SimpleNamespace(),
+            timeout=0.25,
+        )
+        try:
+            with patch(
+                "granger_network.wan_service.CircuitBuilder.open",
+                side_effect=TimeoutError("simulated protocol-silent relay"),
+            ):
+                host.start_background()
+                with self.assertRaisesRegex(ProtocolError, "protocol-silent relay"):
+                    host.wait_ready(1.0)
+            self.assertEqual(
+                host.startup_failed_route_ids,
+                frozenset(descriptor.node_id for descriptor in descriptors[:4]),
+            )
+            self.assertEqual(
+                host.startup_failed_middle_ids,
+                frozenset({descriptors[2].node_id}),
+            )
+        finally:
+            host.stop()
 
 
 class WanServiceTests(unittest.TestCase):

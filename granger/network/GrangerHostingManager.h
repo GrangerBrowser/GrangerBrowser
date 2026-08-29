@@ -15,6 +15,11 @@ class QTimer;
 
 namespace granger {
 
+struct HostingFinding {
+    QString path;
+    QString reason;
+};
+
 struct HostingInspection {
     bool ok = false;
     QString root;
@@ -29,6 +34,10 @@ struct HostingInspection {
     QString entryPage;
     QStringList entryCandidates;
     bool requiresEntrySelection = false;
+    QStringList includedFiles;
+    QList<HostingFinding> excludedFiles;
+    QList<HostingFinding> blockedFindings;
+    QString snapshotHash;
     QStringList errors;
 };
 
@@ -41,6 +50,7 @@ struct HostedServiceRecord {
     QString upstream;
     QString address;
     QString status;
+    QString stage;
     QString error;
     QString createdAt;
     QString startedAt;

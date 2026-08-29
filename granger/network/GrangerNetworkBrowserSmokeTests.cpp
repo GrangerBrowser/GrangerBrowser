@@ -680,7 +680,9 @@ int runGrangerHostingSmoke(QApplication &app,
         const bool entryFixtureReady = entrySelectorFixture.isValid()
             && writeFixture(QStringLiteral("home.html"), QByteArrayLiteral("<h1>Home</h1>"))
             && writeFixture(QStringLiteral("forum.html"), QByteArrayLiteral("<h1>Forum</h1>"))
-            && writeFixture(QStringLiteral("about.htm"), QByteArrayLiteral("<h1>About</h1>"));
+            && writeFixture(QStringLiteral("about.htm"), QByteArrayLiteral("<h1>About</h1>"))
+            && writeFixture(QStringLiteral("README.md"), QByteArrayLiteral("internal notes"))
+            && writeFixture(QStringLiteral(".gitignore"), QByteArrayLiteral("build/"));
         QString entrySelectorError;
         const bool entrySelectorPrepared = staticWizard && entryFixtureReady
             && window.prepareHostedStaticWizardForDiagnostics(
@@ -696,6 +698,9 @@ int runGrangerHostingSmoke(QApplication &app,
                         .map(option=>option.value),
                     selected:select?.value||'',
                     publishDisabled:publish?.disabled===true,
+                    privacyReady:!!document.querySelector('.hosting-privacy-check.pass'),
+                    excludedCount:[...document.querySelectorAll('.hosting-privacy-summary strong')]
+                        .map(node=>node.textContent.trim())[1]||'',
                     enhanced:select?.dataset.dsEnhanced==='true'
                         &&!!select?.closest('.ds-select')?.querySelector('.ds-select-trigger')
                 };
@@ -750,12 +755,37 @@ int runGrangerHostingSmoke(QApplication &app,
             && actualEntries == expectedEntries
             && entrySelectorBefore.value(QStringLiteral("selected")).toString().isEmpty()
             && entrySelectorBefore.value(QStringLiteral("publishDisabled")).toBool()
+            && entrySelectorBefore.value(QStringLiteral("privacyReady")).toBool()
+            && entrySelectorBefore.value(QStringLiteral("excludedCount")).toString()
+                == QStringLiteral("2")
             && entrySelectorBefore.value(QStringLiteral("enhanced")).toBool()
             && entrySelectionApplied
             && entrySelectorAfter.value(QStringLiteral("selected")).toString()
                 == QStringLiteral("forum.html")
             && entrySelectorAfter.value(QStringLiteral("publishEnabled")).toBool();
-        const bool backToTypes = entrySelector
+        const bool blockerWritten = entrySelector
+            && writeFixture(QStringLiteral(".env"), QByteArrayLiteral("TOKEN=blocked"));
+        const bool blockerRescan = blockerWritten
+            && clickHostingAction(QStringLiteral("/hosting/rescan"))
+            && waitForHostingSelector(QStringLiteral(".hosting-privacy-check.blocked"));
+        const bool privacyBlocked = blockerRescan && evaluateJavaScript(
+            tab ? tab->page() : nullptr,
+            QStringLiteral(R"JS((()=>{
+                const publish=document.querySelector('.hosting-publish-form button[type=submit]');
+                const blocked=document.querySelector('.hosting-privacy-check.blocked details.blocked');
+                return publish?.disabled===true&&!!blocked&&blocked.textContent.includes('.env');
+            })())JS"), 10000).toBool();
+        const bool blockerRemoved = privacyBlocked
+            && QFile::remove(QDir(entrySelectorFixture.path()).filePath(QStringLiteral(".env")));
+        const bool privacyRecovered = blockerRemoved
+            && clickHostingAction(QStringLiteral("/hosting/rescan"))
+            && waitForHostingSelector(QStringLiteral(".hosting-privacy-check.pass"))
+            && evaluateJavaScript(
+                tab ? tab->page() : nullptr,
+                QStringLiteral("document.querySelector('.hosting-publish-form button[type=submit]')?.disabled===false"),
+                10000).toBool();
+        const bool privacyPreflight = entrySelector && privacyBlocked && privacyRecovered;
+        const bool backToTypes = privacyPreflight
             && clickHostingAction(QStringLiteral("/hosting/back"))
             && waitForHostingSelector(QStringLiteral(".hosting-type-grid"));
         const bool applicationWizard = backToTypes
@@ -764,7 +794,7 @@ int runGrangerHostingSmoke(QApplication &app,
         const bool cancelWizard = applicationWizard
             && clickHostingAction(QStringLiteral("/hosting/cancel"))
             && waitForHostingSelector(QStringLiteral(".hosting-wizard"), false);
-        const bool uiActions = createWizard && staticWizard && entrySelector && backToTypes
+        const bool uiActions = createWizard && staticWizard && privacyPreflight && backToTypes
             && applicationWizard && cancelWizard;
         window.openNewTabForDiagnostics();
         tab = window.currentTabForDiagnostics();
@@ -1102,6 +1132,9 @@ int runGrangerHostingSmoke(QApplication &app,
              QJsonObject::fromVariantMap(entrySelectorBefore)},
             {QStringLiteral("entrySelectorAfter"),
              QJsonObject::fromVariantMap(entrySelectorAfter)},
+            {QStringLiteral("privacyPreflight"), privacyPreflight},
+            {QStringLiteral("privacyBlocked"), privacyBlocked},
+            {QStringLiteral("privacyRecovered"), privacyRecovered},
             {QStringLiteral("backToTypes"), backToTypes},
             {QStringLiteral("applicationWizard"), applicationWizard},
             {QStringLiteral("cancelWizard"), cancelWizard},

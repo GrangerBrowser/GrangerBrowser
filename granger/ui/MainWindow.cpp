@@ -6248,6 +6248,37 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
         m_settingsUi.hostingOperationId = *operationId;
         return;
     }
+    if (path == QStringLiteral("/hosting/open-folder")) {
+        const QFileInfo source(m_settingsUi.hostingSelectedPath);
+        if (source.isDir()) QDesktopServices::openUrl(QUrl::fromLocalFile(source.absoluteFilePath()));
+        return;
+    }
+    if (path == QStringLiteral("/hosting/rescan")) {
+        if (m_settingsUi.hostingOperationId != 0
+            || m_settingsUi.hostingSelectedPath.isEmpty()) {
+            refreshHosting(Localization::text(QStringLiteral("hosting.error.operation_pending")));
+            return;
+        }
+        m_settingsUi.hostingOperationStage = QStringLiteral("validating-folder");
+        m_settingsUi.hostingOperationError.clear();
+        refreshHosting();
+        const auto operationId = std::make_shared<quint64>(0);
+        *operationId = m_hosting.inspectStaticSiteAsync(
+            m_settingsUi.hostingSelectedPath,
+            [this, operationId](const HostingInspection &inspection, const QString &error) {
+                if (m_settingsUi.hostingOperationId != *operationId) return;
+                m_settingsUi.hostingOperationId = 0;
+                m_settingsUi.hostingInspection = inspection;
+                m_settingsUi.hostingSelectedEntryPage = inspection.entryPage;
+                m_settingsUi.hostingOperationStage.clear();
+                m_settingsUi.hostingOperationError = inspection.ok ? QString() : error;
+                refreshHostingSettings(inspection.ok
+                    ? Localization::text(QStringLiteral("hosting.validation.pass")) : error);
+            },
+            m_settingsUi.hostingSelectedEntryPage);
+        m_settingsUi.hostingOperationId = *operationId;
+        return;
+    }
     if (path == QStringLiteral("/hosting/publish-static")) {
         if (!m_settingsUi.hostingInspection.ok
             || m_settingsUi.hostingSelectedPath.isEmpty()
@@ -11404,7 +11435,14 @@ QString MainWindow::hostingSettingsHtml() const
         .arg(action(QStringLiteral("hosting/back")), text("hosting.back").toHtmlEscaped());
 
     if (operationBusy) {
-        const QString progressKey = QStringLiteral("hosting.progress.%1").arg(operationStage);
+        QString progressStage = operationStage;
+        if (operationStage == QStringLiteral("publishing")
+            && !m_settingsUi.hostingPendingServiceId.isEmpty()) {
+            const QString runtimeStage = m_hosting.service(
+                m_settingsUi.hostingPendingServiceId).stage;
+            if (!runtimeStage.isEmpty()) progressStage = runtimeStage;
+        }
+        const QString progressKey = QStringLiteral("hosting.progress.%1").arg(progressStage);
         html += QStringLiteral(
             "<section class=\"hosting-wizard hosting-progress ds-card\" aria-live=\"polite\">"
             "<div class=\"ds-card-header hosting-wizard-head\"><div><span class=\"hosting-step\">%1</span>"
@@ -11488,7 +11526,60 @@ QString MainWindow::hostingSettingsHtml() const
                     checks += QStringLiteral("<li class=\"fail\">%1</li>")
                                   .arg(error.toHtmlEscaped());
                 }
+                for (const HostingFinding &finding : inspection.blockedFindings) {
+                    const QString reason = Localization::text(
+                        QStringLiteral("hosting.privacy.reason.%1").arg(finding.reason));
+                    checks += QStringLiteral("<li class=\"fail\"><code>%1</code>: %2</li>")
+                                  .arg(finding.path.toHtmlEscaped(), reason.toHtmlEscaped());
+                }
             }
+            QString excludedItems;
+            for (const HostingFinding &finding : inspection.excludedFiles.mid(0, 8)) {
+                const QString reason = Localization::text(
+                    QStringLiteral("hosting.privacy.reason.%1").arg(finding.reason));
+                excludedItems += QStringLiteral("<li><code>%1</code>: %2</li>")
+                                     .arg(finding.path.toHtmlEscaped(), reason.toHtmlEscaped());
+            }
+            QString blockedItems;
+            for (const HostingFinding &finding : inspection.blockedFindings.mid(0, 8)) {
+                const QString reason = Localization::text(
+                    QStringLiteral("hosting.privacy.reason.%1").arg(finding.reason));
+                blockedItems += QStringLiteral("<li><code>%1</code>: %2</li>")
+                                    .arg(finding.path.toHtmlEscaped(), reason.toHtmlEscaped());
+            }
+            const QString excludedDetails = excludedItems.isEmpty() ? QString()
+                : QStringLiteral("<details><summary>%1</summary><ul>%2</ul></details>")
+                      .arg(text("hosting.privacy.excluded_details").toHtmlEscaped(), excludedItems);
+            const QString blockedDetails = blockedItems.isEmpty() ? QString()
+                : QStringLiteral("<details class=\"blocked\"><summary>%1</summary><ul>%2</ul></details>")
+                      .arg(text("hosting.privacy.blocked_details").toHtmlEscaped(), blockedItems);
+            const QString privacyCheck = QStringLiteral(
+                "<section class=\"hosting-privacy-check %1\"><div class=\"hosting-privacy-head\">"
+                "<div><span>%2</span><strong>%3</strong></div><span class=\"hosting-privacy-state\">%4</span>"
+                "</div><div class=\"hosting-privacy-summary\"><span>%5 <strong>%6</strong></span>"
+                "<span>%7 <strong>%8</strong></span><span>%9 <strong>%10</strong></span></div>"
+                "%11%12<div class=\"hosting-privacy-actions\"><a class=\"button secondary compact\" href=\"%13\">%14</a>"
+                "<a class=\"button secondary compact\" href=\"%15\">%16</a>"
+                "<a class=\"button secondary compact\" href=\"%17\">%18</a></div></section>")
+                .arg(inspection.blockedFindings.isEmpty() && inspection.errors.isEmpty()
+                         ? QStringLiteral("pass") : QStringLiteral("blocked"),
+                     text("hosting.privacy.eyebrow").toHtmlEscaped(),
+                     text("hosting.privacy.title").toHtmlEscaped(),
+                     text(inspection.blockedFindings.isEmpty() && inspection.errors.isEmpty()
+                              ? "hosting.privacy.ready" : "hosting.privacy.blocked").toHtmlEscaped(),
+                     text("hosting.privacy.included").toHtmlEscaped(),
+                     QString::number(inspection.includedFiles.size()),
+                     text("hosting.privacy.excluded").toHtmlEscaped(),
+                     QString::number(inspection.excludedFiles.size()),
+                     text("hosting.privacy.findings").toHtmlEscaped(),
+                     QString::number(inspection.blockedFindings.size()),
+                     excludedDetails, blockedDetails,
+                     action(QStringLiteral("hosting/open-folder")),
+                     text("hosting.open_folder").toHtmlEscaped(),
+                     action(QStringLiteral("hosting/rescan")),
+                     text("hosting.rescan").toHtmlEscaped(),
+                     action(QStringLiteral("hosting/cancel")),
+                     text("common.cancel").toHtmlEscaped());
             QString entryOptions;
             for (const QString &candidate : inspection.entryCandidates) {
                 const bool selected = candidate == m_settingsUi.hostingSelectedEntryPage;
@@ -11513,7 +11604,7 @@ QString MainWindow::hostingSettingsHtml() const
                 "<div class=\"hosting-detected\"><div><span>%1</span><strong>%2</strong></div>"
                 "<div><span>%3</span><strong>%4</strong></div><div><span>%5</span><strong>%6</strong></div>"
                 "<div><span>%7</span><strong>%8</strong></div><div><span>%9</span><strong>%10</strong></div>"
-                "</div>%11<ul class=\"hosting-validation\">%12</ul>")
+                "</div>%11%13<ul class=\"hosting-validation\">%12</ul>")
                              .arg(text("hosting.detected.html").toHtmlEscaped(),
                                   QString::number(inspection.htmlFiles),
                                   text("hosting.detected.css").toHtmlEscaped(),
@@ -11523,7 +11614,8 @@ QString MainWindow::hostingSettingsHtml() const
                                   text("hosting.detected.json").toHtmlEscaped(),
                                   QString::number(inspection.jsonFiles),
                                   text("hosting.detected.assets").toHtmlEscaped(),
-                                  QString::number(inspection.assets), entrySelector, checks);
+                                   QString::number(inspection.assets), entrySelector, checks,
+                                   privacyCheck);
         }
         const bool staticReady = inspection.ok
             && !m_settingsUi.hostingSelectedEntryPage.isEmpty();

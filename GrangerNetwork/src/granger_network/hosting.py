@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import mimetypes
 import os
 import re
+import shutil
 import socket
+import stat
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -28,40 +32,22 @@ from .wan_service import WanServiceHost
 
 HOSTING_VERSION = 2
 DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
-MAX_SERVICE_ROUTE_STARTUP_SECONDS = 240.0
+MAX_SERVICE_ROUTE_STARTUP_SECONDS = 90.0
+MAX_SERVICE_ROUTE_ATTEMPTS = 2
 MAX_STATIC_FILES = 10_000
+MAX_TEXT_SCAN_BYTES = 256 * 1024
 CONFIG_FILE = "config.json"
 IDENTITY_FILE = "identity/service-identity.json"
 SERVICE_DESCRIPTOR_FILE = "metadata/service-descriptor.json"
 INTRODUCTION_DESCRIPTOR_FILE = "metadata/introduction-descriptor.json"
 INTRODUCTION_SEQUENCE_FILE = "metadata/introduction-sequence.txt"
 STATUS_FILE = "metadata/status.json"
+PUBLICATION_ROOT = "publication"
+PUBLICATION_CURRENT = "publication/current"
+PUBLICATION_CONTENT = "publication/current/content"
+PUBLICATION_MANIFEST = "publication/current/manifest.json"
 _SERVICE_ID = re.compile(r"^[a-f0-9]{32}$")
 _TITLE = re.compile(r"^[^\x00-\x1f\x7f]{1,80}$")
-_ALLOWED_SUFFIXES = {
-    ".css",
-    ".gif",
-    ".htm",
-    ".html",
-    ".ico",
-    ".jpeg",
-    ".jpg",
-    ".js",
-    ".json",
-    ".mjs",
-    ".otf",
-    ".png",
-    ".svg",
-    ".ttf",
-    ".txt",
-    ".wasm",
-    ".webp",
-    ".webmanifest",
-    ".woff",
-    ".woff2",
-    ".xml",
-}
-_FORBIDDEN_SUFFIXES = {".bat", ".cmd", ".com", ".dll", ".exe", ".ps1", ".scr", ".sh"}
 _MIME_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".gif": "image/gif",
@@ -85,6 +71,46 @@ _MIME_TYPES = {
     ".woff2": "font/woff2",
     ".xml": "application/xml; charset=utf-8",
 }
+_EXCLUDED_DIRECTORIES = {
+    ".cache",
+    ".git",
+    ".github",
+    ".idea",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".vs",
+    ".vscode",
+    "__pycache__",
+}
+_EXCLUDED_FILES = {".git", ".gitattributes", ".gitignore", ".gitmodules"}
+_EXCLUDED_SUFFIXES = {".bak", ".ilk", ".log", ".obj", ".pdb", ".pyc", ".swo", ".swp", ".tmp"}
+_SENSITIVE_SUFFIXES = {".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"}
+_PRIVATE_KEY_MARKERS = (
+    b"-----BEGIN PRIVATE KEY-----",
+    b"-----BEGIN ENCRYPTED PRIVATE KEY-----",
+    b"-----BEGIN OPENSSH PRIVATE KEY-----",
+    b"-----BEGIN RSA PRIVATE KEY-----",
+    b"-----BEGIN DSA PRIVATE KEY-----",
+    b"-----BEGIN EC PRIVATE KEY-----",
+)
+_OPSEC_PATH_MARKERS = ("c:\\users\\", "/home/", "/users/")
+
+
+@dataclass(frozen=True)
+class PublicationFinding:
+    path: str
+    reason: str
+
+    def to_document(self) -> dict[str, str]:
+        return {"path": self.path, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class _PublicationFile:
+    relative_path: str
+    source: Path
+    size: int
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -102,12 +128,20 @@ class StaticSiteInspection:
     entryPage: str
     entryCandidates: tuple[str, ...]
     requiresEntrySelection: bool
+    includedFiles: tuple[str, ...]
+    excludedFiles: tuple[PublicationFinding, ...]
+    blockedFindings: tuple[PublicationFinding, ...]
+    snapshotHash: str
     errors: tuple[str, ...]
 
     def to_document(self) -> dict[str, object]:
         document = asdict(self)
         document["errors"] = list(self.errors)
         document["entryCandidates"] = list(self.entryCandidates)
+        document["includedFiles"] = list(self.includedFiles)
+        document["excludedFiles"] = [item.to_document() for item in self.excludedFiles]
+        document["blockedFindings"] = [item.to_document() for item in self.blockedFindings]
+        document["totalFiles"] = self.files
         document["version"] = HOSTING_VERSION
         return document
 
@@ -166,6 +200,120 @@ def _relative_to_root(candidate: Path, root: Path) -> bool:
         return False
 
 
+def _is_unc_path(path: Path) -> bool:
+    value = os.fspath(path)
+    return value.startswith("\\\\") or value.startswith("//")
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    is_junction = bool(getattr(path, "is_junction", lambda: False)())
+    return path.is_symlink() or is_junction or bool(attributes & reparse_flag)
+
+
+def _excluded_reason(relative_path: str, *, directory: bool) -> str:
+    name = PurePosixPath(relative_path).name.casefold()
+    if directory:
+        if name in _EXCLUDED_DIRECTORIES:
+            return "development_metadata_directory"
+        return ""
+    if name in _EXCLUDED_FILES:
+        return "development_metadata_file"
+    suffix = PurePosixPath(name).suffix
+    if suffix in _EXCLUDED_SUFFIXES or name.endswith("~"):
+        return "temporary_artifact"
+    if re.fullmatch(r"readme(?:[._-].*)?", name):
+        return "project_documentation"
+    if re.fullmatch(r"changelog(?:[._-].*)?", name):
+        return "project_documentation"
+    if re.fullmatch(r"contributing(?:[._-].*)?", name):
+        return "project_documentation"
+    if re.fullmatch(r"code[._-]of[._-]conduct(?:[._-].*)?", name):
+        return "project_documentation"
+    if name == "security.md":
+        return "project_security_documentation"
+    return ""
+
+
+def _sensitive_name_reason(relative_path: str) -> str:
+    name = PurePosixPath(relative_path).name.casefold()
+    if name == ".env" or name.startswith(".env."):
+        return "environment_secrets"
+    if PurePosixPath(name).suffix in _SENSITIVE_SUFFIXES:
+        return "private_credential_container"
+    if name in {"id_rsa", "id_ed25519", "authorized_keys"}:
+        return "ssh_credentials"
+    if name.startswith("credentials") or name.startswith("secrets"):
+        return "credential_filename"
+    return ""
+
+
+def _decode_text_probe(content: bytes) -> str | None:
+    try:
+        if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+            decoded = content.decode("utf-16")
+        else:
+            decoded = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    if "\x00" in decoded:
+        return None
+    return decoded
+
+
+def _content_block_reason(content: bytes) -> str:
+    upper = content.upper()
+    if any(marker in upper for marker in _PRIVATE_KEY_MARKERS):
+        return "private_key_material"
+    decoded = _decode_text_probe(content)
+    if decoded is None:
+        return ""
+    lowered = decoded.casefold()
+    if any(marker in lowered for marker in _OPSEC_PATH_MARKERS):
+        return "local_path_disclosure"
+    return ""
+
+
+def _hash_and_probe(path: Path, expected_size: int) -> tuple[str, bytes]:
+    digest = hashlib.sha256()
+    probe = bytearray()
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected_size:
+            raise OSError("source file changed during privacy scan")
+        total = 0
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            digest.update(chunk)
+            if len(probe) < MAX_TEXT_SCAN_BYTES:
+                probe.extend(chunk[: MAX_TEXT_SCAN_BYTES - len(probe)])
+    if total != expected_size:
+        raise OSError("source file changed during privacy scan")
+    return digest.hexdigest().upper(), bytes(probe)
+
+
+def _snapshot_hash(files: tuple[_PublicationFile, ...], entry_page: str) -> str:
+    digest = hashlib.sha256(b"granger-publication-snapshot-v1\x00")
+    encoded_entry = entry_page.encode("utf-8")
+    digest.update(len(encoded_entry).to_bytes(4, "big"))
+    digest.update(encoded_entry)
+    for item in files:
+        encoded_path = item.relative_path.encode("utf-8")
+        digest.update(len(encoded_path).to_bytes(4, "big"))
+        digest.update(encoded_path)
+        digest.update(item.size.to_bytes(8, "big"))
+        digest.update(bytes.fromhex(item.sha256))
+    return digest.hexdigest().upper()
+
+
 def _normalize_entry_page(value: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
         raise ValueError("static site entry page is invalid")
@@ -178,39 +326,61 @@ def _normalize_entry_page(value: str) -> str:
     return normalized
 
 
-def inspect_static_site(
+def _scan_static_site(
     source: Path,
     *,
     entry_page: str = "",
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
-) -> StaticSiteInspection:
+) -> tuple[StaticSiteInspection, tuple[_PublicationFile, ...]]:
     limit = _validate_max_file_bytes(max_file_bytes)
     errors: list[str] = []
+    excluded: list[PublicationFinding] = []
+    blocked: list[PublicationFinding] = []
 
     def record_error(message: str) -> None:
         if len(errors) < 64:
             errors.append(message)
 
+    def empty(root_value: str, message: str) -> tuple[StaticSiteInspection, tuple[_PublicationFile, ...]]:
+        return (
+            StaticSiteInspection(
+                ok=False,
+                root=root_value,
+                files=0,
+                htmlFiles=0,
+                cssFiles=0,
+                jsFiles=0,
+                jsonFiles=0,
+                assets=0,
+                totalBytes=0,
+                indexFound=False,
+                entryPage="",
+                entryCandidates=(),
+                requiresEntrySelection=False,
+                includedFiles=(),
+                excludedFiles=(),
+                blockedFindings=(),
+                snapshotHash="",
+                errors=(message,),
+            ),
+            (),
+        )
+
     raw = Path(source)
     if not raw.is_absolute():
-        return StaticSiteInspection(
-            False, str(raw), 0, 0, 0, 0, 0, 0, 0, False, "", (), False,
-            ("source path must be absolute",),
-        )
+        return empty(str(raw), "source path must be absolute")
+    if _is_unc_path(raw):
+        return empty(str(raw), "UNC source paths are not publishable")
+    if _is_reparse_point(raw):
+        return empty(str(raw), "source directory cannot be a link or reparse point")
     try:
         root = raw.resolve(strict=True)
     except OSError:
-        return StaticSiteInspection(
-            False, str(raw), 0, 0, 0, 0, 0, 0, 0, False, "", (), False,
-            ("source directory is unavailable",),
-        )
+        return empty(str(raw), "source directory is unavailable")
     if not root.is_dir():
-        return StaticSiteInspection(
-            False, str(root), 0, 0, 0, 0, 0, 0, 0, False, "", (), False,
-            ("source path is not a directory",),
-        )
+        return empty(str(root), "source path is not a directory")
 
-    files = 0
+    included: list[_PublicationFile] = []
     html_files: list[str] = []
     css_files = 0
     js_files = 0
@@ -218,55 +388,62 @@ def inspect_static_site(
     assets = 0
     total_bytes = 0
     index_found = False
-    scanned_files = 0
-    file_limit_reached = False
+    scanned_entries = 0
+    scan_stopped = False
     try:
-        for directory, names, file_names in os.walk(root, followlinks=False):
-            current = Path(directory)
-            for name in tuple(names):
-                entry = current / name
-                is_link = entry.is_symlink()
-                is_junction = bool(getattr(entry, "is_junction", lambda: False)())
-                if is_link or is_junction:
-                    try:
-                        resolved = entry.resolve(strict=True)
-                    except OSError:
-                        record_error(f"broken linked directory: {entry.relative_to(root).as_posix()}")
-                        names.remove(name)
-                        continue
-                    if not _relative_to_root(resolved, root):
-                        record_error(f"linked directory escapes source: {entry.relative_to(root).as_posix()}")
-                    names.remove(name)
-            for name in file_names:
-                scanned_files += 1
-                if scanned_files > MAX_STATIC_FILES:
+        pending = [root]
+        while pending and not scan_stopped:
+            current = pending.pop()
+            entries = sorted(os.scandir(current), key=lambda item: (item.name.casefold(), item.name))
+            for directory_entry in entries:
+                scanned_entries += 1
+                if scanned_entries > MAX_STATIC_FILES:
                     record_error("static site exceeds the file-count limit")
-                    file_limit_reached = True
+                    scan_stopped = True
                     break
-                entry = current / name
+                entry = Path(directory_entry.path)
                 relative = entry.relative_to(root).as_posix()
                 try:
+                    metadata = entry.lstat()
+                    if _is_reparse_point(entry):
+                        blocked.append(PublicationFinding(relative, "link_or_reparse_point"))
+                        continue
                     resolved = entry.resolve(strict=True)
-                    if not _relative_to_root(resolved, root) or not resolved.is_file():
-                        record_error(f"file escapes source: {relative}")
+                    if not _relative_to_root(resolved, root):
+                        blocked.append(PublicationFinding(relative, "canonical_path_escape"))
                         continue
-                    suffix = resolved.suffix.lower()
-                    if suffix in _FORBIDDEN_SUFFIXES:
-                        record_error(f"forbidden executable file: {relative}")
+                    if stat.S_ISDIR(metadata.st_mode):
+                        reason = _excluded_reason(relative, directory=True)
+                        if reason:
+                            excluded.append(PublicationFinding(relative, reason))
+                        else:
+                            pending.append(resolved)
                         continue
-                    if suffix not in _ALLOWED_SUFFIXES:
-                        record_error(f"unsupported file type: {relative}")
+                    if not stat.S_ISREG(metadata.st_mode):
+                        blocked.append(PublicationFinding(relative, "special_filesystem_entry"))
                         continue
-                    size = resolved.stat().st_size
+                    sensitive_reason = _sensitive_name_reason(relative)
+                    if sensitive_reason:
+                        blocked.append(PublicationFinding(relative, sensitive_reason))
+                        continue
+                    excluded_reason = _excluded_reason(relative, directory=False)
+                    if excluded_reason:
+                        excluded.append(PublicationFinding(relative, excluded_reason))
+                        continue
+                    size = metadata.st_size
                     if size > limit:
                         record_error(f"file exceeds size limit: {relative}")
                         continue
-                    with resolved.open("rb") as probe:
-                        probe.read(1)
+                    sha256, probe = _hash_and_probe(resolved, size)
+                    block_reason = _content_block_reason(probe)
+                    if block_reason:
+                        blocked.append(PublicationFinding(relative, block_reason))
+                        continue
                 except OSError:
                     record_error(f"file is not readable: {relative}")
                     continue
-                files += 1
+                suffix = resolved.suffix.lower()
+                included.append(_PublicationFile(relative, resolved, size, sha256))
                 total_bytes += size
                 if suffix in {".html", ".htm"}:
                     html_files.append(relative)
@@ -278,10 +455,11 @@ def inspect_static_site(
                     json_files += 1
                 else:
                     assets += 1
-            if file_limit_reached:
-                break
     except OSError:
         record_error("source directory could not be scanned")
+    included.sort(key=lambda item: (item.relative_path.casefold(), item.relative_path))
+    excluded.sort(key=lambda item: (item.path.casefold(), item.path, item.reason))
+    blocked.sort(key=lambda item: (item.path.casefold(), item.path, item.reason))
     html_files.sort(key=lambda value: (value.casefold(), value))
     index_found = "index.html" in html_files
     selected_entry = ""
@@ -320,23 +498,247 @@ def inspect_static_site(
         selected_entry = html_files[0]
     if not html_files:
         record_error("no HTML entry page found")
-    requires_selection = len(html_files) > 1 and not selected_entry and not errors
-    return StaticSiteInspection(
-        not errors,
-        str(root),
-        files,
-        len(html_files),
-        css_files,
-        js_files,
-        json_files,
-        assets,
-        total_bytes,
-        index_found,
-        selected_entry,
-        tuple(html_files),
-        requires_selection,
-        tuple(errors),
+    requires_selection = len(html_files) > 1 and not selected_entry and not errors and not blocked
+    publication_files = tuple(included)
+    inspection = StaticSiteInspection(
+        ok=not errors and not blocked,
+        root=str(root),
+        files=len(publication_files),
+        htmlFiles=len(html_files),
+        cssFiles=css_files,
+        jsFiles=js_files,
+        jsonFiles=json_files,
+        assets=assets,
+        totalBytes=total_bytes,
+        indexFound=index_found,
+        entryPage=selected_entry,
+        entryCandidates=tuple(html_files),
+        requiresEntrySelection=requires_selection,
+        includedFiles=tuple(item.relative_path for item in publication_files),
+        excludedFiles=tuple(excluded),
+        blockedFindings=tuple(blocked),
+        snapshotHash=_snapshot_hash(publication_files, selected_entry),
+        errors=tuple(errors),
     )
+    return inspection, publication_files
+
+
+def inspect_static_site(
+    source: Path,
+    *,
+    entry_page: str = "",
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> StaticSiteInspection:
+    inspection, _files = _scan_static_site(
+        source,
+        entry_page=entry_page,
+        max_file_bytes=max_file_bytes,
+    )
+    return inspection
+
+
+def _publication_manifest(inspection: StaticSiteInspection) -> dict[str, object]:
+    return {
+        "blockedFindings": [item.to_document() for item in inspection.blockedFindings],
+        "entryPoint": inspection.entryPage,
+        "excludedFiles": [item.to_document() for item in inspection.excludedFiles],
+        "includedFiles": list(inspection.includedFiles),
+        "snapshotHash": inspection.snapshotHash,
+        "totalBytes": inspection.totalBytes,
+        "totalFiles": inspection.files,
+    }
+
+
+def _validate_manifest_relative(value: object) -> str:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise UpstreamPolicyError("publication manifest contains an invalid relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise UpstreamPolicyError("publication manifest contains an invalid relative path")
+    return path.as_posix()
+
+
+def _validate_publication_snapshot(
+    root: Path,
+    config: HostedServiceConfig,
+) -> StaticSiteInspection:
+    content = root / PUBLICATION_CONTENT
+    manifest_path = root / PUBLICATION_MANIFEST
+    try:
+        document = parse_json_object(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise UpstreamPolicyError("publication snapshot manifest is invalid") from error
+    expected_fields = {
+        "blockedFindings",
+        "entryPoint",
+        "excludedFiles",
+        "includedFiles",
+        "snapshotHash",
+        "totalBytes",
+        "totalFiles",
+    }
+    if set(document) != expected_fields:
+        raise UpstreamPolicyError("publication snapshot manifest schema is invalid")
+    entry_point = _normalize_entry_page(document["entryPoint"])
+    if entry_point != config.entry_page:
+        raise UpstreamPolicyError("publication snapshot entry point does not match configuration")
+    included_document = document["includedFiles"]
+    if not isinstance(included_document, list):
+        raise UpstreamPolicyError("publication snapshot file list is invalid")
+    included = tuple(_validate_manifest_relative(item) for item in included_document)
+    if len(set(included)) != len(included):
+        raise UpstreamPolicyError("publication snapshot file list contains duplicates")
+    for name in ("excludedFiles", "blockedFindings"):
+        findings = document[name]
+        if not isinstance(findings, list):
+            raise UpstreamPolicyError("publication snapshot findings are invalid")
+        for finding in findings:
+            if not isinstance(finding, dict) or set(finding) != {"path", "reason"}:
+                raise UpstreamPolicyError("publication snapshot finding is invalid")
+            _validate_manifest_relative(finding["path"])
+            if not isinstance(finding["reason"], str) or not re.fullmatch(
+                r"[a-z][a-z0-9_]{0,63}", finding["reason"]
+            ):
+                raise UpstreamPolicyError("publication snapshot finding reason is invalid")
+    if document["blockedFindings"]:
+        raise UpstreamPolicyError("publication snapshot contains blocked privacy findings")
+    total_files = document["totalFiles"]
+    total_bytes = document["totalBytes"]
+    snapshot_hash = document["snapshotHash"]
+    if (
+        isinstance(total_files, bool)
+        or not isinstance(total_files, int)
+        or total_files < 0
+        or isinstance(total_bytes, bool)
+        or not isinstance(total_bytes, int)
+        or total_bytes < 0
+        or not isinstance(snapshot_hash, str)
+        or not re.fullmatch(r"[A-F0-9]{64}", snapshot_hash)
+    ):
+        raise UpstreamPolicyError("publication snapshot integrity fields are invalid")
+    inspection = inspect_static_site(
+        content,
+        entry_page=config.entry_page,
+        max_file_bytes=config.max_file_bytes,
+    )
+    if not inspection.ok or inspection.requiresEntrySelection:
+        raise UpstreamPolicyError("publication snapshot content failed privacy validation")
+    if (
+        inspection.includedFiles != included
+        or inspection.files != total_files
+        or inspection.totalBytes != total_bytes
+        or inspection.snapshotHash != snapshot_hash
+    ):
+        raise UpstreamPolicyError("publication snapshot integrity check failed")
+    return inspection
+
+
+def _remove_internal_tree(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+
+
+def _copy_publication_file(item: _PublicationFile, content_root: Path) -> None:
+    destination = content_root.joinpath(*PurePosixPath(item.relative_path).parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    copied = 0
+    with item.source.open("rb") as source, destination.open("xb") as target:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size != item.size:
+            raise OSError(f"source file changed before snapshot: {item.relative_path}")
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            target.write(chunk)
+            digest.update(chunk)
+            copied += len(chunk)
+    if copied != item.size or digest.hexdigest().upper() != item.sha256:
+        raise OSError(f"source file changed during snapshot: {item.relative_path}")
+
+
+def build_publication_snapshot(
+    service_dir: Path,
+    source: Path,
+    *,
+    entry_page: str = "",
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> StaticSiteInspection:
+    root = Path(service_dir).resolve()
+    inspection, files = _scan_static_site(
+        source,
+        entry_page=entry_page,
+        max_file_bytes=max_file_bytes,
+    )
+    if not inspection.ok:
+        findings = [item.path for item in inspection.blockedFindings[:8]]
+        details = list(inspection.errors) + (
+            ["blocked privacy findings: " + ", ".join(findings)] if findings else []
+        )
+        raise UpstreamPolicyError("static site privacy check failed: " + "; ".join(details))
+    if inspection.requiresEntrySelection or not inspection.entryPage:
+        raise UpstreamPolicyError("static site entry page must be selected")
+
+    publication_root = root / PUBLICATION_ROOT
+    publication_root.mkdir(parents=True, exist_ok=True)
+    token = f"{os.getpid()}.{time.time_ns()}"
+    staging = publication_root / f".{token}.staging"
+    backup = publication_root / f".{token}.backup"
+    current = root / PUBLICATION_CURRENT
+    if staging.exists() or backup.exists():
+        raise FileExistsError("publication snapshot staging path already exists")
+    installed = False
+    try:
+        content_root = staging / "content"
+        content_root.mkdir(parents=True)
+        for item in files:
+            _copy_publication_file(item, content_root)
+        atomic_write_text(
+            staging / "manifest.json",
+            json.dumps(
+                _publication_manifest(inspection),
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            mode=0o600,
+        )
+        if current.exists():
+            os.replace(current, backup)
+        try:
+            os.replace(staging, current)
+        except Exception:
+            if backup.exists() and not current.exists():
+                os.replace(backup, current)
+            raise
+        installed = True
+        _remove_internal_tree(backup)
+        return inspection
+    finally:
+        _remove_internal_tree(staging)
+        if installed:
+            _remove_internal_tree(backup)
+
+
+def _ensure_publication_snapshot(
+    root: Path,
+    config: HostedServiceConfig,
+) -> StaticSiteInspection | None:
+    if config.kind != "static":
+        return None
+    content = root / PUBLICATION_CONTENT
+    manifest = root / PUBLICATION_MANIFEST
+    if content.is_dir() and manifest.is_file():
+        return _validate_publication_snapshot(root, config)
+    inspection = build_publication_snapshot(
+        root,
+        Path(config.source),
+        entry_page=config.entry_page,
+        max_file_bytes=config.max_file_bytes,
+    )
+    _validate_publication_snapshot(root, config)
+    return inspection
 
 
 class StaticSiteBridge:
@@ -399,8 +801,6 @@ class StaticSiteBridge:
             raise FileNotFoundError(relative) from error
         if not _relative_to_root(resolved, self.root) or not resolved.is_file():
             raise UpstreamPolicyError("static request escaped the source directory")
-        if resolved.suffix.lower() not in _ALLOWED_SUFFIXES:
-            raise UpstreamPolicyError("static request file type is blocked")
         if resolved.stat().st_size > self.max_file_bytes:
             raise UpstreamPolicyError("static response exceeds the configured file limit")
         return resolved
@@ -430,12 +830,18 @@ class StaticSiteBridge:
             return self._response(403, "Forbidden", b"forbidden")
         if normalized == "HEAD":
             content = b""
+        content_type = _MIME_TYPES.get(source.suffix.lower())
+        if content_type is None:
+            guessed, _encoding = mimetypes.guess_type(source.name, strict=False)
+            content_type = guessed or "application/octet-stream"
+            if content_type.startswith("text/"):
+                content_type += "; charset=utf-8"
         return HttpResult(
             200,
             "OK",
             {
                 "cache-control": "no-store",
-                "content-type": _MIME_TYPES[source.suffix.lower()],
+                "content-type": content_type,
             },
             content,
         )
@@ -549,7 +955,11 @@ def initialize_hosted_service(
             max_file_bytes=limit,
         )
         if not inspection.ok:
-            raise UpstreamPolicyError("static site validation failed: " + "; ".join(inspection.errors))
+            blocked_paths = ", ".join(item.path for item in inspection.blockedFindings[:8])
+            details = list(inspection.errors)
+            if blocked_paths:
+                details.append("blocked privacy findings: " + blocked_paths)
+            raise UpstreamPolicyError("static site privacy check failed: " + "; ".join(details))
         if inspection.requiresEntrySelection or not inspection.entryPage:
             raise UpstreamPolicyError("static site entry page must be selected")
         normalized_source = inspection.root
@@ -570,6 +980,25 @@ def initialize_hosted_service(
     )
     temporary.mkdir(mode=0o700)
     try:
+        if kind == "static":
+            snapshot = build_publication_snapshot(
+                temporary,
+                Path(normalized_source),
+                entry_page=normalized_entry_page,
+                max_file_bytes=limit,
+            )
+            normalized_entry_page = snapshot.entryPage
+            config = HostedServiceConfig(
+                identifier,
+                display_title,
+                kind,
+                normalized_source,
+                normalized_entry_page,
+                normalized_upstream,
+                True,
+                limit,
+                config.created_at,
+            )
         identity = ServiceIdentity.generate()
         identity.save(temporary / IDENTITY_FILE)
         descriptor = ServiceDescriptor.create_remote(
@@ -621,11 +1050,22 @@ def update_hosted_service(
             max_file_bytes=limit,
         )
         if not inspection.ok:
-            raise UpstreamPolicyError("static site validation failed: " + "; ".join(inspection.errors))
+            blocked_paths = ", ".join(item.path for item in inspection.blockedFindings[:8])
+            details = list(inspection.errors)
+            if blocked_paths:
+                details.append("blocked privacy findings: " + blocked_paths)
+            raise UpstreamPolicyError("static site privacy check failed: " + "; ".join(details))
         if inspection.requiresEntrySelection or not inspection.entryPage:
             raise UpstreamPolicyError("static site entry page must be selected")
         normalized_source = inspection.root
         normalized_entry_page = inspection.entryPage
+        snapshot = build_publication_snapshot(
+            root,
+            Path(normalized_source),
+            entry_page=normalized_entry_page,
+            max_file_bytes=limit,
+        )
+        normalized_entry_page = snapshot.entryPage
     else:
         target = probe_loopback_application(upstream or previous.upstream)
         normalized_upstream = target.url
@@ -720,8 +1160,9 @@ def serve_hosted_service(
         allow_legacy=wan_trust_anchor is None,
     )
     if config.kind == "static":
+        _ensure_publication_snapshot(root, config)
         bridge: object = StaticSiteBridge(
-            Path(config.source),
+            root / PUBLICATION_CONTENT,
             entry_page=config.entry_page,
             max_file_bytes=config.max_file_bytes,
         )
@@ -746,6 +1187,7 @@ def serve_hosted_service(
         root,
         "starting",
         service,
+        stage="network-bootstrap",
         networkHealth=runtime.discovery.health().to_document(),
     )
     while True:
@@ -774,6 +1216,13 @@ def serve_hosted_service(
         )
         if rendezvous_node is None:
             raise OverlayRoutingError("independent hosting rendezvous is unavailable")
+        _write_status(
+            root,
+            "starting",
+            service,
+            stage="publishing-service-record",
+            networkHealth=runtime.discovery.health().to_document(),
+        )
         introduction = IntroductionDescriptor.create(
             identity,
             service,
@@ -783,19 +1232,35 @@ def serve_hosted_service(
         )
         atomic_write_text(root / INTRODUCTION_DESCRIPTOR_FILE, introduction.to_json(), mode=0o644)
         runtime.discovery.publish(service)
+        _write_status(
+            root,
+            "starting",
+            service,
+            stage="building-private-routes",
+            networkHealth=runtime.discovery.health().to_document(),
+        )
         host: WanServiceHost | None = None
         failures: list[str] = []
-        middle_exclusions: set[str] = set()
+        route_exclusions: set[str] = set()
         try:
-            for attempt in range(4):
+            for attempt in range(MAX_SERVICE_ROUTE_ATTEMPTS):
                 candidate: WanServiceHost | None = None
                 try:
+                    _write_status(
+                        root,
+                        "starting",
+                        service,
+                        stage="building-private-routes",
+                        routeAttempt=attempt + 1,
+                        routeAttempts=MAX_SERVICE_ROUTE_ATTEMPTS,
+                        networkHealth=runtime.discovery.health().to_document(),
+                    )
                     intro_routes = tuple(
                         selector.service_route(
                             service.service_id,
                             node,
                             "introduction",
-                            excluded_middle_ids=middle_exclusions,
+                            excluded_ids=route_exclusions,
                         )
                         for node in selected_introductions
                     )
@@ -803,7 +1268,7 @@ def serve_hosted_service(
                         service.service_id,
                         rendezvous_node,
                         "rendezvous",
-                        excluded_middle_ids=middle_exclusions,
+                        excluded_ids=route_exclusions,
                     )
                     candidate = WanServiceHost(
                         identity,
@@ -827,9 +1292,9 @@ def serve_hosted_service(
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                     failures.append(f"{type(error).__name__}:{str(error)[:160]}")
                     if candidate is not None:
-                        middle_exclusions.update(candidate.startup_failed_middle_ids)
+                        route_exclusions.update(candidate.startup_failed_route_ids)
                         candidate.stop()
-                    if attempt < 3:
+                    if attempt + 1 < MAX_SERVICE_ROUTE_ATTEMPTS:
                         time.sleep(0.2 * (attempt + 1))
             if host is None:
                 if generation == 0:
@@ -914,7 +1379,7 @@ def _error_document(command: str, error: Exception) -> dict[str, object]:
     elif isinstance(error, UpstreamPolicyError):
         if "local application" in message:
             code = "backend_unreachable"
-        elif "static site validation" in message:
+        elif "static site validation" in message or "static site privacy check" in message:
             code = "folder_validation_failed"
         else:
             code = "upstream_policy_rejected"

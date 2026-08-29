@@ -44,8 +44,9 @@ Loopback-only HTTP backend
 
 For browser-managed publication, `GrangerHostingManager` starts a separate
 app-local `granger_network.hosting` process per enabled service. Static folders
-terminate in an allowlisted file bridge; dynamic services terminate only at a
-numeric loopback HTTP target. Both use the existing service publication,
+are filtered into an integrity-checked publication snapshot before terminating
+in a GET/HEAD file bridge; dynamic services terminate only at a numeric loopback
+HTTP target. Both use the existing service publication,
 introduction, rendezvous, and wire-3 path shown above.
 
 No component resolves a `.granger` name through system DNS. The browser does
@@ -75,8 +76,9 @@ explicitly selected for a test.
    through the rendezvous.
 8. **Application bridge**: GET, HEAD and POST messages carry bounded paths,
    selected headers and at most 2 MiB bodies to a numeric loopback HTTP target.
-   Static hosting uses a GET/HEAD filesystem bridge with canonical root
-   containment, fixed MIME values, and configurable per-file bounds.
+   Static hosting uses a GET/HEAD snapshot bridge with canonical root
+   containment, a relative-path integrity manifest, deterministic content hash,
+   standard MIME fallback, and configurable per-file bounds.
 
 ## Process model
 

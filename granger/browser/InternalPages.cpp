@@ -643,6 +643,23 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-detected span{color:var(--ds-text-muted);font-size:10px}
 .settings-page .hosting-detected strong{color:var(--ds-text);font-size:14px}
 .settings-page .hosting-entry-form{margin:12px 0 0;max-width:var(--ds-control-column)}
+.settings-page .hosting-privacy-check{display:grid;gap:12px;margin-top:12px;padding:14px 0;border-top:1px solid var(--ds-border-subtle);border-bottom:1px solid var(--ds-border-subtle)}
+.settings-page .hosting-privacy-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.settings-page .hosting-privacy-head>div{display:grid;gap:3px}
+.settings-page .hosting-privacy-head span:first-child{color:var(--ds-text-muted);font-size:9px;font-weight:700;text-transform:uppercase}
+.settings-page .hosting-privacy-head strong{color:var(--ds-text);font-size:13px}
+.settings-page .hosting-privacy-state{flex:0 0 auto;padding:4px 8px;border:1px solid var(--ds-border-subtle);border-radius:999px;color:var(--ds-text-secondary);font-size:10px;font-weight:650}
+.settings-page .hosting-privacy-check.pass .hosting-privacy-state{border-color:color-mix(in srgb,var(--ds-success) 44%,var(--ds-border-subtle));color:var(--ds-success)}
+.settings-page .hosting-privacy-check.blocked .hosting-privacy-state{border-color:color-mix(in srgb,var(--ds-danger) 48%,var(--ds-border-subtle));color:#ffadb4}
+.settings-page .hosting-privacy-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.settings-page .hosting-privacy-summary>span{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:8px 10px;background:var(--ds-bg-control);color:var(--ds-text-muted);font-size:10px}
+.settings-page .hosting-privacy-summary strong{color:var(--ds-text);font-size:12px}
+.settings-page .hosting-privacy-check details{color:var(--ds-text-secondary);font-size:10px}
+.settings-page .hosting-privacy-check summary{cursor:pointer;color:var(--ds-text-secondary);font-weight:650}
+.settings-page .hosting-privacy-check details.blocked summary{color:#ffadb4}
+.settings-page .hosting-privacy-check details ul{display:grid;gap:5px;margin:8px 0 0;padding:0 0 0 18px}
+.settings-page .hosting-privacy-check details li{overflow-wrap:anywhere}
+.settings-page .hosting-privacy-actions{display:flex;flex-wrap:wrap;gap:8px}
 .settings-page .hosting-validation{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;margin:0;padding:0;list-style:none}
 .settings-page .hosting-validation li{position:relative;min-width:0;padding:5px 6px 5px 22px;color:var(--ds-text-secondary);font-size:11px;overflow-wrap:anywhere}
 .settings-page .hosting-validation li::before{content:"";position:absolute;left:6px;top:10px;width:7px;height:7px;border-radius:50%;background:var(--ds-text-muted)}
@@ -745,6 +762,7 @@ border-right:0;border-bottom:1px solid var(--ds-border-subtle)
 .settings-page .hosting-type-grid,.settings-page .hosting-detected,.settings-page .hosting-validation{grid-template-columns:1fr}
 .settings-page .hosting-source-row{align-items:stretch;flex-direction:column}
 .settings-page .hosting-source-row>.button{width:100%}
+.settings-page .hosting-privacy-summary{grid-template-columns:1fr}
 .settings-page .hosting-publish-form,.settings-page .hosting-app-form{grid-template-columns:1fr}
 .settings-page .hosting-publish-form button,.settings-page .hosting-app-form button{width:100%}
 .settings-page .hosting-success-body{grid-template-columns:38px minmax(0,1fr)}

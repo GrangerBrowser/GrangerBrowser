@@ -25,7 +25,9 @@
 namespace granger {
 namespace {
 constexpr int kDefaultMaxFileBytes = 8 * 1024 * 1024;
-constexpr int kHostingStartupTimeoutMs = 1800000;
+constexpr int kStaticPreflightTimeoutMs = 120000;
+constexpr int kStaticSnapshotTimeoutMs = 180000;
+constexpr int kHostingStartupTimeoutMs = 240000;
 const QRegularExpression kServiceId(QStringLiteral("^[a-f0-9]{32}$"));
 const QRegularExpression kServiceTitle(QStringLiteral("^[^\\x00-\\x1f\\x7f]{1,80}$"));
 
@@ -67,6 +69,22 @@ HostingInspection inspectionFromDocument(const QJsonObject &document)
     }
     result.requiresEntrySelection = document.value(
         QStringLiteral("requiresEntrySelection")).toBool();
+    for (const QJsonValue &value : document.value(QStringLiteral("includedFiles")).toArray()) {
+        if (value.isString()) result.includedFiles.append(value.toString());
+    }
+    const auto findings = [](const QJsonValue &value) {
+        QList<HostingFinding> result;
+        for (const QJsonValue &item : value.toArray()) {
+            const QJsonObject object = item.toObject();
+            const QString path = object.value(QStringLiteral("path")).toString();
+            const QString reason = object.value(QStringLiteral("reason")).toString();
+            if (!path.isEmpty() && !reason.isEmpty()) result.append({path, reason});
+        }
+        return result;
+    };
+    result.excludedFiles = findings(document.value(QStringLiteral("excludedFiles")));
+    result.blockedFindings = findings(document.value(QStringLiteral("blockedFindings")));
+    result.snapshotHash = document.value(QStringLiteral("snapshotHash")).toString();
     for (const QJsonValue &value : document.value(QStringLiteral("errors")).toArray()) {
         if (value.isString()) result.errors.append(value.toString());
     }
@@ -492,11 +510,12 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
         const QJsonObject status = readObject(
             QDir(root).filePath(QStringLiteral("metadata/status.json")));
         const QString runtimeState = status.value(QStringLiteral("state")).toString();
-        if (runtimeState == QStringLiteral("online")
-            && status.value(QStringLiteral("pid")).toInteger() == result.pid
-            && status.value(QStringLiteral("canonicalName")).toString() == result.address) {
+        const bool currentRuntime = status.value(QStringLiteral("pid")).toInteger() == result.pid
+            && status.value(QStringLiteral("canonicalName")).toString() == result.address;
+        if (currentRuntime) result.stage = status.value(QStringLiteral("stage")).toString();
+        if (runtimeState == QStringLiteral("online") && currentRuntime) {
             result.status = QStringLiteral("online");
-        } else if (runtimeState == QStringLiteral("error")) {
+        } else if (runtimeState == QStringLiteral("error") && currentRuntime) {
             result.status = QStringLiteral("error");
             result.error = status.value(QStringLiteral("errorMessage")).toString();
             if (result.error.isEmpty()) result.error = m_lastErrors.value(result.id);
@@ -548,13 +567,14 @@ HostingInspection GrangerHostingManager::inspectStaticSite(const QString &source
         arguments.append({QStringLiteral("--entry-page"), entryPage});
     }
     if (!runUtility(arguments,
-                    &document, error)) {
+                    &document, error, kStaticPreflightTimeoutMs)) {
         return {};
     }
     HostingInspection result = inspectionFromDocument(document);
     if (!result.ok && error && error->isEmpty()) {
-        *error = result.errors.isEmpty()
-            ? QStringLiteral("Static site validation failed.") : result.errors.first();
+        *error = !result.errors.isEmpty() ? result.errors.first()
+            : !result.blockedFindings.isEmpty() ? QStringLiteral("Privacy check blocked publication.")
+                                                  : QStringLiteral("Static site validation failed.");
     }
     return result;
 }
@@ -584,15 +604,17 @@ quint64 GrangerHostingManager::inspectStaticSiteAsync(const QString &source,
                 if (ok) {
                     inspection = inspectionFromDocument(document);
                     if (!inspection.ok) {
-                        error = inspection.errors.isEmpty()
-                            ? QStringLiteral("Folder validation failed.")
-                            : QStringLiteral("Folder validation failed: %1")
-                                  .arg(inspection.errors.first());
+                        error = !inspection.errors.isEmpty()
+                            ? QStringLiteral("Folder validation failed: %1")
+                                  .arg(inspection.errors.first())
+                            : !inspection.blockedFindings.isEmpty()
+                                ? QStringLiteral("Privacy check blocked publication.")
+                                : QStringLiteral("Folder validation failed.");
                     }
                 }
                 finishOperation(operationId);
                 if (completion) completion(inspection, error);
-            });
+            }, kStaticPreflightTimeoutMs);
     });
     return operationId;
 }
@@ -638,7 +660,7 @@ bool GrangerHostingManager::createStaticSite(const QString &title,
                      QStringLiteral("--service-id"), id, QStringLiteral("--title"), normalizedTitle,
                      QStringLiteral("--type"), QStringLiteral("static"),
                      QStringLiteral("--source"), source, QStringLiteral("--entry-page"),
-                     inspection.entryPage}, &document, error)) {
+                     inspection.entryPage}, &document, error, kStaticSnapshotTimeoutMs)) {
         removeCreationArtifacts(id, nullptr);
         return false;
     }
@@ -783,8 +805,8 @@ quint64 GrangerHostingManager::createStaticSiteAsync(const QString &title,
                         finishOperation(operationId);
                         if (completion) completion(true, created, QString());
                         emit servicesChanged();
-                    });
-            });
+                    }, kStaticSnapshotTimeoutMs);
+            }, kStaticPreflightTimeoutMs);
     });
     return operationId;
 }
@@ -913,7 +935,7 @@ bool GrangerHostingManager::updateService(const QString &id,
     const bool wasRunning = m_processes.value(id)
         && m_processes.value(id)->state() != QProcess::NotRunning;
     if (wasRunning) stopProcess(id);
-    if (!runUtility(arguments, &document, error)) {
+    if (!runUtility(arguments, &document, error, kStaticSnapshotTimeoutMs)) {
         if (wasRunning) launchService(id, nullptr);
         return false;
     }
@@ -1048,6 +1070,11 @@ void GrangerHostingManager::watchStartup(const QString &id, QProcess *process)
         const int attempts = timer->property("attempts").toInt() + 1;
         timer->setProperty("attempts", attempts);
         const HostedServiceRecord current = service(id);
+        const QString previousStage = timer->property("stage").toString();
+        if (!current.stage.isEmpty() && current.stage != previousStage) {
+            timer->setProperty("stage", current.stage);
+            emit servicesChanged();
+        }
         const bool timedOut = attempts * timer->interval() >= kHostingStartupTimeoutMs;
         if (!guardedProcess || guardedProcess->state() == QProcess::NotRunning
             || current.status == QStringLiteral("online")

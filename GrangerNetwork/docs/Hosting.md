@@ -21,28 +21,32 @@ client-to-host connection.
 
 ## Static websites
 
-The native Qt folder picker passes an absolute path to the hosting runtime. The
-runtime resolves and scans that path without following directory symlinks,
-checks readability, and enforces file-count and per-file limits. A root
-`index.html` is selected automatically. If it is absent and more than one HTML
-file exists, the user must choose an entry page before publication; that choice
-is persisted with the service identity.
+The native Qt folder picker passes an absolute path only to the local hosting
+runtime and local service configuration. Privacy Preflight resolves and scans
+that path without following symlinks, junctions, or reparse points, checks
+canonical containment and readability, and enforces file-count and per-file
+limits. UNC roots and path escapes fail closed. A root `index.html` is selected
+automatically. If it is absent and more than one HTML file exists, the user must
+choose an entry page before publication; that choice is persisted with the
+service identity.
 
-Allowed extensions are:
+Preflight builds a filtered, atomic publication snapshot. It recursively omits
+version-control metadata, common IDE/cache directories, project documentation,
+debug output, logs, temporary files, and editor backups. High-confidence secret
+filenames, private-key markers, and local-user path disclosures block
+publication instead of being silently omitted. The UI separates exclusions from
+blocking findings and has no "publish anyway" path. The authoring directory is
+never modified.
 
-```text
-.html .css .js .json .png .jpg .jpeg .webp .svg .ico .gif .woff .woff2
-```
+There is no extension whitelist. WASM, binary resources, and unknown legitimate
+asset types are retained unless a specific privacy or filesystem rule blocks
+them. Request paths are percent-decoded once, interpreted as POSIX origin paths,
+resolved to canonical snapshot targets, and checked against the snapshot root.
+Traversal and directory listing are not implemented.
 
-Executable extensions such as `.exe`, `.bat`, `.cmd`, `.ps1`, and `.sh` are
-rejected. Unsupported extensions also fail validation. Request paths are
-percent-decoded once, interpreted as POSIX origin paths, resolved to canonical
-filesystem targets, and checked against the canonical source root. Traversal,
-absolute/network paths, broken links, and symlink escapes never reach a file
-response. Directory listing is not implemented.
-
-The static bridge implements GET and HEAD. POST returns `405`. MIME values come
-from a fixed table rather than the operating system registry.
+The static bridge implements GET and HEAD. POST returns `405`. Known web MIME
+types use a fixed table; other types use Python's standard MIME database and
+fall back to `application/octet-stream`.
 
 ## Local applications
 
@@ -74,18 +78,30 @@ granger-network/services/<random-id>/
     peer-cache.json
     reseed/
     status.json
+  publication/
+    current/
+      content/
+      manifest.json
 ```
 
 Configuration, identities, status, and sequence updates use same-directory
-temporary files followed by atomic replacement. Private keys are never placed
-in status output or browser diagnostics. `Stop hosting` disables startup and
+temporary files followed by atomic replacement. The publication manifest stores
+only relative paths, counts, byte totals, exclusions, blocked findings, entry
+point, and a deterministic snapshot SHA-256. Runtime startup revalidates that
+manifest against the physical snapshot. The absolute authoring path remains only
+in local `config.json`; it is never added to descriptors, DHT records, RPC,
+published content, or snapshot metadata. Private keys are never placed in status
+output or browser diagnostics. `Stop hosting` disables startup and
 tears down the child process. `Restart` preserves the service identity and
 canonical address while publishing fresh state. Deleting a service deletes its
 identity and cannot be undone.
 
 At browser startup, only services with `autoStart` enabled are restored. The
 manager has no idle polling loop. A bounded timer observes only an actively
-starting process and stops after online, failure, or timeout.
+starting process and stops after online, a PID-bound terminal failure, or a
+four-minute outer watchdog. Runtime status distinguishes network bootstrap,
+signed-record publication, and private-route construction. Retry preserves the
+service identity and does not accept stale status from a previous process.
 
 ## Platform packaging
 

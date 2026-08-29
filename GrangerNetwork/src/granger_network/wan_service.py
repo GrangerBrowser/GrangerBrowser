@@ -376,6 +376,12 @@ class WanServiceHost:
             if role == "middle"
         )
 
+    @property
+    def startup_failed_route_ids(self) -> frozenset[str]:
+        return frozenset(
+            descriptor.node_id for descriptor, _role in self._startup_failed_route
+        )
+
     def start_background(self) -> None:
         if self._thread is not None:
             raise RuntimeError("WAN service host is already running")
@@ -434,6 +440,7 @@ class WanServiceHost:
                     )
                     circuit.endpoint.channel.connection.settimeout(None)
                 except Exception:
+                    self._startup_failed_route = route
                     circuit.close()
                     raise
                 self._intro_circuits.append(circuit)

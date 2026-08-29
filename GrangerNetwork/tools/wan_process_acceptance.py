@@ -1330,7 +1330,6 @@ def run_acceptance(
                 "browser": browser_result,
                 "hostingBrowser": hosting_browser_result,
                 "hostingEntryPage": inspection.entryPage if hosting_source is not None else "",
-                "hostingSource": str(hosting_source) if hosting_source is not None else "",
                 "hostingSourceFiles": len(hosting_source_manifest),
                 "hostingSourceManifest": manifest_document(hosting_source_manifest),
                 "hostingSourceSHA256": manifest_sha256(hosting_source_manifest),
