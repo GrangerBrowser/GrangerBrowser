@@ -40,7 +40,7 @@ class WanMultiProcessAcceptanceTests(unittest.TestCase):
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                timeout=360.0,
+                timeout=480.0,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(report_path.read_text(encoding="utf-8"))

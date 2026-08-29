@@ -51,7 +51,10 @@ def connect_service(
         try:
             introduction_nodes.append(resolver.resolve_node(point.node_id))
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-            failures.append(type(error).__name__)
+            failures.append(
+                f"introduction node resolution failed ({point.node_id[:12]}): "
+                f"{type(error).__name__}: {error}"
+            )
     for introduction_node in introduction_nodes:
         try:
             candidates = selector.client_candidates(
@@ -66,18 +69,35 @@ def connect_service(
             if attempts >= route_attempts:
                 break
             attempts += 1
+            rendezvous_selection: list[WanRouteSelection] = []
+
+            def select_rendezvous_prefix(
+                rendezvous_node: NodeDescriptor,
+            ) -> tuple[tuple[NodeDescriptor, str], ...]:
+                alternate = selector.client_candidates(
+                    service.service_id,
+                    excluded_ids=set(excluded_ids or ()) | {rendezvous_node.node_id},
+                    limit=1,
+                )
+                if not alternate:
+                    raise OverlayRoutingError("no unique rendezvous route prefix is available")
+                rendezvous_selection[:] = [alternate[0]]
+                return alternate[0].route
+
             client = WanServiceClient(
                 runtime.identity,
                 service,
                 introduction,
                 prefix.route,
                 timeout=timeout,
+                rendezvous_route_selector=select_rendezvous_prefix,
             )
             try:
+                session = client.connect(introduction_node)
                 return WanClientConnection(
                     service,
-                    client.connect(introduction_node),
-                    prefix,
+                    session,
+                    rendezvous_selection[0] if rendezvous_selection else prefix,
                     introduction_node,
                     attempts,
                 )

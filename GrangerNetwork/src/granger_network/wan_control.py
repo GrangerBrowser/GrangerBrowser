@@ -18,6 +18,7 @@ from .rendezvous_control import validate_service_id
 
 MAX_CONTROL_DOCUMENT = 64 * 1024
 MAX_RENDEZVOUS_GRANT_LIFETIME = 5 * 60
+MAX_RENDEZVOUS_REGISTRATION_LIFETIME = 10 * 60
 RENDEZVOUS_GRANT_DOMAIN = b"granger-network-v0.4/rendezvous-grant\x00"
 RENDEZVOUS_COOKIE_TAG_DOMAIN = b"granger-network-v0.4/rendezvous-cookie-tag\x00"
 
@@ -233,7 +234,10 @@ class RendezvousRegistration:
         ):
             raise ProtocolError("rendezvous registration field length is invalid")
         current = int(time.time()) if now is None else now
-        if self.expires_at <= current or self.expires_at > current + MAX_RENDEZVOUS_GRANT_LIFETIME:
+        if (
+            self.expires_at <= current
+            or self.expires_at > current + MAX_RENDEZVOUS_REGISTRATION_LIFETIME
+        ):
             raise ReplayError("rendezvous registration is expired or too long")
 
     def encode(self) -> bytes:

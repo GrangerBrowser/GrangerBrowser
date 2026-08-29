@@ -7,6 +7,7 @@ import json
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from ._codec import atomic_write_text, decode_base64url, encode_base64url, parse_json_object
@@ -43,6 +44,9 @@ MAX_FIND_NODE_RESULTS = 32
 MAX_PEER_SAMPLE_RESULTS = 32
 MAX_DISCOVERY_QUERIES = 32
 MAX_PARALLEL_DISCOVERY_REQUESTS = 4
+MAX_RECORD_REQUEST_ROUNDS = 2
+MAX_ROUTE_CANDIDATE_CACHE_ENTRIES = 128
+ROUTE_CANDIDATE_CACHE_TTL_SECONDS = 5 * 60.0
 _ROUTING_KEY_DOMAIN = b"granger-network-v0.4/wan-routing-key\x00"
 _PRIVATE_DISCOVERY_ROUTE_DOMAIN = b"granger-network-v0.5/private-discovery-route\x00"
 
@@ -325,6 +329,9 @@ class WanDiscoveryClient:
         self._joined = False
         self._private_routes_ready = False
         self._route_nodes: dict[str, NodeDescriptor] = {}
+        self._route_candidate_cache: OrderedDict[
+            tuple[bytes, str], tuple[float, tuple[NodeDescriptor, ...]]
+        ] = OrderedDict()
         self.direct_first_contact_requests = 0
         self.private_discovery_requests = 0
         self.last_private_route: tuple[str, ...] = ()
@@ -463,14 +470,13 @@ class WanDiscoveryClient:
                 response = None
                 last_error: BaseException | None = None
                 routes = self._private_route_candidates(peer)
-                attempt_timeout = max(0.1, self.timeout / len(routes))
                 for route in routes:
                     circuit = None
                     try:
                         circuit = CircuitBuilder(
                             self.identity,
                             PeerRole.CLIENT,
-                            timeout=attempt_timeout,
+                            timeout=self.timeout,
                         ).open(route)
                         self.private_discovery_requests += 1
                         self.last_private_route = tuple(
@@ -509,6 +515,93 @@ class WanDiscoveryClient:
         finally:
             if connection is not None:
                 connection.close()
+
+    def route_candidates(
+        self,
+        target: bytes,
+        capability: str,
+    ) -> tuple[NodeDescriptor, ...]:
+        if not isinstance(target, bytes) or len(target) != 32:
+            raise DiscoveryError("route candidate target is invalid")
+        if not isinstance(capability, str) or not capability:
+            raise DiscoveryError("route candidate capability is invalid")
+        joined = self.join_network()
+        if joined.state is NetworkState.OFFLINE:
+            raise DiscoveryError("Granger Network first contact failed")
+        selected = {
+            peer.node_id: peer for peer in self.pool.candidates(capability)
+        }
+        with self._lock:
+            route_nodes = tuple(self._route_nodes.values())
+            authenticated = frozenset(self._authenticated_nodes)
+            failed_until = dict(self._failed_until)
+            cache_key = (target, capability)
+            cached = self._route_candidate_cache.get(cache_key)
+            current = time.monotonic()
+            if cached is not None and cached[0] > current:
+                discovered = cached[1]
+                self._route_candidate_cache.move_to_end(cache_key)
+            else:
+                self._route_candidate_cache.pop(cache_key, None)
+                discovered = None
+        for peer in route_nodes:
+            try:
+                peer.verify(
+                    expected_network_id=self.pool.network_id,
+                    expected_protocol_version=self.pool.protocol_version,
+                )
+            except DescriptorError:
+                continue
+            if capability not in peer.capabilities or peer.reachability != "reachable":
+                continue
+            previous = selected.get(peer.node_id)
+            if previous is None or peer.issued_at > previous.issued_at:
+                selected[peer.node_id] = peer
+        if discovered is None and (
+            not joined.dht_ready or len(selected) < self.replication_factor
+        ):
+            try:
+                discovered = self.find_nodes(target, capability)
+            except (DiscoveryError, OSError):
+                if len(selected) < self.minimum_replicas:
+                    raise
+                discovered = ()
+            if discovered:
+                with self._lock:
+                    self._route_candidate_cache[cache_key] = (
+                        time.monotonic() + ROUTE_CANDIDATE_CACHE_TTL_SECONDS,
+                        discovered,
+                    )
+                    self._route_candidate_cache.move_to_end(cache_key)
+                    while (
+                        len(self._route_candidate_cache)
+                        > MAX_ROUTE_CANDIDATE_CACHE_ENTRIES
+                    ):
+                        self._route_candidate_cache.popitem(last=False)
+        for peer in discovered or ():
+            try:
+                peer.verify(
+                    expected_network_id=self.pool.network_id,
+                    expected_protocol_version=self.pool.protocol_version,
+                )
+            except DescriptorError:
+                continue
+            if capability not in peer.capabilities or peer.reachability != "reachable":
+                continue
+            previous = selected.get(peer.node_id)
+            if previous is None or peer.issued_at > previous.issued_at:
+                selected[peer.node_id] = peer
+        target_value = int.from_bytes(target, "big")
+        current = time.monotonic()
+        result = list(selected.values())
+        result.sort(
+            key=lambda peer: (
+                peer.node_id not in authenticated,
+                failed_until.get(peer.node_id, 0.0) > current,
+                int.from_bytes(_node_id_bytes(peer.node_id), "big") ^ target_value,
+            )
+        )
+        return tuple(result)
 
     def _request_batch(
         self,
@@ -872,47 +965,70 @@ class WanDiscoveryClient:
         peers = self.find_nodes(target, "discovery")
         if len(peers) < self.minimum_replicas:
             raise DiscoveryError("WAN discovery found too few storage peers")
-        stored = 0
-        for peer in peers:
-            try:
-                self._request(
-                    peer,
+        stored_peers: set[str] = set()
+        payload = encode_record_envelope(envelope)
+        for round_index in range(MAX_RECORD_REQUEST_ROUNDS):
+            pending = [peer for peer in peers if peer.node_id not in stored_peers]
+            offset = 0
+            while offset < len(pending) and len(stored_peers) < self.replication_factor:
+                remaining = self.replication_factor - len(stored_peers)
+                batch_size = min(MAX_PARALLEL_DISCOVERY_REQUESTS, remaining)
+                batch = pending[offset : offset + batch_size]
+                if not batch:
+                    break
+                offset += len(batch)
+                responses = self._request_batch(
+                    batch,
                     RpcType.STORE_RECORD,
-                    encode_record_envelope(envelope),
+                    payload,
                     RpcType.STORE_RECORD,
                 )
-                stored += 1
-                if stored >= self.replication_factor:
-                    break
-            except (GrangerNetworkError, OSError):
-                continue
-        if stored < self.minimum_replicas:
+                stored_peers.update(
+                    peer.node_id
+                    for peer, content in responses
+                    if content is not None
+                )
+            if len(stored_peers) >= self.replication_factor:
+                break
+            if round_index + 1 < MAX_RECORD_REQUEST_ROUNDS:
+                time.sleep(0.1 * (round_index + 1))
+        if len(stored_peers) < self.minimum_replicas:
             raise DiscoveryError("WAN publication did not reach its replica quorum")
         with self._lock:
             self._highest_seen[(envelope.kind, envelope.key)] = envelope.sequence
-        return stored
+        return len(stored_peers)
 
     def lookup(self, kind: str, key: str, now: int | None = None) -> DistributedRecord:
         target = wan_routing_key(kind, key)
         peers = self.find_nodes(target, "discovery")
-        candidates: list[RecordEnvelope] = []
+        candidates_by_peer: dict[str, RecordEnvelope] = {}
         payload = encode_find_record(kind, key)
-        for offset in range(0, len(peers), MAX_PARALLEL_DISCOVERY_REQUESTS):
-            responses = self._request_batch(
-                list(peers[offset : offset + MAX_PARALLEL_DISCOVERY_REQUESTS]),
-                RpcType.FIND_RECORD,
-                payload,
-                RpcType.FIND_RECORD,
-            )
-            for _peer, content in responses:
-                if content is None:
-                    continue
-                try:
-                    envelope = decode_optional_record(content, now=now)
-                except GrangerNetworkError:
-                    continue
-                if envelope is not None and envelope.kind == kind and envelope.key == key:
-                    candidates.append(envelope)
+        for round_index in range(MAX_RECORD_REQUEST_ROUNDS):
+            pending = [
+                peer for peer in peers
+                if peer.node_id not in candidates_by_peer
+            ]
+            for offset in range(0, len(pending), MAX_PARALLEL_DISCOVERY_REQUESTS):
+                responses = self._request_batch(
+                    list(pending[offset : offset + MAX_PARALLEL_DISCOVERY_REQUESTS]),
+                    RpcType.FIND_RECORD,
+                    payload,
+                    RpcType.FIND_RECORD,
+                )
+                for peer, content in responses:
+                    if content is None:
+                        continue
+                    try:
+                        envelope = decode_optional_record(content, now=now)
+                    except GrangerNetworkError:
+                        continue
+                    if envelope is not None and envelope.kind == kind and envelope.key == key:
+                        candidates_by_peer[peer.node_id] = envelope
+            if len(candidates_by_peer) >= self.minimum_replicas:
+                break
+            if round_index + 1 < MAX_RECORD_REQUEST_ROUNDS:
+                time.sleep(0.1 * (round_index + 1))
+        candidates = list(candidates_by_peer.values())
         if len(candidates) < self.minimum_replicas:
             raise ResolutionError(f"WAN record replica quorum is unavailable: {kind}:{key}")
         highest = max(candidate.sequence for candidate in candidates)

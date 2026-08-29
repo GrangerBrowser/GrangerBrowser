@@ -7,16 +7,20 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from granger_network.descriptor import ServiceDescriptor
+from granger_network.errors import OverlayRoutingError
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
 from granger_network.hosting import StaticSiteBridge
 from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
 from granger_network.node import WanNodeServer
 from granger_network.peer import NodeDescriptor, RelayPolicy
+from granger_network.peer_rpc import RpcFrame, RpcType
 from granger_network.transport import RendezvousEndpoint
+from granger_network.wan_control import IntroductionRequest, encode_intro_request
 from granger_network.wan_service import WanServiceClient, WanServiceHost
 
 
@@ -78,6 +82,73 @@ def available_port() -> int:
         return int(probe.getsockname()[1])
 
 
+class WanOperationTimeoutTests(unittest.TestCase):
+    def test_introduction_request_uses_the_configured_operation_timeout(self) -> None:
+        identities = [ServiceIdentity.generate() for _ in range(4)]
+        capabilities = (("access",), ("entry",), ("middle",), ("introduction",))
+        descriptors = tuple(
+            NodeDescriptor.create(
+                identity,
+                RendezvousEndpoint("127.0.0.1", available_port()),
+                capability,
+                RelayPolicy(enabled=True, max_bandwidth_kib_per_second=64 * 1024),
+                lifetime=3600,
+            )
+            for identity, capability in zip(identities, capabilities, strict=True)
+        )
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "wan-service",
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [descriptors[3].node_id],
+            sequence=1,
+            lifetime=900,
+        )
+
+        class FakeConnection:
+            timeout: float | None = None
+
+            def settimeout(self, value: float | None) -> None:
+                self.timeout = value
+
+        connection = FakeConnection()
+
+        class FakeRpc:
+            def request(self, *_args, **_kwargs):
+                self.assert_timeout()
+                raise TimeoutError("simulated silent introduction point")
+
+            @staticmethod
+            def assert_timeout() -> None:
+                if connection.timeout != 0.25:
+                    raise AssertionError("WAN control request was left unbounded")
+
+        class FakeCircuit:
+            endpoint = SimpleNamespace(
+                channel=SimpleNamespace(connection=connection),
+                rpc=FakeRpc(),
+            )
+
+            def close(self) -> None:
+                pass
+
+        client = WanServiceClient(
+            ServiceIdentity.generate(),
+            service,
+            introduction,
+            tuple(zip(descriptors[:3], ("access", "entry", "middle"), strict=True)),
+            timeout=0.25,
+        )
+        with patch("granger_network.wan_service.CircuitBuilder.open", return_value=FakeCircuit()):
+            with self.assertRaisesRegex(OverlayRoutingError, "introduction stage failed during request"):
+                client.connect(descriptors[3])
+
+
 class WanServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         ForumHandler.messages = []
@@ -87,28 +158,28 @@ class WanServiceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="granger-wan-service-")
         self.root = Path(self.temporary.name)
         roles = (
-            "access",
-            "entry",
-            "middle",
-            "access",
-            "service-relay",
-            "middle",
-            "introduction",
-            "rendezvous",
+            ("access",),
+            ("entry",),
+            ("middle",),
+            ("access",),
+            ("service-relay",),
+            ("middle",),
+            ("introduction",),
+            ("middle", "rendezvous"),
         )
         self.identities = [ServiceIdentity.generate() for _ in roles]
         self.descriptors = [
             NodeDescriptor.create(
                 identity,
                 RendezvousEndpoint("127.0.0.1", available_port()),
-                (role,),
+                role,
                 RelayPolicy(
                     enabled=True,
                     max_circuits=64,
                     max_streams=64,
                     max_connections=128,
                     max_bandwidth_kib_per_second=64 * 1024,
-                    idle_timeout_seconds=30,
+                    idle_timeout_seconds=5,
                 ),
                 lifetime=3600,
             )
@@ -377,6 +448,169 @@ class WanServiceTests(unittest.TestCase):
                     self.assertFalse(observation.contains(content))
         self.assertEqual(host.errors, [])
 
+    def test_active_cover_traffic_does_not_hit_an_absolute_bridge_lifetime(self) -> None:
+        (
+            client_access,
+            client_entry,
+            client_middle,
+            service_access,
+            service_entry,
+            host_middle,
+            introduction_node,
+            rendezvous_node,
+        ) = self.descriptors
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "long-lived-introduction",
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [introduction_node.node_id],
+            sequence=1,
+            lifetime=900,
+        )
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            (
+                (service_access, "access"),
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (introduction_node, "introduction"),
+            ),
+            (
+                (service_access, "access"),
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (rendezvous_node, "rendezvous"),
+            ),
+            LoopbackHttpBridge(
+                LoopbackHttpTarget("127.0.0.1", int(self.backend.server_address[1]))
+            ),
+            timeout=5.0,
+            rendezvous_lifetime=30,
+        )
+        try:
+            with patch.dict("os.environ", {"GRANGER_COVER_PROFILE": "standard"}):
+                host.start_background()
+                host.wait_ready(15.0)
+                time.sleep(15.5)
+                self.assertFalse(host.recovery_requested, host.recovery_reason)
+
+                client = WanServiceClient(
+                    ServiceIdentity.generate(),
+                    service,
+                    introduction,
+                    (
+                        (client_access, "access"),
+                        (client_entry, "entry"),
+                        (client_middle, "middle"),
+                    ),
+                    timeout=5.0,
+                )
+                with client.connect(introduction_node) as session:
+                    response = session.fetch("/")
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.body, HTML)
+            self.assertEqual(host.errors, [])
+        finally:
+            host.stop()
+
+    def test_rendezvous_target_is_removed_from_the_client_route_prefix(self) -> None:
+        (
+            client_access,
+            client_entry,
+            client_middle,
+            service_access,
+            service_entry,
+            host_middle,
+            introduction_node,
+            rendezvous_node,
+        ) = self.descriptors
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "rendezvous-reselection",
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [introduction_node.node_id],
+            sequence=1,
+            lifetime=900,
+        )
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            (
+                (service_access, "access"),
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (introduction_node, "introduction"),
+            ),
+            (
+                (service_access, "access"),
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (rendezvous_node, "rendezvous"),
+            ),
+            LoopbackHttpBridge(
+                LoopbackHttpTarget("127.0.0.1", int(self.backend.server_address[1]))
+            ),
+            timeout=5.0,
+            rendezvous_lifetime=30,
+        )
+        selected_targets: list[str] = []
+
+        def select_alternate(
+            target: NodeDescriptor,
+        ) -> tuple[tuple[NodeDescriptor, str], ...]:
+            selected_targets.append(target.node_id)
+            return (
+                (client_access, "access"),
+                (client_entry, "entry"),
+                (client_middle, "middle"),
+            )
+
+        try:
+            host.start_background()
+            host.wait_ready(15.0)
+            client = WanServiceClient(
+                ServiceIdentity.generate(),
+                service,
+                introduction,
+                (
+                    (client_access, "access"),
+                    (client_entry, "entry"),
+                    (rendezvous_node, "middle"),
+                ),
+                timeout=5.0,
+                rendezvous_route_selector=select_alternate,
+            )
+            with client.connect(introduction_node) as session:
+                response = session.fetch("/")
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.body, HTML)
+                self.assertEqual(
+                    [node.node_id for node, _role in session.circuit.route],
+                    [
+                        client_access.node_id,
+                        client_entry.node_id,
+                        client_middle.node_id,
+                        rendezvous_node.node_id,
+                    ],
+                )
+            self.assertEqual(selected_targets, [rendezvous_node.node_id])
+            self.assertFalse(host.recovery_requested, host.recovery_reason)
+        finally:
+            host.stop()
+
     def test_host_requests_route_recovery_when_introduction_circuit_breaks(self) -> None:
         (
             _client_access,
@@ -440,6 +674,91 @@ class WanServiceTests(unittest.TestCase):
             self.assertEqual(host.errors, [])
         finally:
             host.stop()
+
+    def test_busy_rendezvous_slot_rejects_request_without_route_recovery(self) -> None:
+        (
+            _client_access,
+            _client_entry,
+            _client_middle,
+            service_access,
+            service_entry,
+            host_middle,
+            introduction_node,
+            rendezvous_node,
+        ) = self.descriptors
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity,
+            "distributed-overlay",
+            lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity,
+            service,
+            [introduction_node.node_id],
+            sequence=1,
+            lifetime=900,
+        )
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            (
+                (service_access, "access"),
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (introduction_node, "introduction"),
+            ),
+            (
+                (service_access, "access"),
+                (service_entry, "service-relay"),
+                (host_middle, "middle"),
+                (rendezvous_node, "rendezvous"),
+            ),
+            LoopbackHttpBridge(
+                LoopbackHttpTarget("127.0.0.1", int(self.backend.server_address[1]))
+            ),
+            timeout=0.01,
+            rendezvous_lifetime=30,
+        )
+        request = RpcFrame(
+            RpcType.INTRO_DELIVER,
+            0,
+            b"r" * 16,
+            0,
+            encode_intro_request(
+                IntroductionRequest(
+                    service.service_id,
+                    introduction.points[0].token,
+                    b"n" * 16,
+                )
+            ),
+        )
+        sent: list[tuple[RpcType, bytes, dict[str, object]]] = []
+
+        class FakeRpc:
+            def receive(self) -> RpcFrame:
+                return request
+
+            def send(self, message_type: RpcType, payload: bytes, **options: object) -> bytes:
+                sent.append((message_type, payload, options))
+                host._stop.set()
+                return request.request_id
+
+        class FakeEndpoint:
+            rpc = FakeRpc()
+
+        class FakeCircuit:
+            endpoint = FakeEndpoint()
+
+        host._answer_introductions(FakeCircuit())
+
+        self.assertFalse(host.recovery_requested)
+        self.assertEqual(host.session_failures, ["introduction:RENDEZVOUS_BUSY"])
+        self.assertEqual(sent[0][0], RpcType.ERROR)
+        self.assertEqual(sent[0][2]["request_id"], request.request_id)
+        self.assertTrue(sent[0][2]["response"])
+        self.assertTrue(sent[0][2]["error"])
 
 
 if __name__ == "__main__":

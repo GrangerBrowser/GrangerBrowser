@@ -304,46 +304,57 @@ class _WanGateway:
         headers: dict[str, str],
         body: bytes,
     ) -> GrangerResponse:
-        slot, retired = self._acquire_session(name)
-        if retired is not None:
-            retired.connected.session.close()
-        failed = False
-        transferred = 0
-        try:
-            response = slot.connected.session.fetch(
-                path,
-                method=method,
-                headers=headers,
-                body=body,
-            )
-            transferred = (
-                len(body)
-                + len(path.encode("utf-8"))
-                + len(response.body)
-                + sum(
-                    len(key.encode("utf-8")) + len(value.encode("utf-8"))
-                    for key, value in (*headers.items(), *response.headers.items())
+        maximum_attempts = 2 if method.upper() in {"GET", "HEAD"} else 1
+        for attempt in range(maximum_attempts):
+            slot, retired = self._acquire_session(name)
+            if retired is not None:
+                retired.connected.session.close()
+            failed = False
+            retry_with_fresh_session = False
+            transferred = 0
+            try:
+                response = slot.connected.session.fetch(
+                    path,
+                    method=method,
+                    headers=headers,
+                    body=body,
                 )
-            )
-            return GrangerResponse(
-                response.status,
-                response.reason,
-                response.headers,
-                response.body,
-                slot.connected.service.canonical_name,
-            )
-        except (GrangerNetworkError, OSError, TimeoutError, ValueError):
-            failed = True
-            raise
-        finally:
-            ready_to_close = self._release_session(
-                name,
-                slot,
-                transferred_bytes=transferred,
-                failed=failed,
-            )
-            if ready_to_close is not None:
-                ready_to_close.connected.session.close()
+                transferred = (
+                    len(body)
+                    + len(path.encode("utf-8"))
+                    + len(response.body)
+                    + sum(
+                        len(key.encode("utf-8")) + len(value.encode("utf-8"))
+                        for key, value in (*headers.items(), *response.headers.items())
+                    )
+                )
+                return GrangerResponse(
+                    response.status,
+                    response.reason,
+                    response.headers,
+                    response.body,
+                    slot.connected.service.canonical_name,
+                )
+            except (GrangerNetworkError, OSError, TimeoutError, ValueError):
+                failed = True
+                retry_with_fresh_session = (
+                    attempt + 1 < maximum_attempts
+                    and slot.connected.session.application_mux.failed
+                )
+                if not retry_with_fresh_session:
+                    raise
+            finally:
+                ready_to_close = self._release_session(
+                    name,
+                    slot,
+                    transferred_bytes=transferred,
+                    failed=failed,
+                )
+                if ready_to_close is not None:
+                    ready_to_close.connected.session.close()
+            if retry_with_fresh_session:
+                continue
+        raise RendezvousError("idempotent service request retry was exhausted")
 
     def close(self) -> None:
         with self._lock:

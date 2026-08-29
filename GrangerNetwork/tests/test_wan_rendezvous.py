@@ -12,6 +12,7 @@ from pathlib import Path
 from granger_network.cells import CellMultiplexer
 from granger_network.circuit import CircuitBuilder
 from granger_network.descriptor import ServiceDescriptor
+from granger_network.errors import ProtocolError, ReplayError
 from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
 from granger_network.node import WanNodeServer
@@ -20,6 +21,8 @@ from granger_network.peer_rpc import PeerRole, RpcType
 from granger_network.protocol import VERSION_3, client_handshake, server_handshake
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_control import (
+    MAX_RENDEZVOUS_GRANT_LIFETIME,
+    MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
     IntroductionRequest,
     RendezvousGrant,
     RendezvousJoin,
@@ -104,6 +107,41 @@ class WanRendezvousTests(unittest.TestCase):
         for node in self.nodes:
             node.stop()
         self.temporary.cleanup()
+
+    def test_registration_lifetime_does_not_expand_grant_replay_window(self) -> None:
+        now = int(time.time())
+        registration = RendezvousRegistration(
+            b"t" * 32,
+            b"n" * 16,
+            now + MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
+            b"c" * 16,
+        )
+        registration.verify(now=now)
+        with self.assertRaises(ReplayError):
+            RendezvousRegistration(
+                b"t" * 32,
+                b"n" * 16,
+                now + MAX_RENDEZVOUS_REGISTRATION_LIFETIME + 1,
+                b"c" * 16,
+            ).verify(now=now)
+
+        RendezvousGrant.create(
+            self.service_identity,
+            self.service,
+            b"r" * 16,
+            self.rendezvous_node,
+            now=now,
+            lifetime=MAX_RENDEZVOUS_GRANT_LIFETIME,
+        )
+        with self.assertRaises(ProtocolError):
+            RendezvousGrant.create(
+                self.service_identity,
+                self.service,
+                b"r" * 16,
+                self.rendezvous_node,
+                now=now,
+                lifetime=MAX_RENDEZVOUS_GRANT_LIFETIME + 1,
+            )
 
     def test_independent_intro_and_rendezvous_paths_create_e2e_service_channel(self) -> None:
         host_builder = CircuitBuilder(self.service_identity, PeerRole.SERVICE, timeout=5.0)
@@ -304,6 +342,99 @@ class WanRendezvousTests(unittest.TestCase):
         client_rendezvous.close()
         host_rendezvous.close()
         host_intro.close()
+
+    def test_new_introduction_registration_atomically_replaces_active_session(self) -> None:
+        host_route = (
+            (self.service_access, "access"),
+            (self.service_entry, "service-relay"),
+            (self.host_middle, "middle"),
+            (self.introduction_node, "introduction"),
+        )
+        client_route = (
+            (self.client_access, "access"),
+            (self.client_entry, "entry"),
+            (self.client_middle, "middle"),
+            (self.introduction_node, "introduction"),
+        )
+        host_builder = CircuitBuilder(self.service_identity, PeerRole.SERVICE, timeout=5.0)
+        client_identity = ServiceIdentity.generate()
+        client_builder = CircuitBuilder(client_identity, PeerRole.CLIENT, timeout=5.0)
+        old_circuit = host_builder.open(host_route)
+        replacement_circuit = None
+        client_circuit = None
+        answer_thread = None
+        answer_failures: list[BaseException] = []
+        try:
+            old_circuit.endpoint.rpc.request(
+                RpcType.INTRO_REGISTER,
+                encode_intro_registration(self.service, self.introduction),
+                expected=RpcType.INTRO_REGISTER,
+            )
+            replacement = IntroductionDescriptor.create(
+                self.service_identity,
+                self.service,
+                [self.introduction_node.node_id],
+                sequence=2,
+                lifetime=900,
+            )
+            replacement_circuit = host_builder.open(host_route)
+            replacement_circuit.endpoint.rpc.request(
+                RpcType.INTRO_REGISTER,
+                encode_intro_registration(self.service, replacement),
+                expected=RpcType.INTRO_REGISTER,
+            )
+
+            def answer_replacement() -> None:
+                try:
+                    delivered = replacement_circuit.endpoint.rpc.receive()
+                    request = decode_intro_request(delivered.payload)
+                    grant = RendezvousGrant.create(
+                        self.service_identity,
+                        self.service,
+                        request.nonce,
+                        self.rendezvous_node,
+                        cookie=secrets.token_bytes(32),
+                        lifetime=100,
+                    )
+                    replacement_circuit.endpoint.rpc.send(
+                        RpcType.INTRO_DELIVER,
+                        grant.encode(),
+                        request_id=delivered.request_id,
+                        response=True,
+                    )
+                except BaseException as error:
+                    answer_failures.append(error)
+
+            answer_thread = threading.Thread(target=answer_replacement, daemon=True)
+            answer_thread.start()
+            client_circuit = client_builder.open(client_route)
+            request_nonce = secrets.token_bytes(16)
+            response = client_circuit.endpoint.rpc.request(
+                RpcType.INTRO_REQUEST,
+                encode_intro_request(
+                    IntroductionRequest(
+                        self.service.service_id,
+                        replacement.points[0].token,
+                        request_nonce,
+                    )
+                ),
+                expected=RpcType.INTRO_REQUEST,
+            )
+            grant = RendezvousGrant.decode(
+                response.payload,
+                self.service,
+                request_nonce=request_nonce,
+            )
+            self.assertEqual(grant.rendezvous, self.rendezvous_node)
+            answer_thread.join(timeout=5.0)
+            self.assertFalse(answer_thread.is_alive())
+            self.assertEqual(answer_failures, [])
+        finally:
+            if client_circuit is not None:
+                client_circuit.close()
+            if replacement_circuit is not None:
+                replacement_circuit.close()
+            old_circuit.close()
 
 
 if __name__ == "__main__":

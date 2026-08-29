@@ -18,6 +18,7 @@ from granger_network.hosting import (
     IDENTITY_FILE,
     SERVICE_DESCRIPTOR_FILE,
     StaticSiteBridge,
+    _service_route_startup_timeout,
     initialize_hosted_service,
     inspect_static_site,
     load_hosted_service,
@@ -86,6 +87,11 @@ class StaticHostingTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_service_route_startup_budget_is_bounded_and_network_aware(self) -> None:
+        self.assertEqual(_service_route_startup_timeout(1.0, 3), 15.0)
+        self.assertEqual(_service_route_startup_timeout(30.0, 3), 240.0)
+        self.assertEqual(_service_route_startup_timeout(30.0, 30), 240.0)
 
     def test_inspection_reports_site_assets(self) -> None:
         result = inspect_static_site(self.site)

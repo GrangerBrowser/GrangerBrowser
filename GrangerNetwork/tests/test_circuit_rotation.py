@@ -11,18 +11,28 @@ from granger_network.browser_gateway import (
     _WanGateway,
 )
 from granger_network.cells import CoverTrafficProfile
+from granger_network.errors import ProtocolError
 from granger_network.http_bridge import HttpResult
 
 
 class _FakeSession:
-    def __init__(self, *, block: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        block: threading.Event | None = None,
+        fail_request: bool = False,
+    ) -> None:
         self.application_mux = SimpleNamespace(failed=False)
         self.block = block
+        self.fail_request = fail_request
         self.started = threading.Event()
         self.closed = False
 
     def fetch(self, *_args, **_kwargs) -> HttpResult:
         self.started.set()
+        if self.fail_request:
+            self.application_mux.failed = True
+            raise ProtocolError("test session closed")
         if self.block is not None:
             self.block.wait(3.0)
         return HttpResult(200, "OK", {"content-type": "text/plain"}, b"ok")
@@ -55,6 +65,33 @@ def _gateway(policy: CircuitRotationPolicy) -> _WanGateway:
 
 
 class CircuitRotationTests(unittest.TestCase):
+    def test_idempotent_request_retries_once_after_session_failure(self) -> None:
+        first = _FakeSession(fail_request=True)
+        second = _FakeSession()
+        gateway = _gateway(CircuitRotationPolicy())
+        with patch(
+            "granger_network.browser_gateway.connect_service",
+            side_effect=(_connection(first), _connection(second)),
+        ) as connect:
+            response = gateway.fetch_gateway("test.granger", "/", "GET", {}, b"")
+        self.assertEqual(response.body, b"ok")
+        self.assertEqual(connect.call_count, 2)
+        self.assertTrue(first.closed)
+        gateway.close()
+
+    def test_post_is_not_retried_after_ambiguous_session_failure(self) -> None:
+        first = _FakeSession(fail_request=True)
+        gateway = _gateway(CircuitRotationPolicy())
+        with patch(
+            "granger_network.browser_gateway.connect_service",
+            return_value=_connection(first),
+        ) as connect:
+            with self.assertRaises(ProtocolError):
+                gateway.fetch_gateway("test.granger", "/message", "POST", {}, b"value")
+        self.assertEqual(connect.call_count, 1)
+        self.assertTrue(first.closed)
+        gateway.close()
+
     def test_request_limit_builds_replacement_before_retiring_old_circuit(self) -> None:
         first = _FakeSession()
         second = _FakeSession()

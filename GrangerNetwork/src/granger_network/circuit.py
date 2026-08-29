@@ -199,6 +199,7 @@ class CircuitBuilder:
                 first_identity,
                 self.role,
                 timeout=self.timeout,
+                attempts=2,
             )
             peer.channel.connection.settimeout(self.timeout)
             for index in range(len(normalized) - 1):

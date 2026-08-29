@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from granger_network.bootstrap import BootstrapPool, BootstrapSet, PeerCache
 from granger_network.errors import DiscoveryError, IdentityVerificationError, ProtocolError
@@ -59,6 +60,87 @@ def make_descriptor(
 
 
 class PeerRpcTests(unittest.TestCase):
+    def test_transport_timeout_retries_within_one_total_budget(self) -> None:
+        identity = ServiceIdentity.generate()
+        descriptor = make_descriptor(ServiceIdentity.generate(), available_port())
+
+        class FakeSocket:
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+                self.closed = False
+                self.timeout = 0.0
+
+            def settimeout(self, value: float) -> None:
+                self.timeout = value
+
+            def connect(self, _endpoint: tuple[str, int]) -> None:
+                if self.fail:
+                    raise TimeoutError("simulated flow blackhole")
+
+            def close(self) -> None:
+                self.closed = True
+
+        sockets = [FakeSocket(True), FakeSocket(False)]
+        authenticated = object()
+        with patch(
+            "granger_network.peer_rpc.authenticate_client_stream",
+            return_value=authenticated,
+        ) as authenticate:
+            result = connect_authenticated_peer(
+                descriptor,
+                identity,
+                PeerRole.RELAY,
+                timeout=10.0,
+                attempts=2,
+                socket_factory=lambda *_args: sockets.pop(0),
+            )
+        self.assertIs(result, authenticated)
+        self.assertTrue(authenticate.called)
+        self.assertTrue(sockets == [])
+
+    def test_identity_failure_is_not_retried(self) -> None:
+        identity = ServiceIdentity.generate()
+        descriptor = make_descriptor(ServiceIdentity.generate(), available_port())
+
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def settimeout(self, _value: float) -> None:
+                pass
+
+            def connect(self, _endpoint: tuple[str, int]) -> None:
+                pass
+
+            def close(self) -> None:
+                self.closed = True
+
+        sockets = [FakeSocket(), FakeSocket()]
+        calls = 0
+
+        def socket_factory(*_args):
+            nonlocal calls
+            result = sockets[calls]
+            calls += 1
+            return result
+
+        with patch(
+            "granger_network.peer_rpc.authenticate_client_stream",
+            side_effect=IdentityVerificationError("simulated identity mismatch"),
+        ):
+            with self.assertRaises(IdentityVerificationError):
+                connect_authenticated_peer(
+                    descriptor,
+                    identity,
+                    PeerRole.RELAY,
+                    timeout=10.0,
+                    attempts=2,
+                    socket_factory=socket_factory,
+                )
+        self.assertEqual(calls, 1)
+        self.assertTrue(sockets[0].closed)
+        self.assertFalse(sockets[1].closed)
+
     def test_real_socket_peer_authentication_and_ping(self) -> None:
         relay_identity = ServiceIdentity.generate()
         client_identity = ServiceIdentity.generate()

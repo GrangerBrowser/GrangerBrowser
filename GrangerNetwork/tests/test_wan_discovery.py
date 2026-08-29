@@ -18,7 +18,11 @@ from granger_network.node import WanNodeServer
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import PeerRole, RpcType, connect_authenticated_peer
 from granger_network.transport import RendezvousEndpoint
-from granger_network.wan_discovery import WanDiscoveryClient, encode_record_envelope
+from granger_network.wan_discovery import (
+    WanDiscoveryClient,
+    encode_optional_record,
+    encode_record_envelope,
+)
 from granger_network.network_health import NetworkState
 
 
@@ -105,6 +109,99 @@ class WanDiscoveryTests(unittest.TestCase):
         self.assertTrue(health.dht_ready)
         self.assertGreaterEqual(health.authenticated_peers, 2)
 
+    def test_record_replication_and_lookup_retry_transient_private_route_failures(self) -> None:
+        service = ServiceDescriptor.create_remote(
+            ServiceIdentity.generate(),
+            "wan-retry",
+            issued_at=self.now,
+            lifetime=1800,
+        )
+        envelope = encode_record(service, now=self.now)
+        encoded = encode_optional_record(envelope)
+        absent = encode_optional_record(None)
+        peers = tuple(self.descriptors[:3])
+        publish_calls = 0
+
+        def publish_batch(batch, *_args, **_kwargs):
+            nonlocal publish_calls
+            publish_calls += 1
+            if publish_calls == 1:
+                return tuple(
+                    (peer, b"" if index == 0 else None)
+                    for index, peer in enumerate(batch)
+                )
+            return tuple(
+                (peer, b"" if peer.node_id == peers[1].node_id else None)
+                for peer in batch
+            )
+
+        with (
+            patch.object(self.client, "find_nodes", return_value=peers),
+            patch.object(self.client, "_request_batch", side_effect=publish_batch),
+            patch("granger_network.wan_discovery.time.sleep"),
+        ):
+            self.assertEqual(self.client.publish(service, now=self.now), 2)
+        self.assertEqual(publish_calls, 2)
+
+        lookup_calls = 0
+
+        def lookup_batch(batch, *_args, **_kwargs):
+            nonlocal lookup_calls
+            lookup_calls += 1
+            if lookup_calls == 1:
+                outcomes = {
+                    peers[0].node_id: encoded,
+                    peers[1].node_id: None,
+                    peers[2].node_id: absent,
+                }
+            else:
+                outcomes = {
+                    peers[1].node_id: encoded,
+                    peers[2].node_id: absent,
+                }
+            return tuple((peer, outcomes[peer.node_id]) for peer in batch)
+
+        with (
+            patch.object(self.client, "find_nodes", return_value=peers),
+            patch.object(self.client, "_request_batch", side_effect=lookup_batch),
+            patch("granger_network.wan_discovery.time.sleep"),
+        ):
+            self.assertEqual(
+                self.client.lookup(SERVICE_RECORD, service.service_id, now=self.now),
+                service,
+            )
+        self.assertEqual(lookup_calls, 2)
+
+    def test_route_candidates_cache_role_specific_dht_results(self) -> None:
+        candidate = NodeDescriptor.create(
+            ServiceIdentity.generate(),
+            RendezvousEndpoint("127.0.0.1", available_port()),
+            ("rendezvous",),
+            RelayPolicy(enabled=True, max_bandwidth_kib_per_second=64 * 1024),
+            issued_at=self.now,
+            lifetime=3600,
+        )
+        self.client._joined = True
+        self.client._health.update(
+            NetworkState.CONNECTED,
+            authenticated_peers=3,
+            known_peers=6,
+            reachable_relays=6,
+            dht_ready=True,
+            failure_reason="",
+        )
+        target = b"r" * 32
+        with patch.object(
+            self.client,
+            "find_nodes",
+            return_value=(candidate,),
+        ) as find_nodes:
+            first = self.client.route_candidates(target, "rendezvous")
+            second = self.client.route_candidates(target, "rendezvous")
+        self.assertEqual(first, (candidate,))
+        self.assertEqual(second, first)
+        self.assertEqual(find_nodes.call_count, 1)
+
     def test_discovery_batch_workers_do_not_block_process_shutdown(self) -> None:
         daemon_states: list[bool] = []
 
@@ -121,6 +218,32 @@ class WanDiscoveryTests(unittest.TestCase):
             )
         self.assertEqual([content for _peer, content in results], [b"response"] * 3)
         self.assertEqual(daemon_states, [True] * 3)
+
+    def test_private_discovery_gives_each_route_the_signed_timeout(self) -> None:
+        timeouts: list[float] = []
+
+        class FailingBuilder:
+            def __init__(self, *_args, timeout: float, **_kwargs) -> None:
+                timeouts.append(timeout)
+
+            def open(self, _route):
+                raise TimeoutError("controlled route timeout")
+
+        self.client._joined = True
+        self.client._private_routes_ready = True
+        routes = ((), (), (), ())
+        with (
+            patch.object(self.client, "_private_route_candidates", return_value=routes),
+            patch("granger_network.circuit.CircuitBuilder", FailingBuilder),
+            self.assertRaises(TimeoutError),
+        ):
+            self.client._request(
+                self.descriptors[0],
+                RpcType.FIND_NODE,
+                b"request",
+                RpcType.FIND_NODE,
+            )
+        self.assertEqual(timeouts, [self.client.timeout] * len(routes))
 
     def test_one_bootstrap_failure_keeps_quorum_and_two_failures_close_route(self) -> None:
         service_identity = ServiceIdentity.generate()

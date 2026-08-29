@@ -971,7 +971,7 @@ def run_acceptance(
             "client-c",
             route_exclusion_arguments,
         )
-        client_c_exit = wait_exit(client_c, 90.0)
+        client_c_exit = wait_exit(client_c, 150.0)
         if client_c_exit != 0:
             raise AcceptanceError(f"middle recovery client failed with exit code {client_c_exit}")
         client_c_report = json.loads(client_c_report_path.read_text(encoding="utf-8"))
@@ -989,7 +989,7 @@ def run_acceptance(
             "client-d",
             route_exclusion_arguments,
         )
-        client_d_exit = wait_exit(client_d, 90.0)
+        client_d_exit = wait_exit(client_d, 150.0)
         if client_d_exit != 0:
             raise AcceptanceError(f"entry recovery client failed with exit code {client_d_exit}")
         client_d_report = json.loads(client_d_report_path.read_text(encoding="utf-8"))

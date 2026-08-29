@@ -267,6 +267,7 @@ class WanNodeServer:
         self.peer_addresses: list[tuple[str, int]] = []
         self.circuit_observations: list[WanCircuitObservation] = []
         self._introduction_registry = IntroductionRegistry()
+        self._introduction_lock = threading.Lock()
         self._introduction_sessions: dict[str, _IntroductionSession] = {}
         self._rendezvous_slots: dict[bytes, _RendezvousSlot] = {}
         self._used_rendezvous_joins: set[tuple[bytes, bytes]] = set()
@@ -440,15 +441,25 @@ class WanNodeServer:
         ]
         for thread in threads:
             thread.start()
+        while not stop.wait(0.25):
+            if self._stop.is_set():
+                left.reset()
+                right.reset()
+                break
         for thread in threads:
-            thread.join(timeout=self.policy.idle_timeout_seconds + 2)
+            thread.join(timeout=2.0)
         if any(thread.is_alive() for thread in threads):
             left.reset()
             right.reset()
             for thread in threads:
                 thread.join(timeout=2.0)
         if failures and not self._stop.is_set():
-            raise ProtocolError(f"relay forwarding failed: {type(failures[0]).__name__}")
+            failure = failures[0]
+            detail = str(failure).strip()
+            raise ProtocolError(
+                f"relay forwarding failed: {type(failure).__name__}"
+                + (f": {detail}" if detail else "")
+            )
 
     def _handle_open_circuit(self, peer, request: RpcFrame, upstream: str) -> None:
         opened = decode_open_circuit(request.payload)
@@ -506,19 +517,32 @@ class WanNodeServer:
         incoming_mux: CellMultiplexer | None = None
         outgoing_mux: CellMultiplexer | None = None
         try:
-            outbound = connect_authenticated_peer(
-                extension.next_node,
-                self.identity,
-                PeerRole.RELAY,
-                local_descriptor=self.descriptor,
-                timeout=self.policy.connection_timeout_seconds,
-            )
+            try:
+                outbound = connect_authenticated_peer(
+                    extension.next_node,
+                    self.identity,
+                    PeerRole.RELAY,
+                    local_descriptor=self.descriptor,
+                    timeout=self.policy.connection_timeout_seconds,
+                    attempts=2,
+                )
+            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                raise ProtocolError(
+                    "circuit extension next-hop authentication failed: "
+                    f"{type(error).__name__}"
+                ) from error
             outbound.channel.connection.settimeout(float(self.policy.idle_timeout_seconds))
-            created = outbound.rpc.request(
-                RpcType.OPEN_CIRCUIT,
-                encode_open_circuit(extension.outgoing_circuit_id, extension.next_role),
-                expected=RpcType.CIRCUIT_CREATED,
-            )
+            try:
+                created = outbound.rpc.request(
+                    RpcType.OPEN_CIRCUIT,
+                    encode_open_circuit(extension.outgoing_circuit_id, extension.next_role),
+                    expected=RpcType.CIRCUIT_CREATED,
+                )
+            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                raise ProtocolError(
+                    "circuit extension next-hop open failed: "
+                    f"{type(error).__name__}"
+                ) from error
             if created.payload:
                 raise ProtocolError("adjacent circuit creation returned an unexpected payload")
             peer.rpc.send(
@@ -592,26 +616,50 @@ class WanNodeServer:
             raise ProtocolError("introduction registration service identity was substituted")
         if not any(point.node_id == self.descriptor.node_id for point in introduction.points):
             raise ProtocolError("introduction descriptor does not authorize this node")
-        self._introduction_registry.install(introduction, service)
         session = _IntroductionSession(service, introduction, upstream)
-        with self._lock:
-            previous = self._introduction_sessions.get(service.service_id)
+        with self._introduction_lock:
+            self._introduction_registry.install(introduction, service)
+            with self._lock:
+                previous = self._introduction_sessions.get(service.service_id)
+                self._introduction_sessions[service.service_id] = session
             if previous is not None and not previous.closed.is_set():
-                raise ResourceLimitError("service already has an active introduction circuit")
-            self._introduction_sessions[service.service_id] = session
+                previous.closed.set()
+                try:
+                    previous.deliveries.put_nowait(None)
+                except queue.Full:
+                    pass
         peer.rpc.send(
             RpcType.INTRO_REGISTER,
             b"",
             request_id=request.request_id,
             response=True,
         )
+        heartbeat_interval = min(
+            30.0,
+            max(1.0, self.policy.idle_timeout_seconds / 3.0),
+        )
+        next_heartbeat = time.monotonic() + heartbeat_interval
         try:
             while not self._stop.is_set() and int(time.time()) < introduction.expires_at:
                 if getattr(peer.channel.connection, "closed", False):
                     return
                 try:
-                    delivery = session.deliveries.get(timeout=0.25)
+                    delivery = session.deliveries.get(
+                        timeout=min(
+                            0.25,
+                            max(0.01, next_heartbeat - time.monotonic()),
+                        )
+                    )
                 except queue.Empty:
+                    if time.monotonic() >= next_heartbeat:
+                        response = peer.rpc.request(
+                            RpcType.PING,
+                            b"introduction",
+                            expected=RpcType.PONG,
+                        )
+                        if response.payload != b"introduction":
+                            raise ProtocolError("introduction heartbeat response is invalid")
+                        next_heartbeat = time.monotonic() + heartbeat_interval
                     continue
                 if delivery is None:
                     return
@@ -633,6 +681,7 @@ class WanNodeServer:
                         request_nonce=delivery.request.nonce,
                     )
                     delivery.result = response.payload
+                    next_heartbeat = time.monotonic() + heartbeat_interval
                 except BaseException as error:
                     delivery.error = error
                 finally:
@@ -655,14 +704,15 @@ class WanNodeServer:
         if "introduction" not in self.descriptor.capabilities:
             raise ResourceLimitError("node did not advertise introduction capability")
         introduced = decode_intro_request(request.payload)
-        self._introduction_registry.authorize(
-            introduced.service_id,
-            self.descriptor.node_id,
-            introduced.token,
-            introduced.nonce,
-        )
-        with self._lock:
-            session = self._introduction_sessions.get(introduced.service_id)
+        with self._introduction_lock:
+            self._introduction_registry.authorize(
+                introduced.service_id,
+                self.descriptor.node_id,
+                introduced.token,
+                introduced.nonce,
+            )
+            with self._lock:
+                session = self._introduction_sessions.get(introduced.service_id)
         if session is None or session.closed.is_set():
             self._send_error(peer, request, "SERVICE_OFFLINE")
             return
@@ -735,15 +785,25 @@ class WanNodeServer:
         ]
         for thread in threads:
             thread.start()
+        while not stop.wait(0.25):
+            if self._stop.is_set():
+                slot.host_stream.reset()
+                slot.client_stream.reset()
+                break
         for thread in threads:
-            thread.join(timeout=self.policy.idle_timeout_seconds + 2)
+            thread.join(timeout=2.0)
         if any(thread.is_alive() for thread in threads):
             slot.host_stream.reset()
             slot.client_stream.reset()
             for thread in threads:
                 thread.join(timeout=2.0)
         if failures and not self._stop.is_set():
-            raise ProtocolError(f"rendezvous forwarding failed: {type(failures[0]).__name__}")
+            failure = failures[0]
+            detail = str(failure).strip()
+            raise ProtocolError(
+                f"rendezvous forwarding failed: {type(failure).__name__}"
+                + (f": {detail}" if detail else "")
+            )
 
     def _handle_rendezvous_register(
         self,

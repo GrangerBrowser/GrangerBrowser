@@ -4,6 +4,7 @@ import secrets
 import socket
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Protocol
@@ -207,7 +208,10 @@ class PeerRpcSession:
                 code = "REMOTE_ERROR"
             raise ProtocolError(f"peer RPC request failed: {code}")
         if response.message_type is not expected:
-            raise ProtocolError("peer RPC response has an unexpected type")
+            raise ProtocolError(
+                "peer RPC response type mismatch: "
+                f"expected {expected.name}, received {response.message_type.name}"
+            )
         return response
 
 
@@ -439,28 +443,40 @@ def connect_authenticated_peer(
     *,
     local_descriptor: NodeDescriptor | None = None,
     timeout: float = 10.0,
+    attempts: int = 1,
     socket_factory=socket.socket,
 ) -> AuthenticatedPeer:
     descriptor.verify()
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
         raise TransportPolicyError("peer connection timeout must be positive")
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= 3:
+        raise TransportPolicyError("peer connection attempt count is invalid")
     endpoint: RendezvousEndpoint = descriptor.endpoint
-    connection = socket_factory(endpoint.family, socket.SOCK_STREAM)
-    try:
-        connection.settimeout(timeout)
-        connection.connect(endpoint.socket_address)
-        return authenticate_client_stream(
-            connection,
-            descriptor,
-            identity,
-            role,
-            local_descriptor=local_descriptor,
-        )
-    except Exception:
+    deadline = time.monotonic() + float(timeout)
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("peer connection timeout expired")
+        attempt_timeout = remaining / (attempts - attempt)
+        connection = socket_factory(endpoint.family, socket.SOCK_STREAM)
         try:
+            connection.settimeout(attempt_timeout)
+            connection.connect(endpoint.socket_address)
+            return authenticate_client_stream(
+                connection,
+                descriptor,
+                identity,
+                role,
+                local_descriptor=local_descriptor,
+            )
+        except OSError:
             connection.close()
-        finally:
+            if attempt + 1 >= attempts:
+                raise
+        except Exception:
+            connection.close()
             raise
+    raise TimeoutError("peer connection attempts were exhausted")
 
 
 def encode_error(code: str) -> bytes:

@@ -40,6 +40,10 @@ from .wan_discovery import WanDiscoveryClient
 OPERATOR_CONFIG_VERSION = 1
 MAX_OPERATOR_PATHS = 64
 DEFAULT_STATUS_INTERVAL = 30
+NODE_DESCRIPTOR_REPUBLISH_INTERVAL_SECONDS = 15 * 60
+DISCOVERY_SCHEDULE_DOMAIN = b"granger-network-v0.4/operator-discovery-schedule\x00"
+DISCOVERY_CAPABILITY_DOMAIN = b"granger-network-v0.4/operator-discovery-capability\x00"
+DISCOVERY_CAPABILITIES = ("discovery", *sorted(RELAY_CAPABILITIES))
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,58 @@ def _integer(value: object, minimum: int, maximum: int, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise ValueError(f"{label} is outside the supported range")
     return value
+
+
+def _discovery_wait_seconds(
+    node_id: str,
+    interval: int,
+    cycle: int,
+    *,
+    initial: bool,
+) -> int:
+    if not isinstance(node_id, str) or not node_id:
+        raise ValueError("operator discovery node identity is invalid")
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, int)
+        or interval < 1
+        or isinstance(cycle, bool)
+        or not isinstance(cycle, int)
+        or cycle < 0
+    ):
+        raise ValueError("operator discovery schedule is invalid")
+    window = max(1, min(60, interval))
+    digest = hashlib.sha256(
+        DISCOVERY_SCHEDULE_DOMAIN
+        + node_id.encode("ascii")
+        + cycle.to_bytes(8, "big")
+    ).digest()
+    offset = int.from_bytes(digest[:4], "big") % (window + 1)
+    return offset if initial else interval + offset
+
+
+def _discovery_capability(node_id: str, cycle: int) -> str:
+    if not isinstance(node_id, str) or not node_id:
+        raise ValueError("operator discovery node identity is invalid")
+    if isinstance(cycle, bool) or not isinstance(cycle, int) or cycle < 0:
+        raise ValueError("operator discovery cycle is invalid")
+    offset = int.from_bytes(
+        hashlib.sha256(
+            DISCOVERY_CAPABILITY_DOMAIN + node_id.encode("ascii")
+        ).digest()[:4],
+        "big",
+    ) % len(DISCOVERY_CAPABILITIES)
+    return DISCOVERY_CAPABILITIES[(offset + cycle) % len(DISCOVERY_CAPABILITIES)]
+
+
+def _descriptor_publication_due(last_published_at: float | None, now: float) -> bool:
+    if not isinstance(now, (int, float)) or now < 0:
+        raise ValueError("operator descriptor publication time is invalid")
+    if last_published_at is None:
+        return True
+    if not isinstance(last_published_at, (int, float)) or last_published_at < 0:
+        raise ValueError("operator descriptor publication time is invalid")
+    return now - last_published_at >= NODE_DESCRIPTOR_REPUBLISH_INTERVAL_SECONDS
 
 
 def _endpoint(document: object, label: str, *, listener: bool):
@@ -323,6 +379,7 @@ class _DiscoverySupervisor:
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
+        self._descriptor_published_at: float | None = None
         self.snapshot: dict[str, object] = {
             "dhtReady": False,
             "failureReason": "NO_RESEED_SOURCE" if not bootstrap_sets else "",
@@ -354,19 +411,39 @@ class _DiscoverySupervisor:
     def _run(self) -> None:
         assert self.discovery is not None
         target_seed = hashlib.sha256(self.node.descriptor.node_id.encode("ascii")).digest()
+        cycle = 0
+        if self.stop_event.wait(
+            _discovery_wait_seconds(
+                self.node.descriptor.node_id,
+                self.interval,
+                cycle,
+                initial=True,
+            )
+        ):
+            return
         while not self.stop_event.is_set():
             try:
                 health = self.discovery.join_network()
                 learned: dict[str, NodeDescriptor] = {}
                 if health.state.value != "OFFLINE":
-                    for capability in ("discovery", *sorted(RELAY_CAPABILITIES)):
-                        target = hashlib.sha256(target_seed + capability.encode("ascii")).digest()
-                        try:
-                            for peer in self.discovery.find_nodes(target, capability):
-                                if peer.node_id != self.node.descriptor.node_id:
-                                    learned[peer.node_id] = peer
-                        except (GrangerNetworkError, OSError):
-                            continue
+                    current = time.monotonic()
+                    if _descriptor_publication_due(self._descriptor_published_at, current):
+                        stored_replicas = self.discovery.publish(self.node.descriptor)
+                        if stored_replicas >= self.discovery.replication_factor:
+                            self._descriptor_published_at = current
+                    capability = _discovery_capability(
+                        self.node.descriptor.node_id,
+                        cycle,
+                    )
+                    target = hashlib.sha256(
+                        target_seed + capability.encode("ascii")
+                    ).digest()
+                    try:
+                        for peer in self.discovery.find_nodes(target, capability):
+                            if peer.node_id != self.node.descriptor.node_id:
+                                learned[peer.node_id] = peer
+                    except (GrangerNetworkError, OSError):
+                        pass
                 for peer in learned.values():
                     self.node.add_known_peer(peer, source="operator-dht")
                 with self.lock:
@@ -378,7 +455,15 @@ class _DiscoverySupervisor:
                         "failureReason": type(error).__name__,
                         "state": "DEGRADED",
                     }
-            self.stop_event.wait(self.interval)
+            cycle += 1
+            self.stop_event.wait(
+                _discovery_wait_seconds(
+                    self.node.descriptor.node_id,
+                    self.interval,
+                    cycle,
+                    initial=False,
+                )
+            )
 
     def status(self) -> dict[str, object]:
         with self.lock:

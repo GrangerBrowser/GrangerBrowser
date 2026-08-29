@@ -4,6 +4,7 @@ import hashlib
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .cells import CellMultiplexer
@@ -14,10 +15,12 @@ from .http_bridge import HttpResult, LoopbackHttpBridge
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
 from .peer import NodeDescriptor
-from .peer_rpc import PeerRole, RpcType
+from .peer_rpc import PeerRole, RpcType, encode_error
 from .protocol import VERSION_3, SecureChannel, client_handshake, server_handshake
 from .wan_application import WanApplicationClient, WanApplicationServer
 from .wan_control import (
+    MAX_RENDEZVOUS_GRANT_LIFETIME,
+    MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
     IntroductionRequest,
     RendezvousGrant,
     RendezvousJoin,
@@ -29,6 +32,7 @@ from .wan_control import (
 
 
 _RENDEZVOUS_ROUTE_FAILURE_LIMIT = 3
+RoutePrefix = tuple[tuple[NodeDescriptor, str], ...]
 
 
 class _RendezvousRouteUnavailable(OverlayRoutingError):
@@ -100,6 +104,7 @@ class WanServiceClient:
         client_route_prefix: list[tuple[NodeDescriptor, str]] | tuple[tuple[NodeDescriptor, str], ...],
         *,
         timeout: float = 10.0,
+        rendezvous_route_selector: Callable[[NodeDescriptor], RoutePrefix] | None = None,
     ) -> None:
         service.verify()
         introduction.verify_for(service)
@@ -114,6 +119,9 @@ class WanServiceClient:
         self.introduction = introduction
         self.route_prefix = tuple(client_route_prefix)
         self.timeout = timeout
+        if rendezvous_route_selector is not None and not callable(rendezvous_route_selector):
+            raise OverlayRoutingError("rendezvous route selector is invalid")
+        self.rendezvous_route_selector = rendezvous_route_selector
 
     def connect(self, introduction_node: NodeDescriptor) -> WanServiceSession:
         point = next(
@@ -126,10 +134,13 @@ class WanServiceClient:
         session_started = time.perf_counter_ns()
         introduction_started = session_started
         intro_circuit: BuiltCircuit | None = None
+        introduction_phase = "route build"
         try:
             intro_circuit = builder.open(
                 (*self.route_prefix, (introduction_node, "introduction"))
             )
+            intro_circuit.endpoint.channel.connection.settimeout(self.timeout)
+            introduction_phase = "request"
             request_nonce = secrets.token_bytes(16)
             response = intro_circuit.endpoint.rpc.request(
                 RpcType.INTRO_REQUEST,
@@ -148,8 +159,11 @@ class WanServiceClient:
                 request_nonce=request_nonce,
             )
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            detail = str(error).strip()
             raise OverlayRoutingError(
-                f"introduction stage failed ({type(error).__name__})"
+                f"introduction stage failed during {introduction_phase} "
+                f"({type(error).__name__})"
+                + (f": {detail}" if detail else "")
             ) from error
         finally:
             if intro_circuit is not None:
@@ -160,11 +174,32 @@ class WanServiceClient:
         rendezvous_mux: CellMultiplexer | None = None
         channel: SecureChannel | None = None
         application_mux: CellMultiplexer | None = None
+        rendezvous_phase = "route selection"
         try:
             rendezvous_started = time.perf_counter_ns()
+            rendezvous_prefix = self.route_prefix
+            if grant.rendezvous.node_id in {
+                descriptor.node_id for descriptor, _role in rendezvous_prefix
+            }:
+                if self.rendezvous_route_selector is None:
+                    raise OverlayRoutingError(
+                        "rendezvous node repeats a relay identity and no alternate route is available"
+                    )
+                rendezvous_prefix = tuple(self.rendezvous_route_selector(grant.rendezvous))
+                if (
+                    len(rendezvous_prefix) < 3
+                    or tuple(role for _node, role in rendezvous_prefix[:3])
+                    != ("access", "entry", "middle")
+                    or grant.rendezvous.node_id
+                    in {descriptor.node_id for descriptor, _role in rendezvous_prefix}
+                ):
+                    raise OverlayRoutingError("alternate rendezvous route prefix is invalid")
+            rendezvous_phase = "route build"
             rendezvous_circuit = builder.open(
-                (*self.route_prefix, (grant.rendezvous, "rendezvous"))
+                (*rendezvous_prefix, (grant.rendezvous, "rendezvous"))
             )
+            rendezvous_circuit.endpoint.channel.connection.settimeout(self.timeout)
+            rendezvous_phase = "join"
             cell_circuit_id = secrets.token_bytes(16)
             rendezvous_circuit.endpoint.rpc.request(
                 RpcType.RENDEZVOUS_JOIN,
@@ -174,18 +209,23 @@ class WanServiceClient:
                 ).encode(),
                 expected=RpcType.RENDEZVOUS_JOIN,
             )
+            rendezvous_phase = "stream"
             rendezvous_mux = CellMultiplexer(
                 rendezvous_circuit.endpoint.channel,
                 cell_circuit_id,
                 initiator=True,
             )
             stream = rendezvous_mux.open_stream(self.timeout)
+            stream.settimeout(self.timeout)
+            rendezvous_phase = "handshake"
             channel = client_handshake(
                 stream,
                 self.service.identity_public_key,
                 session_id=rendezvous_session_id(grant.cookie),
                 protocol_version=VERSION_3,
             )
+            rendezvous_circuit.endpoint.channel.connection.settimeout(None)
+            stream.settimeout(None)
             application_mux = CellMultiplexer(
                 channel,
                 application_circuit_id(grant.cookie),
@@ -220,8 +260,11 @@ class WanServiceClient:
                 rendezvous_mux.close()
             if rendezvous_circuit is not None:
                 rendezvous_circuit.close()
+            detail = str(error).strip()
             raise OverlayRoutingError(
-                f"rendezvous stage failed ({type(error).__name__})"
+                f"rendezvous stage failed during {rendezvous_phase} "
+                f"({type(error).__name__})"
+                + (f": {detail}" if detail else "")
             ) from error
 
 
@@ -241,7 +284,7 @@ class WanServiceHost:
         bridge: LoopbackHttpBridge,
         *,
         timeout: float = 10.0,
-        rendezvous_lifetime: int = 180,
+        rendezvous_lifetime: int = MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
     ) -> None:
         service.verify()
         introduction.verify_for(service)
@@ -290,7 +333,7 @@ class WanServiceHost:
         self.rendezvous_route = tuple(rendezvous_route)
         self.bridge = bridge
         self.timeout = timeout
-        if not 30 <= rendezvous_lifetime <= 300:
+        if not 30 <= rendezvous_lifetime <= MAX_RENDEZVOUS_REGISTRATION_LIFETIME:
             raise ProtocolError("WAN service rendezvous lifetime is invalid")
         self.rendezvous_lifetime = rendezvous_lifetime
         self._stop = threading.Event()
@@ -379,6 +422,7 @@ class WanServiceHost:
             for route in self.introduction_routes:
                 try:
                     circuit = builder.open(route)
+                    circuit.endpoint.channel.connection.settimeout(self.timeout)
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError):
                     self._startup_failed_route = route
                     raise
@@ -456,6 +500,7 @@ class WanServiceHost:
         route_ready = False
         try:
             self._rendezvous_circuit = builder.open(self.rendezvous_route)
+            self._rendezvous_circuit.endpoint.channel.connection.settimeout(self.timeout)
             if self._recovery.is_set():
                 raise OverlayRoutingError("service route recovery was requested")
             registration = RendezvousRegistration.create(
@@ -474,6 +519,7 @@ class WanServiceHost:
                 initiator=True,
             )
             rendezvous_stream = self._rendezvous_mux.open_stream(self.timeout)
+            self._rendezvous_circuit.endpoint.channel.connection.settimeout(None)
             rendezvous_stream.settimeout(float(self.rendezvous_lifetime))
             route_ready = True
             with self._grant_condition:
@@ -519,23 +565,53 @@ class WanServiceHost:
         while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
             try:
                 request = intro_circuit.endpoint.rpc.receive()
+                if request.message_type is RpcType.PING and not request.is_response:
+                    if request.is_error or len(request.payload) > 64:
+                        raise ProtocolError("introduction heartbeat request is invalid")
+                    intro_circuit.endpoint.rpc.send(
+                        RpcType.PONG,
+                        request.payload,
+                        request_id=request.request_id,
+                        response=True,
+                    )
+                    continue
                 if request.message_type is not RpcType.INTRO_DELIVER or request.is_response:
                     raise ProtocolError("service received an unexpected introduction message")
                 introduced = decode_intro_request(request.payload)
                 if introduced.service_id != self.service.service_id:
                     raise ProtocolError("introduction delivery service identity is invalid")
                 deadline = time.monotonic() + self.timeout
+                grant_slot: tuple[bytes, int] | None = None
                 with self._grant_condition:
                     while self._grant_slot is None and not self._stop.is_set():
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
-                            raise TimeoutError("service has no available rendezvous slot")
+                            break
                         self._grant_condition.wait(min(0.25, remaining))
-                    if self._grant_slot is None:
+                    if self._grant_slot is not None:
+                        grant_slot = self._grant_slot
+                        self._grant_slot = None
+                    elif self._stop.is_set():
                         raise ProtocolError("service is stopping")
-                    cookie, expires_at = self._grant_slot
-                    self._grant_slot = None
-                lifetime = max(1, min(120, expires_at - int(time.time())))
+                if grant_slot is None:
+                    if len(self.session_failures) < 1024:
+                        self.session_failures.append("introduction:RENDEZVOUS_BUSY")
+                    intro_circuit.endpoint.rpc.send(
+                        RpcType.ERROR,
+                        encode_error("RENDEZVOUS_BUSY"),
+                        request_id=request.request_id,
+                        response=True,
+                        error=True,
+                    )
+                    continue
+                cookie, expires_at = grant_slot
+                lifetime = max(
+                    1,
+                    min(
+                        MAX_RENDEZVOUS_GRANT_LIFETIME,
+                        expires_at - int(time.time()),
+                    ),
+                )
                 grant = RendezvousGrant.create(
                     self.identity,
                     self.service,

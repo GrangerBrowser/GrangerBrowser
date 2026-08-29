@@ -12,9 +12,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from granger_network.identity import ServiceIdentity
 from granger_network.node import NodeListenerEndpoint, initialize_node, load_node
 from granger_network.operator import (
+    DISCOVERY_CAPABILITIES,
+    NODE_DESCRIPTOR_REPUBLISH_INTERVAL_SECONDS,
+    _descriptor_publication_due,
+    _discovery_capability,
+    _discovery_wait_seconds,
     _stopped_status_document,
     load_operator_config,
     prepare_node,
@@ -82,6 +86,50 @@ class OperatorTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def test_discovery_schedule_is_bounded_and_identity_staggered(self) -> None:
+        node_ids = (
+            "steapuncu4l3k2zf3p6vt5rsgbcpl2cretfs3ul3lweedprwp3ya",
+            "xciuusikp4jkcaynnqem2yqxt32pgvs2ftrn3issvpcdtaxpfoea",
+            "2zuojanfgtf25ggpiclkhxxq3opt6dt3vekx4jznnfjrnka5xjfq",
+            "5scqnjvqgbkslcuthre47tfsn7gqrzmibzvbgtsqpkiw7hdk4rmq",
+        )
+        initial = {
+            _discovery_wait_seconds(node_id, 60, 0, initial=True)
+            for node_id in node_ids
+        }
+        recurring = {
+            _discovery_wait_seconds(node_id, 60, 1, initial=False)
+            for node_id in node_ids
+        }
+
+        self.assertTrue(all(0 <= delay <= 60 for delay in initial))
+        self.assertTrue(all(60 <= delay <= 120 for delay in recurring))
+        self.assertGreater(len(initial), 1)
+        self.assertGreater(len(recurring), 1)
+
+    def test_discovery_capability_rotates_without_bursting_all_roles(self) -> None:
+        node_id = "steapuncu4l3k2zf3p6vt5rsgbcpl2cretfs3ul3lweedprwp3ya"
+        sequence = tuple(
+            _discovery_capability(node_id, cycle)
+            for cycle in range(len(DISCOVERY_CAPABILITIES))
+        )
+
+        self.assertEqual(set(sequence), set(DISCOVERY_CAPABILITIES))
+        self.assertEqual(len(sequence), len(set(sequence)))
+        self.assertEqual(
+            _discovery_capability(node_id, len(DISCOVERY_CAPABILITIES)),
+            sequence[0],
+        )
+
+    def test_node_descriptor_publication_is_initial_and_bounded(self) -> None:
+        interval = NODE_DESCRIPTOR_REPUBLISH_INTERVAL_SECONDS
+
+        self.assertTrue(_descriptor_publication_due(None, 100.0))
+        self.assertFalse(_descriptor_publication_due(100.0, 100.0 + interval - 0.001))
+        self.assertTrue(_descriptor_publication_due(100.0, 100.0 + interval))
+        with self.assertRaisesRegex(ValueError, "publication time"):
+            _descriptor_publication_due(100.0, -1.0)
 
     def test_prepare_keeps_identity_and_exports_only_public_descriptor(self) -> None:
         config = load_operator_config(self._config())

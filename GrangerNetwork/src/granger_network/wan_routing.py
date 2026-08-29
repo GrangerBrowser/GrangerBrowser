@@ -37,6 +37,13 @@ def _network_group(descriptor: NodeDescriptor) -> tuple[int, int]:
     return address.version, int(network.network_address)
 
 
+def _adjacent_network_group_conflicts(nodes: tuple[NodeDescriptor, ...]) -> int:
+    return sum(
+        _network_group(current) == _network_group(following)
+        for current, following in zip(nodes, nodes[1:])
+    )
+
+
 @dataclass(frozen=True)
 class WanRouteSelection:
     route: tuple[tuple[NodeDescriptor, str], ...]
@@ -100,6 +107,12 @@ class WanRouteSelector:
             raise OverlayRoutingError("guard selection seed must contain 32 bytes")
         self.guard_seed = seed
 
+    def _candidates(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]:
+        route_candidates = getattr(self.discovery, "route_candidates", None)
+        if callable(route_candidates):
+            return route_candidates(target, capability)
+        return self.discovery.find_nodes(target, capability)
+
     def _guard_order(self, candidates: list[NodeDescriptor]) -> list[NodeDescriptor]:
         return sorted(
             candidates,
@@ -135,7 +148,7 @@ class WanRouteSelector:
         used = {validate_node_id(node_id) for node_id in (excluded_ids or ())}
         accesses = [
             node
-            for node in self.discovery.find_nodes(
+            for node in self._candidates(
                 _selection_target(context, "access"),
                 "access",
             )
@@ -143,7 +156,7 @@ class WanRouteSelector:
         ]
         entries = self._guard_order([
             node
-            for node in self.discovery.find_nodes(
+            for node in self._candidates(
                 _selection_target(context, "entry"),
                 "entry",
             )
@@ -151,7 +164,7 @@ class WanRouteSelector:
         ])
         middles = [
             node
-            for node in self.discovery.find_nodes(
+            for node in self._candidates(
                 _selection_target(context, "middle"),
                 "middle",
             )
@@ -217,6 +230,7 @@ class WanRouteSelector:
         final_role: str,
         *,
         excluded_ids: set[str] | None = None,
+        excluded_middle_ids: set[str] | None = None,
     ) -> WanRouteSelection:
         if final_role not in {"introduction", "rendezvous"}:
             raise OverlayRoutingError("service route final role is invalid")
@@ -227,29 +241,32 @@ class WanRouteSelector:
         used = {
             validate_node_id(node_id) for node_id in (excluded_ids or ())
         } | {final_node.node_id}
+        blocked_middles = used | {
+            validate_node_id(node_id) for node_id in (excluded_middle_ids or ())
+        }
         accesses = [
             node
-            for node in self.discovery.find_nodes(
+            for node in self._candidates(
                 _selection_target(context, "access"), "access"
             )
             if node.node_id not in used
         ]
         guards = self._guard_order([
             node
-            for node in self.discovery.find_nodes(
+            for node in self._candidates(
                 _selection_target(context, "service-relay"), "service-relay"
             )
             if node.node_id not in used
         ])
         middles = [
             node
-            for node in self.discovery.find_nodes(
+            for node in self._candidates(
                 _selection_target(context, "middle"), "middle"
             )
-            if node.node_id not in used
+            if node.node_id not in blocked_middles
         ]
         choices: list[
-            tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
+            tuple[int, int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
         ] = []
         for guard_index, guard in enumerate(guards):
             for access_index, access in enumerate(accesses):
@@ -261,6 +278,7 @@ class WanRouteSelector:
                     choices.append(
                         (
                             len(nodes) - len(groups),
+                            _adjacent_network_group_conflicts(nodes),
                             guard_index,
                             access_index + middle_index,
                             access,
@@ -270,8 +288,8 @@ class WanRouteSelector:
                     )
         if not choices:
             raise OverlayRoutingError("no complete service relay route is available")
-        choices.sort(key=lambda item: item[:3])
-        relaxation, _guard_index, _offset, access, entry, middle = choices[0]
+        choices.sort(key=lambda item: item[:4])
+        relaxation, _adjacency, _guard_index, _offset, access, entry, middle = choices[0]
         return WanRouteSelection(
             (
                 (access, "access"),

@@ -110,11 +110,11 @@ def run_host(options: argparse.Namespace) -> int:
                 service.to_json(),
                 mode=0o644,
             )
-        introductions = runtime.discovery.find_nodes(
+        introductions = runtime.discovery.route_candidates(
             _target(service.service_id, b"introduction"),
             "introduction",
         )
-        rendezvous_nodes = runtime.discovery.find_nodes(
+        rendezvous_nodes = runtime.discovery.route_candidates(
             _target(service.service_id, b"rendezvous"),
             "rendezvous",
         )
@@ -146,13 +146,12 @@ def run_host(options: argparse.Namespace) -> int:
             mode=0o644,
         )
         runtime.discovery.publish(service)
-        runtime.discovery.publish(introduction)
 
         host: WanServiceHost | None = None
         intro_routes = None
         rendezvous_route = None
         startup_failures: list[str] = []
-        route_exclusions: set[str] = set()
+        middle_exclusions: set[str] = set()
         try:
             for attempt in range(options.startup_attempts):
                 candidate: WanServiceHost | None = None
@@ -162,7 +161,7 @@ def run_host(options: argparse.Namespace) -> int:
                             service.service_id,
                             introduction_node,
                             "introduction",
-                            excluded_ids=route_exclusions,
+                            excluded_middle_ids=middle_exclusions,
                         )
                         for introduction_node in selected_introductions
                     )
@@ -170,7 +169,7 @@ def run_host(options: argparse.Namespace) -> int:
                         service.service_id,
                         rendezvous_node,
                         "rendezvous",
-                        excluded_ids=route_exclusions,
+                        excluded_middle_ids=middle_exclusions,
                     )
                     candidate = WanServiceHost(
                         identity,
@@ -189,7 +188,7 @@ def run_host(options: argparse.Namespace) -> int:
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                     startup_failures.append(f"{type(error).__name__}:{error}")
                     if candidate is not None:
-                        route_exclusions.update(candidate.startup_failed_middle_ids)
+                        middle_exclusions.update(candidate.startup_failed_middle_ids)
                         candidate.stop()
                     if attempt + 1 < options.startup_attempts:
                         time.sleep(min(1.0, 0.2 * (attempt + 1)))
@@ -202,6 +201,7 @@ def run_host(options: argparse.Namespace) -> int:
                 recovery_cycles += 1
                 time.sleep(min(2.0, 0.25 * recovery_cycles))
                 continue
+            runtime.discovery.publish(introduction)
             recovery_cycles = 0
             generation += 1
             if options.ready_file is not None:
@@ -243,6 +243,11 @@ def run_host(options: argparse.Namespace) -> int:
                     break
             if host.recovery_requested:
                 recovery_cycles += 1
+                print(
+                    f"granger-wan-host: route recovery requested: {host.recovery_reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 time.sleep(min(2.0, 0.25 * recovery_cycles))
             elif host.wait(0):
                 if host.errors:
@@ -267,7 +272,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--upstream", required=True)
     serve.add_argument("--ready-file", type=Path)
     serve.add_argument("--timeout", type=float, default=8.0)
-    serve.add_argument("--rendezvous-lifetime", type=int, default=180)
+    serve.add_argument("--rendezvous-lifetime", type=int, default=600)
     serve.add_argument("--introduction-lifetime", type=int, default=15 * 60)
     serve.add_argument("--refresh-margin", type=int, default=2 * 60)
     serve.add_argument("--service-lifetime", type=int, default=24 * 60 * 60)

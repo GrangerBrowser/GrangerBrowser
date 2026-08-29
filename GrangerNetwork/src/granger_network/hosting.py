@@ -28,6 +28,7 @@ from .wan_service import WanServiceHost
 
 HOSTING_VERSION = 2
 DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_SERVICE_ROUTE_STARTUP_SECONDS = 240.0
 MAX_STATIC_FILES = 10_000
 CONFIG_FILE = "config.json"
 IDENTITY_FILE = "identity/service-identity.json"
@@ -677,6 +678,16 @@ def _target(service_id: str, purpose: bytes) -> bytes:
     ).digest()
 
 
+def _service_route_startup_timeout(network_timeout: float, route_count: int) -> float:
+    return max(
+        15.0,
+        min(
+            MAX_SERVICE_ROUTE_STARTUP_SECONDS,
+            network_timeout * (route_count + 5),
+        ),
+    )
+
+
 def _write_status(root: Path, state: str, descriptor: ServiceDescriptor, **details: object) -> None:
     document: dict[str, object] = {
         "canonicalName": descriptor.canonical_name,
@@ -748,10 +759,10 @@ def serve_hosted_service(
                 lifetime=24 * 60 * 60,
             )
             atomic_write_text(root / SERVICE_DESCRIPTOR_FILE, service.to_json(), mode=0o644)
-        introductions = runtime.discovery.find_nodes(
+        introductions = runtime.discovery.route_candidates(
             _target(service.service_id, b"introduction"), "introduction"
         )
-        rendezvous_nodes = runtime.discovery.find_nodes(
+        rendezvous_nodes = runtime.discovery.route_candidates(
             _target(service.service_id, b"rendezvous"), "rendezvous"
         )
         selected_introductions = introductions[:2]
@@ -772,10 +783,9 @@ def serve_hosted_service(
         )
         atomic_write_text(root / INTRODUCTION_DESCRIPTOR_FILE, introduction.to_json(), mode=0o644)
         runtime.discovery.publish(service)
-        runtime.discovery.publish(introduction)
         host: WanServiceHost | None = None
         failures: list[str] = []
-        route_exclusions: set[str] = set()
+        middle_exclusions: set[str] = set()
         try:
             for attempt in range(4):
                 candidate: WanServiceHost | None = None
@@ -785,7 +795,7 @@ def serve_hosted_service(
                             service.service_id,
                             node,
                             "introduction",
-                            excluded_ids=route_exclusions,
+                            excluded_middle_ids=middle_exclusions,
                         )
                         for node in selected_introductions
                     )
@@ -793,7 +803,7 @@ def serve_hosted_service(
                         service.service_id,
                         rendezvous_node,
                         "rendezvous",
-                        excluded_ids=route_exclusions,
+                        excluded_middle_ids=middle_exclusions,
                     )
                     candidate = WanServiceHost(
                         identity,
@@ -803,22 +813,30 @@ def serve_hosted_service(
                         rendezvous_route.route,
                         bridge,
                         timeout=browser_config.timeout,
-                        rendezvous_lifetime=180,
+                        rendezvous_lifetime=600,
                     )
                     candidate.start_background()
-                    candidate.wait_ready(15.0)
+                    candidate.wait_ready(
+                        _service_route_startup_timeout(
+                            browser_config.timeout,
+                            len(intro_routes) + 1,
+                        )
+                    )
                     host = candidate
                     break
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                    failures.append(type(error).__name__)
+                    failures.append(f"{type(error).__name__}:{str(error)[:160]}")
                     if candidate is not None:
-                        route_exclusions.update(candidate.startup_failed_middle_ids)
+                        middle_exclusions.update(candidate.startup_failed_middle_ids)
                         candidate.stop()
                     if attempt < 3:
                         time.sleep(0.2 * (attempt + 1))
             if host is None:
                 if generation == 0:
-                    raise OverlayRoutingError("hosting route startup attempts were exhausted")
+                    raise OverlayRoutingError(
+                        "hosting route startup attempts were exhausted: "
+                        + ";".join(failures)
+                    )
                 recovery_cycles += 1
                 _write_status(
                     root,
@@ -831,6 +849,7 @@ def serve_hosted_service(
                 )
                 time.sleep(min(2.0, 0.25 * recovery_cycles))
                 continue
+            runtime.discovery.publish(introduction)
             recovery_cycles = 0
             generation += 1
             _write_status(
