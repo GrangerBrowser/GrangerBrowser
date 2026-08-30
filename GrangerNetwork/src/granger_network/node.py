@@ -39,6 +39,7 @@ from .introduction import IntroductionRegistry
 from .peer import GrangerNode, NodeDescriptor, RelayPolicy
 from .peer_rpc import (
     PeerRole,
+    RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcFrame,
     RpcType,
     authenticate_server_stream,
@@ -524,7 +525,7 @@ class WanNodeServer:
                     PeerRole.RELAY,
                     local_descriptor=self.descriptor,
                     timeout=self.policy.connection_timeout_seconds,
-                    attempts=2,
+                    attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 raise ProtocolError(

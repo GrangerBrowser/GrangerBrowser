@@ -16,6 +16,7 @@ from .peer import CIRCUIT_CAPABILITIES, NodeDescriptor
 from .peer_rpc import (
     AuthenticatedPeer,
     PeerRole,
+    RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcType,
     authenticate_client_stream,
     connect_authenticated_peer,
@@ -199,7 +200,7 @@ class CircuitBuilder:
                 first_identity,
                 self.role,
                 timeout=self.timeout,
-                attempts=2,
+                attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
             )
             peer.channel.connection.settimeout(self.timeout)
             for index in range(len(normalized) - 1):

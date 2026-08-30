@@ -29,6 +29,8 @@ RPC_FLAG_RESPONSE = 0x01
 RPC_FLAG_ERROR = 0x02
 RPC_ALLOWED_FLAGS = RPC_FLAG_RESPONSE | RPC_FLAG_ERROR
 PEER_AUTH_DOMAIN = b"granger-network-v0.4/peer-auth\x00"
+RESILIENT_PEER_CONNECT_ATTEMPTS = 8
+MAX_SINGLE_CONNECT_ATTEMPT_SECONDS = 1.5
 
 
 class RpcType(IntEnum):
@@ -449,7 +451,11 @@ def connect_authenticated_peer(
     descriptor.verify()
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
         raise TransportPolicyError("peer connection timeout must be positive")
-    if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= 3:
+    if (
+        isinstance(attempts, bool)
+        or not isinstance(attempts, int)
+        or not 1 <= attempts <= RESILIENT_PEER_CONNECT_ATTEMPTS
+    ):
         raise TransportPolicyError("peer connection attempt count is invalid")
     endpoint: RendezvousEndpoint = descriptor.endpoint
     deadline = time.monotonic() + float(timeout)
@@ -457,11 +463,18 @@ def connect_authenticated_peer(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("peer connection timeout expired")
-        attempt_timeout = remaining / (attempts - attempt)
+        connect_timeout = min(
+            MAX_SINGLE_CONNECT_ATTEMPT_SECONDS,
+            remaining / (attempts - attempt),
+        )
         connection = socket_factory(endpoint.family, socket.SOCK_STREAM)
         try:
-            connection.settimeout(attempt_timeout)
+            connection.settimeout(connect_timeout)
             connection.connect(endpoint.socket_address)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("peer authentication timeout expired")
+            connection.settimeout(remaining)
             return authenticate_client_stream(
                 connection,
                 descriptor,

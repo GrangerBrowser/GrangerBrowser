@@ -10,11 +10,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from granger_network.bootstrap import BootstrapPool, BootstrapSet, PeerCache
-from granger_network.errors import DiscoveryError, IdentityVerificationError, ProtocolError
+from granger_network.errors import (
+    DiscoveryError,
+    IdentityVerificationError,
+    ProtocolError,
+    TransportPolicyError,
+)
 from granger_network.identity import ServiceIdentity
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import (
+    MAX_SINGLE_CONNECT_ATTEMPT_SECONDS,
     PeerRole,
+    RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcFrame,
     RpcType,
     authenticate_server_stream,
@@ -97,6 +104,66 @@ class PeerRpcTests(unittest.TestCase):
         self.assertIs(result, authenticated)
         self.assertTrue(authenticate.called)
         self.assertTrue(sockets == [])
+
+    def test_resilient_connect_retries_blackholed_flows_without_retrying_auth(self) -> None:
+        identity = ServiceIdentity.generate()
+        descriptor = make_descriptor(ServiceIdentity.generate(), available_port())
+        sockets = []
+
+        class FakeSocket:
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+                self.closed = False
+                self.timeouts: list[float] = []
+
+            def settimeout(self, value: float) -> None:
+                self.timeouts.append(value)
+
+            def connect(self, _endpoint: tuple[str, int]) -> None:
+                if self.fail:
+                    raise TimeoutError("simulated ECMP flow blackhole")
+
+            def close(self) -> None:
+                self.closed = True
+
+        for index in range(RESILIENT_PEER_CONNECT_ATTEMPTS):
+            sockets.append(FakeSocket(index < 5))
+        pending = list(sockets)
+        authenticated = object()
+        with patch(
+            "granger_network.peer_rpc.authenticate_client_stream",
+            return_value=authenticated,
+        ) as authenticate:
+            result = connect_authenticated_peer(
+                descriptor,
+                identity,
+                PeerRole.RELAY,
+                timeout=10.0,
+                attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
+                socket_factory=lambda *_args: pending.pop(0),
+            )
+        self.assertIs(result, authenticated)
+        self.assertEqual(authenticate.call_count, 1)
+        self.assertEqual(len(pending), 2)
+        self.assertTrue(all(item.closed for item in sockets[:5]))
+        self.assertFalse(sockets[5].closed)
+        self.assertTrue(
+            all(
+                item.timeouts[0] <= MAX_SINGLE_CONNECT_ATTEMPT_SECONDS
+                for item in sockets[:6]
+            )
+        )
+        self.assertGreater(sockets[5].timeouts[-1], sockets[5].timeouts[0])
+
+    def test_resilient_connect_attempt_limit_is_bounded(self) -> None:
+        descriptor = make_descriptor(ServiceIdentity.generate(), available_port())
+        with self.assertRaisesRegex(TransportPolicyError, "attempt count"):
+            connect_authenticated_peer(
+                descriptor,
+                ServiceIdentity.generate(),
+                PeerRole.CLIENT,
+                attempts=RESILIENT_PEER_CONNECT_ATTEMPTS + 1,
+            )
 
     def test_identity_failure_is_not_retried(self) -> None:
         identity = ServiceIdentity.generate()

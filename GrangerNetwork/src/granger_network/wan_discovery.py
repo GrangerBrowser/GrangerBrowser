@@ -28,7 +28,12 @@ from .distributed import (
 from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, ProtocolError, ReplayError, ResolutionError
 from .identity import ServiceIdentity
 from .peer import NodeDescriptor, validate_node_id
-from .peer_rpc import PeerRole, RpcType, connect_authenticated_peer
+from .peer_rpc import (
+    PeerRole,
+    RESILIENT_PEER_CONNECT_ATTEMPTS,
+    RpcType,
+    connect_authenticated_peer,
+)
 from .address import is_canonical_name, normalize_name, service_id_from_name
 from .descriptor import ServiceDescriptor
 from .introduction import AliasRecord, IntroductionDescriptor
@@ -457,6 +462,7 @@ class WanDiscoveryClient:
                     ServiceIdentity.generate(),
                     PeerRole.CLIENT,
                     timeout=self.timeout,
+                    attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
                 )
                 self.direct_first_contact_requests += 1
                 response = connection.rpc.request(message, payload, expected=expected)
