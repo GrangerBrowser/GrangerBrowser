@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from ._codec import atomic_write_text, parse_json_object
+from ._codec import atomic_write_text, canonical_json, parse_json_object
 from .bootstrap import BootstrapSet, DEFAULT_NETWORK_ID, DEFAULT_PROTOCOL_VERSION
 from .errors import DiscoveryError
 
@@ -139,6 +140,69 @@ class ReseedStore:
         detail = failures[-1] if failures else "no trust anchors"
         raise DiscoveryError(f"signed reseed bundle is not trusted: {detail}")
 
+    def _expired_installed_content_unlocked(
+        self,
+        content: str,
+        state: dict[str, dict[str, object]],
+        current: int,
+    ) -> ReseedImportResult | None:
+        try:
+            document = parse_json_object(content)
+            digest = hashlib.sha256(canonical_json(document)).hexdigest()
+            generation = document["generation"]
+            expiries = [document["expiresAt"]]
+            peers = document["peers"]
+            if (
+                isinstance(generation, bool)
+                or not isinstance(generation, int)
+                or not isinstance(peers, list)
+            ):
+                return None
+            for peer in peers:
+                if not isinstance(peer, dict):
+                    return None
+                expiries.append(peer["expiresAt"])
+            if any(
+                isinstance(expiry, bool) or not isinstance(expiry, int)
+                for expiry in expiries
+            ):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        trusted_authorities = {_authority_id(pin) for pin in self.authority_pins}
+        for authority_id, expected in state.items():
+            if (
+                authority_id in trusted_authorities
+                and expected["generation"] == generation
+                and expected["sha256"] == digest
+                and min(expiries) <= current
+            ):
+                return ReseedImportResult(authority_id, generation, digest, False)
+        return None
+
+    def expired_installed_bundle(
+        self,
+        path: Path,
+        *,
+        now: int | None = None,
+    ) -> ReseedImportResult | None:
+        source_path = Path(path).resolve()
+        current = int(time.time()) if now is None else now
+        if isinstance(current, bool) or not isinstance(current, int):
+            raise DiscoveryError("reseed verification time is invalid")
+        try:
+            if source_path.stat().st_size > MAX_RESEED_BUNDLE_BYTES:
+                return None
+            content = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        with self._lock:
+            return self._expired_installed_content_unlocked(
+                content,
+                self._load_state_unlocked(),
+                current,
+            )
+
     def import_content(
         self,
         content: str,
@@ -208,6 +272,9 @@ class ReseedStore:
     def load_active(self, now: int | None = None) -> tuple[BootstrapSet, ...]:
         with self._lock:
             state = self._load_state_unlocked()
+            current = int(time.time()) if now is None else now
+            if isinstance(current, bool) or not isinstance(current, int):
+                raise DiscoveryError("reseed verification time is invalid")
             bundles: list[BootstrapSet] = []
             for pin in self.authority_pins:
                 authority_id = _authority_id(pin)
@@ -232,7 +299,11 @@ class ReseedStore:
                         expected_protocol_version=self.protocol_version,
                     )
                 except DiscoveryError as error:
-                    if "not currently valid" in str(error):
+                    if self._expired_installed_content_unlocked(
+                        content,
+                        {authority_id: expected},
+                        current,
+                    ) is not None:
                         continue
                     raise
                 if bundle.sha256 != expected["sha256"]:

@@ -116,6 +116,56 @@ class ReseedStoreTests(unittest.TestCase):
         self.store.import_content(self.bundle(1, lifetime=60).to_json(), now=self.now)
         self.assertEqual(self.store.load_active(now=self.now + 61), ())
 
+    def test_only_exact_previously_installed_expired_bundle_is_recognized(self) -> None:
+        bundle = self.bundle(1, lifetime=60)
+        source = self.root / "bootstrap.json"
+        source.write_text(bundle.to_json(), encoding="utf-8")
+        installed = self.store.import_path(source, now=self.now)
+
+        expired = self.store.expired_installed_bundle(source, now=self.now + 61)
+        self.assertIsNotNone(expired)
+        assert expired is not None
+        self.assertEqual(expired.sha256, installed.sha256)
+        self.assertFalse(expired.installed)
+        self.assertEqual(self.store.load_active(now=self.now + 61), ())
+
+        changed = json.loads(bundle.to_json())
+        changed["expiresAt"] += 1
+        source.write_text(json.dumps(changed), encoding="utf-8")
+        self.assertIsNone(
+            self.store.expired_installed_bundle(source, now=self.now + 61)
+        )
+        with self.assertRaisesRegex(DiscoveryError, "not trusted"):
+            self.store.import_path(source, now=self.now + 61)
+
+    def test_installed_bundle_with_expired_embedded_descriptor_is_inactive(self) -> None:
+        short_lived_peers = [
+            NodeDescriptor.create(
+                ServiceIdentity.generate(),
+                RendezvousEndpoint(f"198.51.100.{index + 10}", 28100 + index),
+                ("bootstrap", "discovery"),
+                RelayPolicy(),
+                issued_at=self.now,
+                lifetime=30,
+            )
+            for index in range(3)
+        ]
+        bundle = BootstrapSet.create(
+            self.authority,
+            short_lived_peers,
+            generation=1,
+            issued_at=self.now,
+            lifetime=300,
+        )
+        source = self.root / "short-descriptor-bootstrap.json"
+        source.write_text(bundle.to_json(), encoding="utf-8")
+        self.store.import_path(source, now=self.now)
+
+        self.assertIsNotNone(
+            self.store.expired_installed_bundle(source, now=self.now + 31)
+        )
+        self.assertEqual(self.store.load_active(now=self.now + 31), ())
+
     def test_multiple_trusted_authorities_and_export_are_supported(self) -> None:
         second_authority = ServiceIdentity.generate()
         second_bundle = BootstrapSet.create(

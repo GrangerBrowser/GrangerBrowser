@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ._codec import atomic_write_text, parse_json_object
-from .bootstrap import BootstrapPool, BootstrapSet
+from .bootstrap import BootstrapPool, BootstrapSet, PeerCache
 from .errors import DescriptorError, DiscoveryError, GrangerNetworkError
 from .identity import ServiceIdentity
 from .node import (
@@ -40,6 +40,9 @@ from .wan_discovery import WanDiscoveryClient
 OPERATOR_CONFIG_VERSION = 1
 MAX_OPERATOR_PATHS = 64
 DEFAULT_STATUS_INTERVAL = 30
+OPERATOR_TERMINAL_EXIT_CODE = 78
+MIN_PERSISTENT_ROUTER_PEERS = 3
+MAX_PERSISTENT_PEER_SUCCESS_AGE_SECONDS = 6 * 60 * 60
 NODE_DESCRIPTOR_REPUBLISH_INTERVAL_SECONDS = 15 * 60
 DISCOVERY_SCHEDULE_DOMAIN = b"granger-network-v0.4/operator-discovery-schedule\x00"
 DISCOVERY_CAPABILITY_DOMAIN = b"granger-network-v0.4/operator-discovery-capability\x00"
@@ -58,6 +61,59 @@ class OperatorConfig:
     peer_descriptors: tuple[Path, ...]
     authority_pins: tuple[Path, ...]
     bootstrap_bundles: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class _BootstrapLoadResult:
+    bootstrap_sets: tuple[BootstrapSet, ...]
+    failure_reason: str = ""
+
+
+class _PersistentPeerPool:
+    """Bootstrap-compatible view over recently authenticated peer descriptors."""
+
+    network_id = NODE_NETWORK_ID
+    protocol_version = NODE_PROTOCOL_VERSION
+
+    def __init__(self, peers: tuple[NodeDescriptor, ...]) -> None:
+        selected: dict[str, NodeDescriptor] = {}
+        for peer in peers:
+            peer.verify(
+                expected_network_id=self.network_id,
+                expected_protocol_version=self.protocol_version,
+            )
+            if peer.reachability != "reachable" or "discovery" not in peer.capabilities:
+                continue
+            previous = selected.get(peer.node_id)
+            if previous is None or peer.issued_at > previous.issued_at:
+                selected[peer.node_id] = peer
+        self.peers = tuple(selected.values())
+
+    def candidates(
+        self,
+        capability: str,
+        now: int | None = None,
+    ) -> tuple[NodeDescriptor, ...]:
+        result: list[NodeDescriptor] = []
+        for peer in self.peers:
+            try:
+                peer.verify(
+                    now=now,
+                    expected_network_id=self.network_id,
+                    expected_protocol_version=self.protocol_version,
+                )
+            except DescriptorError:
+                continue
+            if capability in peer.capabilities and peer.reachability == "reachable":
+                result.append(peer)
+        return tuple(result)
+
+    def seed_candidates(
+        self,
+        capability: str,
+        now: int | None = None,
+    ) -> tuple[NodeDescriptor, ...]:
+        return self.candidates(capability, now=now)
 
 
 def _integer(value: object, minimum: int, maximum: int, label: str) -> int:
@@ -351,9 +407,11 @@ def _load_peer_descriptors(config: OperatorConfig) -> tuple[NodeDescriptor, ...]
 def _load_bootstrap_sets(
     config: OperatorConfig,
     state_dir: Path,
-) -> tuple[BootstrapSet, ...]:
+    *,
+    now: int | None = None,
+) -> _BootstrapLoadResult:
     if not config.bootstrap_bundles:
-        return ()
+        return _BootstrapLoadResult(())
     pins = tuple(load_authority_pin(path) for path in config.authority_pins)
     reseed = ReseedStore(
         Path(state_dir).resolve() / "reseed",
@@ -361,9 +419,50 @@ def _load_bootstrap_sets(
         network_id=NODE_NETWORK_ID,
         protocol_version=NODE_PROTOCOL_VERSION,
     )
+    expired = False
     for path in config.bootstrap_bundles:
-        reseed.import_path(path, source="operator-config")
-    return reseed.load_active()
+        try:
+            reseed.import_path(path, source="operator-config", now=now)
+        except DiscoveryError:
+            if reseed.expired_installed_bundle(path, now=now) is None:
+                raise
+            expired = True
+    active = reseed.load_active(now=now)
+    if active:
+        return _BootstrapLoadResult(
+            active,
+            "REFRESH_REQUIRED" if expired else "",
+        )
+    return _BootstrapLoadResult((), "RESEED_EXPIRED" if expired else "")
+
+
+def _persistent_router_peers(
+    state_dir: Path,
+    self_node_id: str,
+    *,
+    now: int | None = None,
+) -> tuple[NodeDescriptor, ...]:
+    current = int(time.time()) if now is None else now
+    cache = PeerCache(
+        Path(state_dir).resolve() / "peer-cache.json",
+        network_id=NODE_NETWORK_ID,
+        protocol_version=NODE_PROTOCOL_VERSION,
+    )
+    peers: list[NodeDescriptor] = []
+    for entry in cache.entries(now=current):
+        last_success = entry.last_successful_connection
+        descriptor = entry.descriptor
+        if (
+            descriptor.node_id == self_node_id
+            or descriptor.reachability != "reachable"
+            or "discovery" not in descriptor.capabilities
+            or last_success is None
+            or last_success > current + 120
+            or current - last_success > MAX_PERSISTENT_PEER_SUCCESS_AGE_SECONDS
+        ):
+            continue
+        peers.append(descriptor)
+    return tuple(peers)
 
 
 class _DiscoverySupervisor:
@@ -373,6 +472,9 @@ class _DiscoverySupervisor:
         identity: ServiceIdentity,
         bootstrap_sets: tuple[BootstrapSet, ...],
         interval: int,
+        *,
+        startup_failure_reason: str = "",
+        persistent_peers: tuple[NodeDescriptor, ...] = (),
     ) -> None:
         self.node = node
         self.interval = interval
@@ -380,23 +482,71 @@ class _DiscoverySupervisor:
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
         self._descriptor_published_at: float | None = None
-        self.snapshot: dict[str, object] = {
-            "dhtReady": False,
-            "failureReason": "NO_RESEED_SOURCE" if not bootstrap_sets else "",
-            "state": "BOOTSTRAP_LISTENING" if not bootstrap_sets else "BOOTSTRAPPING",
-        }
+        self.startup_failure_reason = startup_failure_reason
+        if bootstrap_sets:
+            self.snapshot = {
+                "dhtReady": False,
+                "failureReason": startup_failure_reason,
+                "refreshRequired": bool(startup_failure_reason),
+                "state": "BOOTSTRAPPING",
+            }
+        elif startup_failure_reason:
+            reachable_relays = sum(
+                bool(set(peer.capabilities) & RELAY_CAPABILITIES)
+                for peer in persistent_peers
+            ) + int(bool(set(node.descriptor.capabilities) & RELAY_CAPABILITIES))
+            self.snapshot = {
+                "authenticatedPeers": 0,
+                "dhtReady": False,
+                "failureReason": startup_failure_reason,
+                "knownPeers": len(persistent_peers) + 1,
+                "reachableRelays": reachable_relays,
+                "refreshRequired": True,
+                "state": "DEGRADED",
+            }
+        else:
+            self.snapshot = {
+                "dhtReady": False,
+                "failureReason": "NO_RESEED_SOURCE",
+                "state": "BOOTSTRAP_LISTENING",
+            }
+        pool = None
+        cache = None
+        if bootstrap_sets:
+            pool = BootstrapPool(bootstrap_sets, node.peer_cache)
+            cache = node.peer_cache
+        elif startup_failure_reason == "RESEED_EXPIRED" and persistent_peers:
+            # The expired bundle is never admitted here. Only individually signed,
+            # still-valid descriptors from recent authenticated sessions are used.
+            pool = _PersistentPeerPool(persistent_peers)
         self.discovery = (
             WanDiscoveryClient(
                 identity,
-                BootstrapPool(bootstrap_sets, node.peer_cache),
-                cache=node.peer_cache,
+                pool,
+                cache=cache,
                 replication_factor=3,
                 minimum_replicas=2,
                 timeout=min(10.0, float(node.policy.connection_timeout_seconds)),
             )
-            if bootstrap_sets
+            if pool is not None
             else None
         )
+
+    def _with_reseed_status(self, document: dict[str, object]) -> dict[str, object]:
+        if not self.startup_failure_reason:
+            return document
+        result = dict(document)
+        result["refreshRequired"] = True
+        result["reseedState"] = self.startup_failure_reason
+        if (
+            self.startup_failure_reason == "RESEED_EXPIRED"
+            and result.get("state") != "OFFLINE"
+        ):
+            result["failureReason"] = "RESEED_EXPIRED"
+            result["state"] = "DEGRADED"
+        elif not result.get("failureReason"):
+            result["failureReason"] = self.startup_failure_reason
+        return result
 
     def start(self) -> None:
         if self.discovery is None:
@@ -447,14 +597,18 @@ class _DiscoverySupervisor:
                 for peer in learned.values():
                     self.node.add_known_peer(peer, source="operator-dht")
                 with self.lock:
-                    self.snapshot = self.discovery.health().to_document()
+                    self.snapshot = self._with_reseed_status(
+                        self.discovery.health().to_document()
+                    )
             except (GrangerNetworkError, OSError, ValueError) as error:
                 with self.lock:
-                    self.snapshot = {
-                        "dhtReady": False,
-                        "failureReason": type(error).__name__,
-                        "state": "DEGRADED",
-                    }
+                    self.snapshot = self._with_reseed_status(
+                        {
+                            "dhtReady": False,
+                            "failureReason": type(error).__name__,
+                            "state": "DEGRADED",
+                        }
+                    )
             cycle += 1
             self.stop_event.wait(
                 _discovery_wait_seconds(
@@ -606,23 +760,48 @@ def run_operator(
     status_file: Path,
     diagnostics_file: Path,
 ) -> int:
+    state = Path(state_dir).resolve()
+    identity_preexisting = (state / NODE_IDENTITY_FILE).is_file()
+    bootstrap_load = _load_bootstrap_sets(config, state)
+    if bootstrap_load.failure_reason == "RESEED_EXPIRED" and not identity_preexisting:
+        raise DiscoveryError("expired reseed cannot initialize a fresh router")
     descriptor, _created = prepare_node(config, state_dir, public_dir)
-    identity = ServiceIdentity.load(Path(state_dir).resolve() / NODE_IDENTITY_FILE)
-    bootstrap_sets = _load_bootstrap_sets(config, state_dir)
+    identity = ServiceIdentity.load(state / NODE_IDENTITY_FILE)
+    persistent_peers = (
+        _persistent_router_peers(state, descriptor.node_id)
+        if bootstrap_load.failure_reason == "RESEED_EXPIRED"
+        else ()
+    )
+    if (
+        bootstrap_load.failure_reason == "RESEED_EXPIRED"
+        and len(persistent_peers) < MIN_PERSISTENT_ROUTER_PEERS
+    ):
+        raise DiscoveryError(
+            "expired reseed has insufficient valid authenticated persistent peer state"
+        )
     known: dict[str, NodeDescriptor] = {
         peer.node_id: peer for peer in _load_peer_descriptors(config)
     }
-    for bootstrap in bootstrap_sets:
+    for bootstrap in bootstrap_load.bootstrap_sets:
         for peer in bootstrap.peers:
             if peer.node_id != descriptor.node_id:
                 known[peer.node_id] = peer
+    for peer in persistent_peers:
+        known[peer.node_id] = peer
     node = load_node(
         state_dir,
         tuple(known.values()),
         listener_endpoint=config.listen,
         diagnostics_path=diagnostics_file,
     )
-    supervisor = _DiscoverySupervisor(node, identity, bootstrap_sets, config.discovery_interval)
+    supervisor = _DiscoverySupervisor(
+        node,
+        identity,
+        bootstrap_load.bootstrap_sets,
+        config.discovery_interval,
+        startup_failure_reason=bootstrap_load.failure_reason,
+        persistent_peers=persistent_peers,
+    )
     lease = _PidLease(pid_file)
     stop_event = threading.Event()
 
@@ -790,6 +969,38 @@ def main(argv: list[str] | None = None) -> int:
             options.status_file,
             options.diagnostics,
         )
+    except DiscoveryError as error:
+        if options.command == "run":
+            Path(options.ready_file).unlink(missing_ok=True)
+            detail = str(error).lower()
+            if "expired" in detail:
+                failure_reason = "RESEED_EXPIRED_NO_VALID_STATE"
+            elif "rollback" in detail:
+                failure_reason = "SIGNED_TOPOLOGY_ROLLBACK_REJECTED"
+            else:
+                failure_reason = "SIGNED_TOPOLOGY_REJECTED"
+            atomic_write_text(
+                options.status_file,
+                json.dumps(
+                    {
+                        "network": {
+                            "dhtReady": False,
+                            "failureReason": failure_reason,
+                            "state": "OFFLINE",
+                        },
+                        "pid": os.getpid(),
+                        "state": "STOPPED",
+                        "version": 1,
+                    },
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                mode=0o600,
+            )
+        print(f"granger-operator: {type(error).__name__}: {error}", file=sys.stderr)
+        return OPERATOR_TERMINAL_EXIT_CODE
     except (GrangerNetworkError, OSError, RuntimeError, ValueError) as error:
         print(f"granger-operator: {type(error).__name__}: {error}", file=sys.stderr)
         return 2

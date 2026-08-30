@@ -12,19 +12,31 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from granger_network.bootstrap import BootstrapSet, PeerCache
+from granger_network.errors import DiscoveryError
+from granger_network.identity import ServiceIdentity
 from granger_network.node import NodeListenerEndpoint, initialize_node, load_node
 from granger_network.operator import (
     DISCOVERY_CAPABILITIES,
     NODE_DESCRIPTOR_REPUBLISH_INTERVAL_SECONDS,
+    OPERATOR_TERMINAL_EXIT_CODE,
+    _BootstrapLoadResult,
+    _DiscoverySupervisor,
+    _PersistentPeerPool,
     _descriptor_publication_due,
     _discovery_capability,
     _discovery_wait_seconds,
+    _load_bootstrap_sets,
+    _persistent_router_peers,
     _stopped_status_document,
     load_operator_config,
+    main as operator_main,
     prepare_node,
+    run_operator,
 )
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
+from granger_network.wan_config import write_bootstrap_bundle
 
 
 class OperatorTests(unittest.TestCase):
@@ -86,6 +98,49 @@ class OperatorTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def _bootstrap_peers(
+        self,
+        now: int,
+        *,
+        lifetime: int = 3600,
+    ) -> list[NodeDescriptor]:
+        return [
+            NodeDescriptor.create(
+                ServiceIdentity.generate(),
+                RendezvousEndpoint(f"203.0.113.{index + 110}", 62500 + index),
+                (
+                    "access",
+                    "bootstrap",
+                    "discovery",
+                    "entry",
+                    "middle",
+                ),
+                RelayPolicy(enabled=True),
+                issued_at=now,
+                lifetime=lifetime,
+            )
+            for index in range(3)
+        ]
+
+    def _signed_config(
+        self,
+        bundle: BootstrapSet,
+    ) -> tuple[Path, Path]:
+        config_path = self._config()
+        bundle_path = self.root / "bootstrap.json"
+        authority_pin = self.root / "bootstrap-authority.pin"
+        write_bootstrap_bundle(bundle, bundle_path, authority_pin)
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document["bootstrap"] = {
+            "authorityPins": [authority_pin.name],
+            "bundles": [bundle_path.name],
+        }
+        config_path.write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return config_path, bundle_path
 
     def test_discovery_schedule_is_bounded_and_identity_staggered(self) -> None:
         node_ids = (
@@ -206,6 +261,176 @@ class OperatorTests(unittest.TestCase):
         finally:
             reloaded.stop()
 
+    def test_expired_installed_reseed_is_not_returned_as_bootstrap(self) -> None:
+        now = int(time.time())
+        authority = ServiceIdentity.generate()
+        bundle = BootstrapSet.create(
+            authority,
+            self._bootstrap_peers(now),
+            generation=1,
+            issued_at=now,
+            lifetime=60,
+        )
+        config_path, _bundle_path = self._signed_config(bundle)
+        config = load_operator_config(config_path)
+        state = self.root / "expired-reseed-state"
+
+        active = _load_bootstrap_sets(config, state, now=now)
+        expired = _load_bootstrap_sets(config, state, now=now + 61)
+
+        self.assertEqual(active.bootstrap_sets[0].generation, 1)
+        self.assertEqual(active.failure_reason, "")
+        self.assertEqual(expired.bootstrap_sets, ())
+        self.assertEqual(expired.failure_reason, "RESEED_EXPIRED")
+
+    def test_fresh_router_rejects_expired_reseed_without_creating_identity(self) -> None:
+        config = load_operator_config(self._config())
+        state = self.root / "fresh-expired-state"
+        with patch(
+            "granger_network.operator._load_bootstrap_sets",
+            return_value=_BootstrapLoadResult((), "RESEED_EXPIRED"),
+        ):
+            with self.assertRaisesRegex(DiscoveryError, "fresh router"):
+                run_operator(
+                    config,
+                    state,
+                    self.root / "fresh-public",
+                    self.root / "fresh.pid",
+                    self.root / "fresh-ready.json",
+                    self.root / "fresh-status.json",
+                    self.root / "fresh-diagnostics.jsonl",
+                )
+        self.assertFalse((state / "node-identity.json").exists())
+
+    def test_joined_router_requires_recent_authenticated_peer_state(self) -> None:
+        now = int(time.time())
+        config = load_operator_config(self._config())
+        state = self.root / "joined-state"
+        public = self.root / "joined-public"
+        descriptor, _created = prepare_node(config, state, public, now=now)
+        peers = self._bootstrap_peers(now)
+        cache = PeerCache(state / "peer-cache.json")
+        for peer in peers:
+            cache.record_success(peer, now=now)
+
+        persistent = _persistent_router_peers(
+            state,
+            descriptor.node_id,
+            now=now + 1,
+        )
+        self.assertEqual(len(persistent), 3)
+        pool = _PersistentPeerPool(persistent)
+        self.assertEqual(len(pool.seed_candidates("discovery", now=now + 1)), 3)
+
+        node = load_node(state, persistent)
+        supervisor = _DiscoverySupervisor(
+            node,
+            ServiceIdentity.load(state / "node-identity.json"),
+            (),
+            300,
+            startup_failure_reason="RESEED_EXPIRED",
+            persistent_peers=persistent,
+        )
+        try:
+            self.assertIsNotNone(supervisor.discovery)
+            self.assertEqual(supervisor.status()["authenticatedPeers"], 0)
+            self.assertEqual(supervisor.status()["state"], "DEGRADED")
+            recovered = supervisor._with_reseed_status(
+                {
+                    "authenticatedPeers": 3,
+                    "dhtReady": True,
+                    "failureReason": "",
+                    "state": "CONNECTED",
+                }
+            )
+            self.assertTrue(recovered["dhtReady"])
+            self.assertEqual(recovered["failureReason"], "RESEED_EXPIRED")
+            self.assertEqual(recovered["state"], "DEGRADED")
+            self.assertTrue(recovered["refreshRequired"])
+        finally:
+            node.stop()
+
+    def test_joined_router_without_recent_peer_state_fails_closed(self) -> None:
+        config = load_operator_config(self._config())
+        state = self.root / "joined-empty-state"
+        prepare_node(config, state, self.root / "joined-empty-public")
+        with patch(
+            "granger_network.operator._load_bootstrap_sets",
+            return_value=_BootstrapLoadResult((), "RESEED_EXPIRED"),
+        ):
+            with self.assertRaisesRegex(DiscoveryError, "insufficient"):
+                run_operator(
+                    config,
+                    state,
+                    self.root / "joined-empty-public",
+                    self.root / "joined-empty.pid",
+                    self.root / "joined-empty-ready.json",
+                    self.root / "joined-empty-status.json",
+                    self.root / "joined-empty-diagnostics.jsonl",
+                )
+
+    def test_fresh_reseed_generation_recovers_after_expiry(self) -> None:
+        now = int(time.time())
+        authority = ServiceIdentity.generate()
+        peers = self._bootstrap_peers(now, lifetime=3600)
+        first = BootstrapSet.create(
+            authority,
+            peers,
+            generation=1,
+            issued_at=now,
+            lifetime=60,
+        )
+        config_path, bundle_path = self._signed_config(first)
+        config = load_operator_config(config_path)
+        state = self.root / "reseed-recovery-state"
+        _load_bootstrap_sets(config, state, now=now)
+        self.assertEqual(
+            _load_bootstrap_sets(config, state, now=now + 61).failure_reason,
+            "RESEED_EXPIRED",
+        )
+
+        second = BootstrapSet.create(
+            authority,
+            peers,
+            generation=2,
+            issued_at=now + 61,
+            lifetime=600,
+        )
+        bundle_path.write_text(second.to_json(), encoding="utf-8")
+        recovered = _load_bootstrap_sets(config, state, now=now + 61)
+        self.assertEqual(recovered.failure_reason, "")
+        self.assertEqual(recovered.bootstrap_sets[0].generation, 2)
+
+    def test_signed_topology_rejection_is_terminal_for_systemd(self) -> None:
+        config_path = self._config()
+        status_path = self.root / "terminal-status.json"
+        with patch(
+            "granger_network.operator.run_operator",
+            side_effect=DiscoveryError("bootstrap set signature is invalid"),
+        ):
+            result = operator_main(
+                [
+                    "run",
+                    "--config",
+                    str(config_path),
+                    "--state-dir",
+                    str(self.root / "terminal-state"),
+                    "--public-dir",
+                    str(self.root / "terminal-public"),
+                    "--pid-file",
+                    str(self.root / "terminal.pid"),
+                    "--ready-file",
+                    str(self.root / "terminal-ready.json"),
+                    "--status-file",
+                    str(status_path),
+                    "--diagnostics",
+                    str(self.root / "terminal-diagnostics.jsonl"),
+                ]
+            )
+        self.assertEqual(result, OPERATOR_TERMINAL_EXIT_CODE)
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        self.assertEqual(status["network"]["failureReason"], "SIGNED_TOPOLOGY_REJECTED")
+
     def test_config_rejects_unpaired_reseed_material(self) -> None:
         path = self._config()
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -289,6 +514,7 @@ class OperatorTests(unittest.TestCase):
         )
         self.assertIn("User=granger", service)
         self.assertIn("Restart=on-failure", service)
+        self.assertIn("RestartPreventExitStatus=78", service)
         self.assertIn("NoNewPrivileges=true", service)
         self.assertIn("ProtectSystem=strict", service)
         self.assertIn("MemoryMax=160M", service)
