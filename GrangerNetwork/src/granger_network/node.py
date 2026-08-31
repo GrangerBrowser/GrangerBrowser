@@ -108,6 +108,8 @@ class NodeListenerEndpoint:
 
 
 class WanCircuitObservation:
+    """Counters only by default; diagnostic payload sampling is explicit."""
+
     def __init__(
         self,
         circuit_id: bytes,
@@ -115,9 +117,15 @@ class WanCircuitObservation:
         upstream: str,
         downstream: str,
         *,
-        sample_limit: int = 2 * 1024 * 1024,
+        sample_limit: int = 0,
         capture: Callable[[bytes], None] | None = None,
     ) -> None:
+        if (
+            isinstance(sample_limit, bool)
+            or not isinstance(sample_limit, int)
+            or not 0 <= sample_limit <= 2 * 1024 * 1024
+        ):
+            raise ResourceLimitError("relay observation sample limit is invalid")
         self.circuit_id = circuit_id
         self.role = role
         self.upstream = upstream

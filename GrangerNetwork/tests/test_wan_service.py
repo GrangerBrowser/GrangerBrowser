@@ -258,7 +258,8 @@ class WanServiceTests(unittest.TestCase):
             for identity, role in zip(self.identities, roles, strict=True)
         ]
         self.nodes = [
-            WanNodeServer(identity, descriptor, self.root / f"node-{index}")
+            WanNodeServer(identity, descriptor, self.root / f"node-{index}",
+                          capture_path=self.root / f"node-{index}.capture")
             for index, (identity, descriptor) in enumerate(
                 zip(self.identities, self.descriptors, strict=True)
             )
@@ -596,9 +597,12 @@ class WanServiceTests(unittest.TestCase):
             all(address[1] == int(self.backend.server_address[1]) for address in application_destinations)
         )
         for node in self.nodes:
-            for observation in node.circuit_observations:
-                self.assertFalse(observation.contains(MESSAGE))
-                self.assertFalse(observation.contains(b"POST /message"))
+            if node.circuit_observations:
+                captured = node.capture_path.read_bytes()
+                self.assertTrue(captured)
+                self.assertNotIn(MESSAGE, captured)
+                self.assertNotIn(b"POST /message", captured)
+                self.assertTrue(all(not observation._sample for observation in node.circuit_observations))
         self.assertEqual(host.errors, [])
 
     def test_static_site_bridge_stays_inside_encrypted_overlay(self) -> None:
@@ -703,9 +707,12 @@ class WanServiceTests(unittest.TestCase):
         self.assertTrue(connections)
         self.assertTrue(all(address[1] in allowed_ports for address in connections))
         for node in self.nodes:
-            for observation in node.circuit_observations:
+            if node.circuit_observations:
+                captured = node.capture_path.read_bytes()
+                self.assertTrue(captured)
                 for content in files.values():
-                    self.assertFalse(observation.contains(content))
+                    self.assertNotIn(content, captured)
+                self.assertTrue(all(not observation._sample for observation in node.circuit_observations))
         self.assertEqual(host.errors, [])
 
     def test_active_cover_traffic_does_not_hit_an_absolute_bridge_lifetime(self) -> None:

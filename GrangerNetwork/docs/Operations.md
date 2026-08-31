@@ -91,6 +91,12 @@ failure to an ISP or VPN. See the
 
 ## Diagnostics and captures
 
+Production circuit observations retain counters, not forwarded payload bytes.
+Keeping even a small per-circuit sample in a historical observation list can
+exhaust the router's memory budget after traffic has stopped. Explicit captures
+use the node-wide bounded sink below; raising `MemoryHigh` is not a substitute
+for correcting retained traffic buffers.
+
 `granger_network.node run` supports:
 
 - `--ready-file`: bounded JSON process/endpoint readiness;

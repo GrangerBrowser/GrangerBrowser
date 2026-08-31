@@ -10,7 +10,7 @@ from granger_network.descriptor import ServiceDescriptor
 from granger_network.distributed import encode_record
 from granger_network.errors import DiscoveryError
 from granger_network.identity import ServiceIdentity
-from granger_network.node import WanNodeServer, initialize_node
+from granger_network.node import WanCircuitObservation, WanNodeServer, initialize_node
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_discovery import PersistentRecordStore
@@ -23,6 +23,25 @@ def available_port() -> int:
 
 
 class WanResourceLimitTests(unittest.TestCase):
+    def test_default_observations_do_not_retain_relay_payload(self) -> None:
+        payload = b"x" * (2 * 1024 * 1024)
+        observations = [
+            WanCircuitObservation(index.to_bytes(16, "big"), "middle", "upstream", "downstream")
+            for index in range(32)
+        ]
+        for observation in observations:
+            observation.record(payload)
+            self.assertEqual(observation.bytes_forwarded, len(payload))
+        self.assertEqual(sum(len(observation._sample) for observation in observations), 0)
+
+    def test_explicit_observation_sample_is_bounded(self) -> None:
+        observation = WanCircuitObservation(
+            b"c" * 16, "middle", "upstream", "downstream", sample_limit=128,
+        )
+        observation.record(b"marker" + b"x" * 4096)
+        self.assertTrue(observation.contains(b"marker"))
+        self.assertEqual(len(observation._sample), 128)
+
     def test_node_initialization_applies_requested_descriptor_lifetime(self) -> None:
         with tempfile.TemporaryDirectory(prefix="granger-node-lifetime-") as temporary:
             descriptor = initialize_node(

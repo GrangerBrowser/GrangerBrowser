@@ -47,7 +47,8 @@ class WanCircuitTests(unittest.TestCase):
             for identity, role in zip(self.identities, definitions, strict=True)
         ]
         self.nodes = [
-            WanNodeServer(identity, descriptor, self.root / f"node-{index}")
+            WanNodeServer(identity, descriptor, self.root / f"node-{index}",
+                          capture_path=self.root / f"node-{index}.capture")
             for index, (identity, descriptor) in enumerate(
                 zip(self.identities, self.descriptors, strict=True)
             )
@@ -91,7 +92,10 @@ class WanCircuitTests(unittest.TestCase):
             for node in self.nodes[:3]:
                 observation = node.circuit_observations[0]
                 self.assertGreater(observation.bytes_forwarded, 0)
-                self.assertFalse(observation.contains(marker))
+                captured = node.capture_path.read_bytes()
+                self.assertTrue(captured)
+                self.assertNotIn(marker, captured)
+                self.assertEqual(len(observation._sample), 0)
             self.assertEqual(self.nodes[0].circuit_observations[0].downstream, self.descriptors[1].node_id)
             self.assertEqual(self.nodes[1].circuit_observations[0].downstream, self.descriptors[2].node_id)
             self.assertEqual(self.nodes[2].circuit_observations[0].downstream, self.descriptors[3].node_id)

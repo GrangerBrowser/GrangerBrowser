@@ -72,7 +72,8 @@ class WanRendezvousTests(unittest.TestCase):
             for identity, role in zip(self.identities, definitions, strict=True)
         ]
         self.nodes = [
-            WanNodeServer(identity, descriptor, self.root / f"node-{index}")
+            WanNodeServer(identity, descriptor, self.root / f"node-{index}",
+                          capture_path=self.root / f"node-{index}.capture")
             for index, (identity, descriptor) in enumerate(
                 zip(self.identities, self.descriptors, strict=True)
             )
@@ -313,7 +314,10 @@ class WanRendezvousTests(unittest.TestCase):
         self.assertEqual(client_channel.receive_bytes(), b"response:" + marker)
         rendezvous_observations = self.nodes[-1].circuit_observations
         self.assertTrue(rendezvous_observations)
-        self.assertTrue(all(not observation.contains(marker) for observation in rendezvous_observations))
+        captured = self.nodes[-1].capture_path.read_bytes()
+        self.assertTrue(captured)
+        self.assertNotIn(marker, captured)
+        self.assertTrue(all(not observation._sample for observation in rendezvous_observations))
         self.assertNotEqual(
             self.nodes[0].peer_addresses,
             self.nodes[3].peer_addresses,
