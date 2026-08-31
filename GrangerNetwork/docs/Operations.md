@@ -138,6 +138,14 @@ Rollback, equivocation, and failed quorum lookup remain fail-closed. This does
 not guarantee availability while a replacement introduction is still being
 published, and it does not retry application writes.
 
+Hosting accepts rendezvous handshakes in bounded workers. A client that obtains
+a grant but never joins does not hold up the next grant while capacity remains.
+Pending handshakes and active application sessions share the same host limit
+(four by default); exhaustion rejects further introductions without a fallback.
+The existing registration expiry still bounds abandoned reservations. Stop and
+route recovery close pending circuits. Health reports expose only their count,
+not cookies or client metadata.
+
 Do not log private identities, channel keys, introduction cookies, application
 bodies, or endpoint addresses across the client/service boundary.
 

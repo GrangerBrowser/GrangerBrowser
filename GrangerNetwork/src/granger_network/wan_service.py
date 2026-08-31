@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .cells import CellMultiplexer
+from .cells import CellMultiplexer, MuxStream
 from .circuit import BuiltCircuit, CircuitBuilder
 from .descriptor import ServiceDescriptor
 from .errors import GrangerNetworkError, OverlayRoutingError, ProtocolError
@@ -374,6 +374,7 @@ class WanServiceHost:
         self._intro_circuits: list[BuiltCircuit] = []
         self._intro_activity: dict[str, float] = {}
         self._rendezvous_circuit: BuiltCircuit | None = None
+        self._pending_rendezvous: dict[bytes, tuple[BuiltCircuit, threading.Thread]] = {}
         self._sessions: set[_HostedSession] = set()
         self._grant_condition = threading.Condition()
         self._grant_slot: tuple[bytes, int] | None = None
@@ -414,6 +415,7 @@ class WanServiceHost:
                 "healthyIntroductions": healthy,
                 "requiredIntroductions": len(self.introduction_routes),
                 "activeSessions": len(self._sessions),
+                "pendingSessions": len(self._pending_rendezvous),
             }
 
     @property
@@ -466,9 +468,12 @@ class WanServiceHost:
         with self._grant_condition:
             self._grant_slot = None
             self._grant_condition.notify_all()
-        circuit = self._rendezvous_circuit
+            circuit = self._rendezvous_circuit
+            pending = tuple(self._pending_rendezvous.values())
         if circuit is not None:
             circuit.close()
+        for pending_circuit, _worker in pending:
+            pending_circuit.close()
 
     def _run(self) -> None:
         try:
@@ -511,7 +516,9 @@ class WanServiceHost:
             ):
                 with self._grant_condition:
                     while (
-                        len(self._sessions) >= self.max_sessions
+                        (self._grant_slot is not None
+                         or len(self._sessions) + len(self._pending_rendezvous)
+                         >= self.max_sessions)
                         and not self._stop.is_set()
                         and not self._recovery.is_set()
                         and int(time.time()) < self.introduction.expires_at
@@ -571,9 +578,6 @@ class WanServiceHost:
         route_ready = False
         circuit = None
         rendezvous_mux = None
-        channel = None
-        application_mux = None
-        application_server = None
         handed_off = False
         try:
             circuit = builder.open(self.rendezvous_route)
@@ -601,13 +605,55 @@ class WanServiceHost:
             circuit.endpoint.channel.connection.settimeout(None)
             rendezvous_stream.settimeout(float(self.rendezvous_lifetime))
             route_ready = True
+            worker = threading.Thread(
+                target=self._accept_rendezvous_session,
+                args=(cookie, circuit, rendezvous_mux, rendezvous_stream),
+                name="granger-rendezvous-accept",
+                daemon=True,
+            )
             with self._grant_condition:
                 if self._stop.is_set() or self._recovery.is_set():
                     raise OverlayRoutingError("service route recovery was requested")
+                # Count pending handshakes against the same limit as active
+                # sessions. An abandoned grant must not block every later client.
+                self._pending_rendezvous[cookie] = (circuit, worker)
                 self._grant_slot = (cookie, expires_at)
+                try:
+                    worker.start()
+                except BaseException:
+                    self._pending_rendezvous.pop(cookie, None)
+                    self._grant_slot = None
+                    raise ProtocolError("rendezvous handshake worker could not start")
+                handed_off = True
+                self._rendezvous_circuit = None
                 self._grant_condition.notify_all()
             self._ready.set()
+        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+            if not route_ready and not self._stop.is_set() and not self._recovery.is_set():
+                raise _RendezvousRouteUnavailable(str(error)) from error
+            raise
+        finally:
+            with self._grant_condition:
+                if self._rendezvous_circuit is circuit:
+                    self._rendezvous_circuit = None
+            if not handed_off:
+                if rendezvous_mux is not None:
+                    rendezvous_mux.close()
+                if circuit is not None:
+                    circuit.close()
 
+    def _accept_rendezvous_session(
+        self,
+        cookie: bytes,
+        circuit: BuiltCircuit,
+        rendezvous_mux: CellMultiplexer,
+        rendezvous_stream: MuxStream,
+    ) -> None:
+        channel = None
+        application_mux = None
+        application_server = None
+        handed_off = False
+        try:
             channel = server_handshake(
                 rendezvous_stream,
                 self.identity,
@@ -647,20 +693,17 @@ class WanServiceHost:
                     session.thread.start()
                 except BaseException:
                     self._sessions.discard(session)
-                    raise
+                    raise ProtocolError("hosted application worker could not start")
+                self._pending_rendezvous.pop(cookie, None)
                 handed_off = True
-                self._rendezvous_circuit = None
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-            if not route_ready and not self._stop.is_set() and not self._recovery.is_set():
-                raise _RendezvousRouteUnavailable(str(error)) from error
-            raise
+            with self._grant_condition:
+                if not self._stop.is_set() and len(self.session_failures) < 1024:
+                    self.session_failures.append(f"rendezvous-handshake:{type(error).__name__}")
         finally:
             with self._grant_condition:
                 if self._grant_slot is not None and self._grant_slot[0] == cookie:
                     self._grant_slot = None
-                self._grant_condition.notify_all()
-                if self._rendezvous_circuit is circuit:
-                    self._rendezvous_circuit = None
             if not handed_off:
                 if application_server is not None:
                     application_server.stop()
@@ -672,6 +715,9 @@ class WanServiceHost:
                     rendezvous_mux.close()
                 if circuit is not None:
                     circuit.close()
+            with self._grant_condition:
+                self._pending_rendezvous.pop(cookie, None)
+                self._grant_condition.notify_all()
 
     def _serve_application_session(self, session: _HostedSession) -> None:
         try:
@@ -715,6 +761,8 @@ class WanServiceHost:
                 grant_slot: tuple[bytes, int] | None = None
                 with self._grant_condition:
                     while self._grant_slot is None and not self._stop.is_set():
+                        if len(self._sessions) + len(self._pending_rendezvous) >= self.max_sessions:
+                            break
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             break
@@ -722,6 +770,7 @@ class WanServiceHost:
                     if self._grant_slot is not None:
                         grant_slot = self._grant_slot
                         self._grant_slot = None
+                        self._grant_condition.notify_all()
                     elif self._stop.is_set():
                         raise ProtocolError("service is stopping")
                 if grant_slot is None:
@@ -773,9 +822,15 @@ class WanServiceHost:
             self._grant_slot = None
             self._grant_condition.notify_all()
             pending = self._rendezvous_circuit
+            pending_sessions = tuple(self._pending_rendezvous.values())
             sessions = tuple(self._sessions)
         if pending is not None:
             pending.close()
+        for circuit, _worker in pending_sessions:
+            circuit.close()
+        for _circuit, worker in pending_sessions:
+            if worker is not threading.current_thread():
+                worker.join(timeout=3.0)
         for session in sessions:
             session.close()
         for session in sessions:

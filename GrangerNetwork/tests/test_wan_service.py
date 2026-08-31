@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from granger_network.browser_gateway import CircuitRotationPolicy, _WanGateway
+from granger_network.circuit import CircuitBuilder
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.errors import GrangerNetworkError, OverlayRoutingError, ProtocolError
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
@@ -20,7 +21,7 @@ from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
 from granger_network.node import WanNodeServer
 from granger_network.peer import NodeDescriptor, RelayPolicy
-from granger_network.peer_rpc import RpcFrame, RpcType
+from granger_network.peer_rpc import PeerRole, RpcFrame, RpcType
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_control import IntroductionRequest, encode_intro_request
 from granger_network.wan_client import connect_service
@@ -336,6 +337,112 @@ class WanServiceTests(unittest.TestCase):
                 previous.close()
             if worker is not None:
                 worker.join(timeout=5.0)
+            host.stop()
+
+    def test_abandoned_grant_does_not_block_next_client(self) -> None:
+        host, client, intro = self._rotation_pair(max_sessions=2)
+        host.timeout = 10.0
+        client.timeout = 2.0
+        original_open = CircuitBuilder.open
+        abandoned = False
+        session = None
+
+        def open_route(builder, route):
+            nonlocal abandoned
+            if (not abandoned and builder.role is PeerRole.CLIENT
+                    and route[-1][1] == "rendezvous"):
+                abandoned = True
+                raise OverlayRoutingError("test client stopped before rendezvous join")
+            return original_open(builder, route)
+
+        try:
+            with patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")):
+                host.start_background()
+                host.wait_ready(15)
+                with patch.object(CircuitBuilder, "open", open_route):
+                    with self.assertRaises(OverlayRoutingError):
+                        client.connect(intro)
+                self.assertTrue(abandoned)
+                session = client.connect(intro)
+                self.assertEqual(session.fetch("/").body, HTML)
+                self.assertFalse(host.recovery_requested)
+                with host._grant_condition:
+                    self.assertEqual(len(host._pending_rendezvous), 1)
+                    self.assertEqual(len(host._sessions), 1)
+                    pending = tuple(host._pending_rendezvous.values())
+                host.stop()
+                self.assertEqual(host.active_sessions, 0)
+                self.assertFalse(host._pending_rendezvous)
+                self.assertTrue(all(not worker.is_alive() for _circuit, worker in pending))
+        finally:
+            if session is not None:
+                session.close()
+            host.stop()
+
+    def test_pending_handshakes_share_the_host_session_limit(self) -> None:
+        host, client, intro = self._rotation_pair(max_sessions=2)
+        host.timeout = 10.0
+        client.timeout = 2.0
+        original_open = CircuitBuilder.open
+        session = None
+
+        def abandon_join(builder, route):
+            if builder.role is PeerRole.CLIENT and route[-1][1] == "rendezvous":
+                raise OverlayRoutingError("test client stopped before rendezvous join")
+            return original_open(builder, route)
+
+        try:
+            with patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")):
+                host.start_background()
+                host.wait_ready(15)
+                with patch.object(CircuitBuilder, "open", abandon_join):
+                    for _ in range(2):
+                        with self.assertRaisesRegex(OverlayRoutingError, "rendezvous stage"):
+                            client.connect(intro)
+                with self.assertRaisesRegex(OverlayRoutingError, "introduction stage"):
+                    client.connect(intro)
+                with host._grant_condition:
+                    self.assertEqual(len(host._pending_rendezvous), 2)
+                    self.assertFalse(host._sessions)
+                    self.assertIsNone(host._grant_slot)
+                    pending = tuple(host._pending_rendezvous.values())
+                pending[0][0].close()
+                pending[0][1].join(timeout=3.0)
+                self.assertFalse(pending[0][1].is_alive())
+                session = client.connect(intro)
+                self.assertEqual(session.fetch("/").body, HTML)
+                with host._grant_condition:
+                    self.assertLessEqual(
+                        len(host._pending_rendezvous) + len(host._sessions), 2,
+                    )
+                host.stop()
+                self.assertFalse(host._pending_rendezvous)
+                self.assertTrue(all(not worker.is_alive() for _circuit, worker in pending))
+        finally:
+            if session is not None:
+                session.close()
+            host.stop()
+
+    def test_handshake_worker_start_failure_releases_reservation(self) -> None:
+        host, _client, _intro = self._rotation_pair()
+        original_start = threading.Thread.start
+
+        def start_worker(worker):
+            if worker.name == "granger-rendezvous-accept":
+                raise RuntimeError("test worker start failure")
+            return original_start(worker)
+
+        try:
+            with (
+                patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")),
+                patch.object(threading.Thread, "start", start_worker),
+            ):
+                host.start_background()
+                with self.assertRaisesRegex(ProtocolError, "worker could not start"):
+                    host.wait_ready(15)
+                self.assertFalse(host._pending_rendezvous)
+                self.assertIsNone(host._grant_slot)
+        finally:
             host.stop()
 
     def test_stale_intro_lookup_recovers_with_fresh_signed_tokens(self) -> None:
