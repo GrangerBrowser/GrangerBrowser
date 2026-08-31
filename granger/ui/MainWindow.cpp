@@ -2697,6 +2697,17 @@ void MainWindow::wireSignals()
         syncAddressBar();
         syncDeveloperToolsToCurrentTab();
         saveSession();
+        QPointer<BrowserTab> tab(currentTab());
+        if (tab && tab->displayAddress().startsWith(
+                QStringLiteral("about:settings?category=hosting"))) {
+            QTimer::singleShot(0, this, [this, tab] {
+                if (tab && currentTab() == tab
+                    && (m_settingsUi.hostingWizard.isEmpty()
+                        || m_settingsUi.hostingOperationStage == QStringLiteral("success"))) {
+                    refreshHostingSettings();
+                }
+            });
+        }
     });
     connect(&m_privacy, &PrivacyPolicyManager::restrictionObserved, this,
             [this](const QString &origin, const QString &category) {
@@ -11404,6 +11415,12 @@ QString MainWindow::hostingSettingsHtml() const
                          text("hosting.network_unavailable.description").toHtmlEscaped());
     }
 
+    const QList<HostedServiceRecord> services = m_hosting.services();
+    const bool publishedServiceOnline = std::any_of(
+        services.cbegin(), services.cend(), [this](const HostedServiceRecord &service) {
+            return service.address == m_settingsUi.hostingResultAddress
+                && service.status == QStringLiteral("online");
+        });
     const QString operationStage = m_settingsUi.hostingOperationStage;
     const bool operationBusy = operationStage == QStringLiteral("validating-folder")
         || operationStage == QStringLiteral("probing-backend")
@@ -11460,7 +11477,7 @@ QString MainWindow::hostingSettingsHtml() const
                          action(QStringLiteral("hosting/back")),
                          text("hosting.back").toHtmlEscaped());
     } else if (operationStage == QStringLiteral("success")) {
-        html += QStringLiteral(
+        if (publishedServiceOnline) html += QStringLiteral(
             "<section class=\"hosting-wizard hosting-success ds-card\" aria-live=\"polite\">"
             "<div class=\"ds-card-header hosting-wizard-head\"><div><span class=\"hosting-step\">%1</span>"
             "<h3>%2</h3></div><a class=\"hosting-close\" href=\"%3\" aria-label=\"%4\" "
@@ -11723,7 +11740,6 @@ QString MainWindow::hostingSettingsHtml() const
         }
     }
 
-    const QList<HostedServiceRecord> services = m_hosting.services();
     html += QStringLiteral("<section class=\"hosting-list-section\"><div class=\"hosting-list-heading\"><div><h3>%1</h3><p>%2</p></div>"
                            "<a class=\"button secondary compact\" href=\"%3\">%4</a></div>")
                 .arg(text("hosting.your_sites").toHtmlEscaped(),
