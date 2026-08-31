@@ -130,6 +130,14 @@ and a fixed reason code. TCP, authentication, and peer-sample failures remain
 distinct; unavailable private ingress and missing seed sources retain their
 own health reasons. These diagnostics do not change retry or trust policy.
 
+An introduction request can race a hosting descriptor refresh. The client
+re-resolves the signed introduction record once after a request-stage failure,
+using the same authenticated DHT quorum. A newer sequence replaces the old
+tokens and point selection without resetting the total route-attempt limit.
+Rollback, equivocation, and failed quorum lookup remain fail-closed. This does
+not guarantee availability while a replacement introduction is still being
+published, and it does not retry application writes.
+
 Do not log private identities, channel keys, introduction cookies, application
 bodies, or endpoint addresses across the client/service boundary.
 

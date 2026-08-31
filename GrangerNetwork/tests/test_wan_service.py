@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from granger_network.browser_gateway import CircuitRotationPolicy, _WanGateway
 from granger_network.descriptor import ServiceDescriptor
@@ -23,6 +23,7 @@ from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import RpcFrame, RpcType
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_control import IntroductionRequest, encode_intro_request
+from granger_network.wan_client import connect_service
 from granger_network.wan_service import WanServiceClient, WanServiceHost
 
 
@@ -336,6 +337,48 @@ class WanServiceTests(unittest.TestCase):
             if worker is not None:
                 worker.join(timeout=5.0)
             host.stop()
+
+    def test_stale_intro_lookup_recovers_with_fresh_signed_tokens(self) -> None:
+        previous, client, intro = self._rotation_pair()
+        introduction = IntroductionDescriptor.create(
+            previous.identity, previous.service, [intro.node_id], sequence=2, lifetime=900,
+        )
+        replacement = WanServiceHost(
+            previous.identity, previous.service, introduction,
+            previous.introduction_routes, previous.rendezvous_route, previous.bridge,
+            timeout=2.0, rendezvous_lifetime=120,
+        )
+        resolver = Mock()
+        resolver.resolve.return_value = previous.service
+        resolver.resolve_introduction.side_effect = [previous.introduction, introduction]
+        resolver.resolve_node.return_value = intro
+        selector = Mock()
+        selector.client_candidates.return_value = [SimpleNamespace(route=client.route_prefix)]
+        connected = None
+        try:
+            with (
+                patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")),
+                patch("granger_network.wan_client.WanRouteSelector", return_value=selector),
+            ):
+                previous.start_background()
+                previous.wait_ready(15)
+                previous.stop()
+                replacement.start_background()
+                replacement.wait_ready(15)
+                connected = connect_service(
+                    SimpleNamespace(identity=client.identity, discovery=object()),
+                    resolver, previous.service.canonical_name, route_attempts=3, timeout=3.0,
+                )
+                self.assertEqual(connected.attempts, 2)
+                self.assertEqual(connected.session.fetch("/").body, HTML)
+                self.assertEqual(connected.service.canonical_name, previous.service.canonical_name)
+                self.assertEqual(resolver.resolve_introduction.call_count, 2)
+                self.assertFalse(replacement.recovery_requested)
+        finally:
+            if connected is not None:
+                connected.session.close()
+            replacement.stop()
+            previous.stop()
 
     def test_ten_replacements_release_sessions_and_preserve_service_identity(self) -> None:
         host, client, intro = self._rotation_pair(max_sessions=2)

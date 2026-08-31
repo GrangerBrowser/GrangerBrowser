@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .descriptor import ServiceDescriptor
 from ._codec import atomic_write_text
-from .errors import GrangerNetworkError, OverlayRoutingError
+from .errors import GrangerNetworkError, OverlayRoutingError, ReplayError
 from .peer import NodeDescriptor
 from .wan_config import WanDiscoveryRuntime
 from .wan_config import load_discovery_runtime
@@ -46,70 +46,91 @@ def connect_service(
     )
     failures: list[str] = []
     attempts = 0
-    introduction_nodes = []
-    for point in introduction.points:
-        try:
-            introduction_nodes.append(resolver.resolve_node(point.node_id))
-        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-            failures.append(
-                f"introduction node resolution failed ({point.node_id[:12]}): "
-                f"{type(error).__name__}: {error}"
-            )
-    for introduction_node in introduction_nodes:
-        try:
-            candidates = selector.client_candidates(
-                service.service_id,
-                excluded_ids=set(excluded_ids or ()) | {introduction_node.node_id},
-                limit=route_attempts,
-            )
-        except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-            failures.append(type(error).__name__)
-            continue
-        for prefix in candidates:
-            if attempts >= route_attempts:
-                break
-            attempts += 1
-            rendezvous_selection: list[WanRouteSelection] = []
-
-            def select_rendezvous_prefix(
-                rendezvous_node: NodeDescriptor,
-            ) -> tuple[tuple[NodeDescriptor, str], ...]:
-                alternate = selector.client_candidates(
-                    service.service_id,
-                    excluded_ids=set(excluded_ids or ()) | {rendezvous_node.node_id},
-                    limit=1,
-                )
-                if not alternate:
-                    raise OverlayRoutingError("no unique rendezvous route prefix is available")
-                rendezvous_selection[:] = [alternate[0]]
-                return alternate[0].route
-
-            client = WanServiceClient(
-                runtime.identity,
-                service,
-                introduction,
-                prefix.route,
-                timeout=timeout,
-                rendezvous_route_selector=select_rendezvous_prefix,
-            )
+    refreshed = False
+    while attempts < route_attempts:
+        introduction_nodes = []
+        for point in introduction.points:
             try:
-                session = client.connect(introduction_node)
-                return WanClientConnection(
-                    service,
-                    session,
-                    rendezvous_selection[0] if rendezvous_selection else prefix,
-                    introduction_node,
-                    attempts,
+                introduction_nodes.append(resolver.resolve_node(point.node_id))
+            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                failures.append(
+                    f"introduction node resolution failed ({point.node_id[:12]}): "
+                    f"{type(error).__name__}: {error}"
+                )
+        changed = False
+        for introduction_node in introduction_nodes:
+            try:
+                candidates = selector.client_candidates(
+                    service.service_id,
+                    excluded_ids=set(excluded_ids or ()) | {introduction_node.node_id},
+                    limit=route_attempts,
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                detail = str(error)
-                if isinstance(error, OverlayRoutingError) and detail.startswith(
-                    ("introduction stage failed", "rendezvous stage failed")
-                ):
-                    failures.append(detail)
-                else:
-                    failures.append(type(error).__name__)
-        if attempts >= route_attempts:
+                failures.append(type(error).__name__)
+                continue
+            for prefix in candidates:
+                if attempts >= route_attempts:
+                    break
+                attempts += 1
+                rendezvous_selection: list[WanRouteSelection] = []
+
+                def select_rendezvous_prefix(
+                    rendezvous_node: NodeDescriptor,
+                ) -> tuple[tuple[NodeDescriptor, str], ...]:
+                    alternate = selector.client_candidates(
+                        service.service_id,
+                        excluded_ids=set(excluded_ids or ()) | {rendezvous_node.node_id},
+                        limit=1,
+                    )
+                    if not alternate:
+                        raise OverlayRoutingError("no unique rendezvous route prefix is available")
+                    rendezvous_selection[:] = [alternate[0]]
+                    return alternate[0].route
+
+                client = WanServiceClient(
+                    runtime.identity,
+                    service,
+                    introduction,
+                    prefix.route,
+                    timeout=timeout,
+                    rendezvous_route_selector=select_rendezvous_prefix,
+                )
+                try:
+                    session = client.connect(introduction_node)
+                    return WanClientConnection(
+                        service,
+                        session,
+                        rendezvous_selection[0] if rendezvous_selection else prefix,
+                        introduction_node,
+                        attempts,
+                    )
+                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                    detail = str(error)
+                    if isinstance(error, OverlayRoutingError) and detail.startswith(
+                        ("introduction stage failed", "rendezvous stage failed")
+                    ):
+                        failures.append(detail)
+                    else:
+                        failures.append(type(error).__name__)
+                    if (not refreshed and attempts < route_attempts
+                            and isinstance(error, OverlayRoutingError)
+                            and detail.startswith("introduction stage failed during request")):
+                        # Intro tokens can rotate after lookup but before delivery.
+                        # Re-resolve once through the same authenticated quorum,
+                        # retaining the operation's total route-attempt budget.
+                        refreshed = True
+                        latest = resolver.resolve_introduction(service)
+                        if (latest.sequence < introduction.sequence
+                                or (latest.sequence == introduction.sequence
+                                    and latest != introduction)):
+                            raise ReplayError("introduction refresh rejected rollback or equivocation")
+                        if latest.sequence > introduction.sequence:
+                            introduction = latest
+                            changed = True
+                            break
+            if changed or attempts >= route_attempts:
+                break
+        if not changed:
             break
     raise OverlayRoutingError(
         "private route attempts were exhausted without a direct fallback: "
