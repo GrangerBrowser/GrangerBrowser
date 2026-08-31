@@ -5,6 +5,7 @@ import socket
 import struct
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Protocol
@@ -447,6 +448,7 @@ def connect_authenticated_peer(
     timeout: float = 10.0,
     attempts: int = 1,
     socket_factory=socket.socket,
+    on_stage: Callable[[str, int], None] | None = None,
 ) -> AuthenticatedPeer:
     descriptor.verify()
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
@@ -469,8 +471,12 @@ def connect_authenticated_peer(
         )
         connection = socket_factory(endpoint.family, socket.SOCK_STREAM)
         try:
+            if on_stage is not None:
+                on_stage("tcp", attempt + 1)
             connection.settimeout(connect_timeout)
             connection.connect(endpoint.socket_address)
+            if on_stage is not None:
+                on_stage("authentication", attempt + 1)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("peer authentication timeout expired")

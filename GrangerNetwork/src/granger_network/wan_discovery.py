@@ -7,7 +7,7 @@ import json
 import secrets
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
 from ._codec import atomic_write_text, decode_base64url, encode_base64url, parse_json_object
@@ -25,7 +25,7 @@ from .distributed import (
     decode_record,
     encode_record,
 )
-from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, ProtocolError, ReplayError, ResolutionError
+from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, IdentityVerificationError, ProtocolError, ReplayError, ResolutionError
 from .identity import ServiceIdentity
 from .peer import NodeDescriptor, validate_node_id
 from .peer_rpc import (
@@ -346,9 +346,57 @@ class WanDiscoveryClient:
         self.last_private_route: tuple[str, ...] = ()
         self._health = NetworkHealth()
         self._authenticated_nodes: set[str] = set()
+        self._first_contact_operation = ""
+        self._first_contact_trace: deque[dict[str, object]] = deque(maxlen=32)
 
     def health(self) -> NetworkHealthSnapshot:
         return self._health.snapshot()
+
+    def first_contact_diagnostics(self) -> tuple[dict[str, object], ...]:
+        with self._lock:
+            return tuple(dict(event) for event in self._first_contact_trace)
+
+    def _record_first_contact(
+        self, peer: NodeDescriptor, stage: str, reason: str,
+        started: float, attempt: int,
+    ) -> None:
+        # Only public node fingerprints and fixed codes leave this boundary.
+        # Exception strings may contain paths, addresses, or remote input.
+        with self._lock:
+            self._first_contact_trace.append({
+                "operationId": self._first_contact_operation,
+                "monotonicSeconds": round(time.monotonic(), 3),
+                "elapsedMs": round((time.monotonic() - started) * 1000, 3),
+                "nodeId": peer.node_id,
+                "role": "discovery",
+                "stage": stage,
+                "reason": reason,
+                "attempt": attempt,
+                "timeoutSeconds": self.timeout,
+            })
+
+    @staticmethod
+    def _first_contact_reason(peer: NodeDescriptor, stage: str, error: BaseException) -> str:
+        if isinstance(error, DescriptorError):
+            return (
+                "FIRST_CONTACT_DESCRIPTOR_EXPIRED"
+                if peer.expires_at <= int(time.time())
+                else "FIRST_CONTACT_DESCRIPTOR_REJECTED"
+            )
+        if isinstance(error, IdentityVerificationError):
+            return "FIRST_CONTACT_AUTH_REJECTED"
+        prefix = {
+            "tcp": "FIRST_CONTACT_TCP",
+            "authentication": "FIRST_CONTACT_AUTH",
+            "peer-sample": "FIRST_CONTACT_PEER_SAMPLE",
+        }.get(stage, "FIRST_CONTACT")
+        if isinstance(error, TimeoutError):
+            return prefix + "_TIMEOUT"
+        if isinstance(error, ConnectionRefusedError):
+            return prefix + "_REFUSED"
+        if isinstance(error, ProtocolError):
+            return prefix + "_REJECTED"
+        return prefix + "_FAILED"
 
     def _health_counts(self, peers: tuple[NodeDescriptor, ...] | None = None) -> tuple[int, int]:
         known = peers if peers is not None else self.pool.candidates("discovery")
@@ -483,6 +531,14 @@ class WanDiscoveryClient:
         direct_first_contact: bool = False,
     ) -> bytes:
         connection = None
+        started = time.monotonic()
+        stage = "descriptor"
+        attempt = 0
+
+        def connection_stage(value: str, number: int) -> None:
+            nonlocal stage, attempt
+            stage, attempt = value, number
+
         try:
             if direct_first_contact:
                 connection = connect_authenticated_peer(
@@ -491,9 +547,12 @@ class WanDiscoveryClient:
                     PeerRole.CLIENT,
                     timeout=self.timeout,
                     attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
+                    on_stage=connection_stage,
                 )
+                stage = "peer-sample"
                 self.direct_first_contact_requests += 1
                 response = connection.rpc.request(message, payload, expected=expected)
+                self._record_first_contact(peer, stage, "OK", started, attempt)
             else:
                 if not self._joined or not self._private_routes_ready:
                     raise DiscoveryError(
@@ -551,7 +610,12 @@ class WanDiscoveryClient:
                 self._failed_until.pop(peer.node_id, None)
                 self._authenticated_nodes.add(peer.node_id)
             return response.payload
-        except (GrangerNetworkError, OSError):
+        except (GrangerNetworkError, OSError) as error:
+            if direct_first_contact:
+                self._record_first_contact(
+                    peer, stage, self._first_contact_reason(peer, stage, error),
+                    started, attempt,
+                )
             if self.cache is not None:
                 self.cache.record_failure(peer)
             with self._lock:
@@ -575,7 +639,7 @@ class WanDiscoveryClient:
             raise DiscoveryError("route candidate capability is invalid")
         joined = self.join_network()
         if joined.state is NetworkState.OFFLINE:
-            raise DiscoveryError("Granger Network first contact failed")
+            raise DiscoveryError(f"Granger Network first contact failed: {joined.failure_reason}")
         selected = {
             peer.node_id: peer for peer in self.pool.candidates(capability)
         }
@@ -769,6 +833,9 @@ class WanDiscoveryClient:
         with self._join_lock:
             if self._joined:
                 return self._health.snapshot()
+            with self._lock:
+                self._first_contact_operation = secrets.token_hex(8)
+                self._first_contact_trace.clear()
             candidates = self.pool.candidates("discovery")
             cached_contacts = (
                 list(self.cache.ranked("discovery"))[:8]
@@ -857,6 +924,10 @@ class WanDiscoveryClient:
                                 expected_protocol_version=self.pool.protocol_version,
                             )
                         except GrangerNetworkError:
+                            self._record_first_contact(
+                                peer, "peer-sample", "FIRST_CONTACT_PEER_SAMPLE_REJECTED",
+                                time.monotonic(), 0,
+                            )
                             continue
                         authenticated += 1
                         if self.cache is not None:
@@ -881,6 +952,15 @@ class WanDiscoveryClient:
             known = tuple(learned.values())
             known_count, relay_count = self._health_counts(known)
             if authenticated == 0:
+                reasons = {
+                    event["reason"] for event in self.first_contact_diagnostics()
+                    if event["reason"] != "OK"
+                }
+                failure_reason = (
+                    next(iter(reasons)) if len(reasons) == 1
+                    else "FIRST_CONTACT_MULTIPLE_FAILURES" if reasons
+                    else "FIRST_CONTACT_FAILED"
+                )
                 return self._health.update(
                     NetworkState.OFFLINE,
                     bootstrap_attempted=bootstrap_attempted,
@@ -888,7 +968,7 @@ class WanDiscoveryClient:
                     known_peers=known_count,
                     reachable_relays=relay_count,
                     dht_ready=False,
-                    failure_reason="FIRST_CONTACT_FAILED",
+                    failure_reason=failure_reason,
                 )
             if not self._prime_private_routes(known):
                 return self._health.update(
@@ -915,7 +995,7 @@ class WanDiscoveryClient:
     def find_nodes(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]:
         joined = self.join_network()
         if joined.state is NetworkState.OFFLINE:
-            raise DiscoveryError("Granger Network first contact failed")
+            raise DiscoveryError(f"Granger Network first contact failed: {joined.failure_reason}")
         seeds = list(self.pool.candidates("discovery"))
         with self._lock:
             current = time.monotonic()

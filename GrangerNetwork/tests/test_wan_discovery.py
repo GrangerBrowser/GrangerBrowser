@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from granger_network.bootstrap import BootstrapPool, BootstrapSet, PeerCache
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.distributed import SERVICE_RECORD, RecordEnvelope, encode_record
-from granger_network.errors import DiscoveryError, ProtocolError, ResolutionError
+from granger_network.errors import DiscoveryError, IdentityVerificationError, ProtocolError, ResolutionError
 from granger_network.identity import ServiceIdentity
 from granger_network.node import WanNodeServer
 from granger_network.peer import NodeDescriptor, RelayPolicy
@@ -82,6 +82,70 @@ class WanDiscoveryTests(unittest.TestCase):
         for node in self.nodes:
             node.stop()
         self.temporary.cleanup()
+
+    def test_first_contact_failures_retain_safe_stage_codes(self) -> None:
+        cases = (
+            ("tcp", TimeoutError("private detail"), "FIRST_CONTACT_TCP_TIMEOUT"),
+            ("tcp", ConnectionRefusedError("private detail"), "FIRST_CONTACT_TCP_REFUSED"),
+            ("authentication", TimeoutError("private detail"), "FIRST_CONTACT_AUTH_TIMEOUT"),
+            ("authentication", IdentityVerificationError("private detail"), "FIRST_CONTACT_AUTH_REJECTED"),
+            ("peer-sample", TimeoutError("private detail"), "FIRST_CONTACT_PEER_SAMPLE_TIMEOUT"),
+            ("peer-sample", ProtocolError("private detail"), "FIRST_CONTACT_PEER_SAMPLE_REJECTED"),
+        )
+        operations = set()
+        for stage, failure, reason in cases:
+            with self.subTest(stage=stage, reason=reason):
+                client = WanDiscoveryClient(
+                    ServiceIdentity.generate(), BootstrapPool(self.bootstrap), timeout=0.1,
+                )
+
+                def connect(*_args, **options):
+                    options["on_stage"]("tcp", 1)
+                    if stage != "tcp":
+                        options["on_stage"]("authentication", 1)
+                    if stage == "peer-sample":
+                        return SimpleNamespace(
+                            rpc=SimpleNamespace(request=Mock(side_effect=type(failure)("private detail"))),
+                            close=Mock(),
+                        )
+                    raise type(failure)("private detail")
+
+                with patch("granger_network.wan_discovery.connect_authenticated_peer", side_effect=connect):
+                    with self.assertRaisesRegex(DiscoveryError, reason):
+                        client.route_candidates(b"t" * 32, "introduction")
+                self.assertEqual(client.health().failure_reason, reason)
+                trace = client.first_contact_diagnostics()
+                self.assertTrue(trace)
+                self.assertLessEqual(len(trace), 32)
+                self.assertTrue(all(event["stage"] == stage for event in trace))
+                self.assertTrue(all(event["reason"] == reason for event in trace))
+                self.assertTrue(all(event["attempt"] == 1 for event in trace))
+                self.assertTrue(all(event["elapsedMs"] >= 0 for event in trace))
+                operation_ids = {event["operationId"] for event in trace}
+                self.assertEqual(len(operation_ids), 1)
+                self.assertFalse(operation_ids & operations)
+                operations.update(operation_ids)
+                self.assertNotIn("private detail", json.dumps(trace))
+                self.assertNotIn("127.0.0.1", json.dumps(trace))
+                trace[0]["reason"] = "changed by consumer"
+                self.assertEqual(client.first_contact_diagnostics()[0]["reason"], reason)
+
+    def test_first_contact_diagnostics_are_bounded(self) -> None:
+        for _ in range(40):
+            self.client._record_first_contact(
+                self.descriptors[0], "tcp", "FIRST_CONTACT_TCP_TIMEOUT", time.monotonic(), 1,
+            )
+        self.assertEqual(len(self.client.first_contact_diagnostics()), 32)
+
+    def test_no_seed_error_preserves_join_reason(self) -> None:
+        with (
+            patch.object(self.client.pool, "candidates", return_value=()),
+            patch.object(self.client.pool, "seed_candidates", return_value=()),
+            patch.object(self.client.cache, "ranked", return_value=()),
+        ):
+            with self.assertRaisesRegex(DiscoveryError, "NO_RESEED_SOURCE"):
+                self.client.find_nodes(b"t" * 32, "discovery")
+        self.assertEqual(self.client.first_contact_diagnostics(), ())
 
     def test_signed_record_replication_and_lookup_use_real_authenticated_sockets(self) -> None:
         service_identity = ServiceIdentity.generate()

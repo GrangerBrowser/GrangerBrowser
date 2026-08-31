@@ -89,6 +89,7 @@ class PeerRpcTests(unittest.TestCase):
 
         sockets = [FakeSocket(True), FakeSocket(False)]
         authenticated = object()
+        stages: list[tuple[str, int]] = []
         with patch(
             "granger_network.peer_rpc.authenticate_client_stream",
             return_value=authenticated,
@@ -100,10 +101,12 @@ class PeerRpcTests(unittest.TestCase):
                 timeout=10.0,
                 attempts=2,
                 socket_factory=lambda *_args: sockets.pop(0),
+                on_stage=lambda stage, attempt: stages.append((stage, attempt)),
             )
         self.assertIs(result, authenticated)
         self.assertTrue(authenticate.called)
         self.assertTrue(sockets == [])
+        self.assertEqual(stages, [("tcp", 1), ("tcp", 2), ("authentication", 2)])
 
     def test_resilient_connect_retries_blackholed_flows_without_retrying_auth(self) -> None:
         identity = ServiceIdentity.generate()
