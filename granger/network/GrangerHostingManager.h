@@ -57,6 +57,8 @@ struct HostedServiceRecord {
     qint64 uptimeSeconds = 0;
     qint64 pid = 0;
     bool autoStart = false;
+
+    void applyRuntimeStatus(const QJsonObject &runtime, qint64 now, qint64 startedAt);
 };
 
 class GrangerHostingManager final : public QObject {

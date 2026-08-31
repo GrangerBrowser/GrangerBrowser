@@ -372,6 +372,7 @@ class WanServiceHost:
         self._thread: threading.Thread | None = None
         self._intro_threads: list[threading.Thread] = []
         self._intro_circuits: list[BuiltCircuit] = []
+        self._intro_activity: dict[str, float] = {}
         self._rendezvous_circuit: BuiltCircuit | None = None
         self._sessions: set[_HostedSession] = set()
         self._grant_condition = threading.Condition()
@@ -397,6 +398,23 @@ class WanServiceHost:
     def active_sessions(self) -> int:
         with self._grant_condition:
             return len(self._sessions)
+
+    def health(self) -> dict[str, object]:
+        now = time.monotonic()
+        with self._grant_condition:
+            healthy = sum(
+                0 <= now - observed <= 90.0
+                for observed in self._intro_activity.values()
+            )
+            return {
+                "running": self._thread is not None and self._thread.is_alive()
+                    and not self._stop.is_set(),
+                "ready": self._ready.is_set() and not self.errors,
+                "recoveryRequested": self._recovery.is_set(),
+                "healthyIntroductions": healthy,
+                "requiredIntroductions": len(self.introduction_routes),
+                "activeSessions": len(self._sessions),
+            }
 
     @property
     def startup_failed_middle_ids(self) -> frozenset[str]:
@@ -474,6 +492,8 @@ class WanServiceHost:
                     circuit.close()
                     raise
                 self._intro_circuits.append(circuit)
+                with self._grant_condition:
+                    self._intro_activity[route[-1][0].node_id] = time.monotonic()
             for circuit in self._intro_circuits:
                 thread = threading.Thread(
                     target=self._answer_introductions,
@@ -668,6 +688,7 @@ class WanServiceHost:
 
     def _answer_introductions(self, intro_circuit: BuiltCircuit) -> None:
         rendezvous = self.rendezvous_route[-1][0]
+        node_id = intro_circuit.endpoint.remote.node_id
         while not self._stop.is_set() and int(time.time()) < self.introduction.expires_at:
             try:
                 request = intro_circuit.endpoint.rpc.receive()
@@ -680,12 +701,16 @@ class WanServiceHost:
                         request_id=request.request_id,
                         response=True,
                     )
+                    with self._grant_condition:
+                        self._intro_activity[node_id] = time.monotonic()
                     continue
                 if request.message_type is not RpcType.INTRO_DELIVER or request.is_response:
                     raise ProtocolError("service received an unexpected introduction message")
                 introduced = decode_intro_request(request.payload)
                 if introduced.service_id != self.service.service_id:
                     raise ProtocolError("introduction delivery service identity is invalid")
+                with self._grant_condition:
+                    self._intro_activity[node_id] = time.monotonic()
                 deadline = time.monotonic() + self.timeout
                 grant_slot: tuple[bytes, int] | None = None
                 with self._grant_condition:
@@ -733,6 +758,8 @@ class WanServiceHost:
                     response=True,
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                with self._grant_condition:
+                    self._intro_activity.pop(node_id, None)
                 if not self._stop.is_set():
                     reason = f"introduction:{type(error).__name__}:{error}"
                     if len(self.session_failures) < 1024:

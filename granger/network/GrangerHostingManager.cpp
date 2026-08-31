@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -28,6 +29,7 @@ constexpr int kDefaultMaxFileBytes = 8 * 1024 * 1024;
 constexpr int kStaticPreflightTimeoutMs = 120000;
 constexpr int kStaticSnapshotTimeoutMs = 180000;
 constexpr int kHostingStartupTimeoutMs = 240000;
+constexpr qint64 kHostingStatusLeaseSeconds = 15;
 const QRegularExpression kServiceId(QStringLiteral("^[a-f0-9]{32}$"));
 const QRegularExpression kServiceTitle(QStringLiteral("^[^\\x00-\\x1f\\x7f]{1,80}$"));
 
@@ -110,6 +112,42 @@ QProcessEnvironment isolatedEnvironment(const QString &moduleRoot, bool appLocal
     environment.insert(QStringLiteral("PYTHONNOUSERSITE"), QStringLiteral("1"));
     return environment;
 }
+}
+
+void HostedServiceRecord::applyRuntimeStatus(const QJsonObject &runtime,
+                                           qint64 now, qint64 startedAt)
+{
+    status = QStringLiteral("starting");
+    stage.clear();
+    error.clear();
+    const qint64 updated = runtime.value(QStringLiteral("updatedAt")).toInteger();
+    if (runtime.value(QStringLiteral("pid")).toInteger() != pid
+        || runtime.value(QStringLiteral("canonicalName")).toString() != address
+        || updated < startedAt) return;
+
+    stage = runtime.value(QStringLiteral("stage")).toString();
+    const QString state = runtime.value(QStringLiteral("state")).toString();
+    if (state == QStringLiteral("error")) {
+        status = state;
+        error = runtime.value(QStringLiteral("errorMessage")).toString();
+        return;
+    }
+    if (state == QStringLiteral("starting")) return;
+    const qint64 lease = runtime.value(QStringLiteral("healthLeaseSeconds")).toInteger();
+    if (lease <= 0 || lease > kHostingStatusLeaseSeconds
+        || updated > now || now - updated >= lease) {
+        status = QStringLiteral("degraded");
+        stage = QStringLiteral("health-stale");
+        return;
+    }
+    if (state == QStringLiteral("online") || state == QStringLiteral("recovering")
+        || state == QStringLiteral("degraded") || state == QStringLiteral("network-unavailable")
+        || state == QStringLiteral("service-unpublished") || state == QStringLiteral("intro-unavailable")) {
+        status = state;
+    } else {
+        status = QStringLiteral("degraded");
+        stage = QStringLiteral("health-invalid");
+    }
 }
 
 GrangerHostingManager::GrangerHostingManager(QObject *parent)
@@ -509,18 +547,10 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
             0, (QDateTime::currentMSecsSinceEpoch() - m_startedAt.value(result.id)) / 1000);
         const QJsonObject status = readObject(
             QDir(root).filePath(QStringLiteral("metadata/status.json")));
-        const QString runtimeState = status.value(QStringLiteral("state")).toString();
-        const bool currentRuntime = status.value(QStringLiteral("pid")).toInteger() == result.pid
-            && status.value(QStringLiteral("canonicalName")).toString() == result.address;
-        if (currentRuntime) result.stage = status.value(QStringLiteral("stage")).toString();
-        if (runtimeState == QStringLiteral("online") && currentRuntime) {
-            result.status = QStringLiteral("online");
-        } else if (runtimeState == QStringLiteral("error") && currentRuntime) {
-            result.status = QStringLiteral("error");
-            result.error = status.value(QStringLiteral("errorMessage")).toString();
+        result.applyRuntimeStatus(status, QDateTime::currentSecsSinceEpoch(),
+                                  m_startedAt.value(result.id) / 1000);
+        if (result.status == QStringLiteral("error")) {
             if (result.error.isEmpty()) result.error = m_lastErrors.value(result.id);
-        } else {
-            result.status = QStringLiteral("starting");
         }
     } else if (!result.autoStart) {
         result.status = QStringLiteral("offline");
@@ -1012,6 +1042,9 @@ bool GrangerHostingManager::launchService(const QString &id, QString *error)
         return false;
     }
     process->setArguments(arguments);
+    connect(process, &QProcess::readyReadStandardOutput, this, [process] {
+        process->readAllStandardOutput();
+    });
     connect(process, &QProcess::readyReadStandardError, this, [this, id, process] {
         const QString detail = QString::fromUtf8(process->readAllStandardError()).trimmed();
         if (!detail.isEmpty()) m_lastErrors.insert(id, detail.left(512));
@@ -1065,19 +1098,24 @@ void GrangerHostingManager::watchStartup(const QString &id, QProcess *process)
     auto *timer = new QTimer(this);
     const QPointer<QProcess> guardedProcess(process);
     timer->setInterval(250);
-    timer->setProperty("attempts", 0);
-    connect(timer, &QTimer::timeout, this, [this, id, guardedProcess, timer] {
-        const int attempts = timer->property("attempts").toInt() + 1;
-        timer->setProperty("attempts", attempts);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    connect(timer, &QTimer::timeout, this, [this, id, guardedProcess, timer, elapsed] {
         const HostedServiceRecord current = service(id);
         const QString previousStage = timer->property("stage").toString();
-        if (!current.stage.isEmpty() && current.stage != previousStage) {
+        const QString previousStatus = timer->property("status").toString();
+        if (current.stage != previousStage || current.status != previousStatus) {
             timer->setProperty("stage", current.stage);
+            timer->setProperty("status", current.status);
             emit servicesChanged();
         }
-        const bool timedOut = attempts * timer->interval() >= kHostingStartupTimeoutMs;
+        if (current.status == QStringLiteral("online")) {
+            timer->setProperty("published", true);
+            timer->setInterval(1000);
+        }
+        const bool timedOut = !timer->property("published").toBool()
+            && elapsed.elapsed() >= kHostingStartupTimeoutMs;
         if (!guardedProcess || guardedProcess->state() == QProcess::NotRunning
-            || current.status == QStringLiteral("online")
             || current.status == QStringLiteral("error") || timedOut) {
             timer->stop();
             m_startupTimers.remove(id);

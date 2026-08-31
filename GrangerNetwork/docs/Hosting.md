@@ -96,12 +96,27 @@ tears down the child process. `Restart` preserves the service identity and
 canonical address while publishing fresh state. Deleting a service deletes its
 identity and cannot be undone.
 
-At browser startup, only services with `autoStart` enabled are restored. The
-manager has no idle polling loop. A bounded timer observes only an actively
-starting process and stops after online, a PID-bound terminal failure, or a
-four-minute outer watchdog. Runtime status distinguishes network bootstrap,
-signed-record publication, and private-route construction. Retry preserves the
-service identity and does not accept stale status from a previous process.
+At browser startup, only services with `autoStart` enabled are restored. A
+per-process timer observes startup at 250 ms and ongoing health at one second
+after the first online state. It stops with that process; there is no timer when
+hosting is inactive. The four-minute monotonic startup watchdog does not kill a
+previously published service during recovery. Retry preserves the service
+identity and rejects status from another PID, canonical address, or start time.
+
+The runtime writes a status lease every five seconds. The browser accepts it for
+at most 15 seconds, then displays `degraded` instead of a stale `online` state.
+Missing, oversized, or future-dated leases cannot claim online. Health requires
+an active host worker, authenticated introduction traffic within 90 seconds,
+unexpired service and introduction descriptors, and connected DHT health no
+older than 120 seconds. The hosting worker performs an authenticated private
+DHT lookup at most once per 60 seconds after the previous check completes.
+The UI never initiates network probes. A blocked check cannot keep renewing the
+status lease; a failed check does not tear down existing application sessions.
+
+Health distinguishes `recovering`, `network-unavailable`, `intro-unavailable`,
+and `service-unpublished`. These are observations, not proof that every fresh
+client request will succeed. Full GET/assets and long-running physical tests
+remain necessary; PID liveness or an online badge alone is not acceptance.
 
 ## Platform packaging
 

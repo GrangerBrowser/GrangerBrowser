@@ -34,6 +34,10 @@ HOSTING_VERSION = 2
 DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_SERVICE_ROUTE_STARTUP_SECONDS = 90.0
 MAX_SERVICE_ROUTE_ATTEMPTS = 2
+HOSTING_STATUS_INTERVAL = 5.0
+HOSTING_STATUS_LEASE_SECONDS = 15
+HOSTING_DHT_CHECK_INTERVAL = 60.0
+HOSTING_DHT_HEALTH_SECONDS = 120
 MAX_STATIC_FILES = 10_000
 MAX_TEXT_SCAN_BYTES = 256 * 1024
 CONFIG_FILE = "config.json"
@@ -1134,6 +1138,7 @@ def _write_status(root: Path, state: str, descriptor: ServiceDescriptor, **detai
         "pid": os.getpid(),
         "state": state,
         "updatedAt": int(time.time()),
+        "healthLeaseSeconds": HOSTING_STATUS_LEASE_SECONDS,
         "version": HOSTING_VERSION,
     }
     document.update(details)
@@ -1142,6 +1147,32 @@ def _write_status(root: Path, state: str, descriptor: ServiceDescriptor, **detai
         json.dumps(document, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
         mode=0o600,
     )
+
+
+def _hosting_health_state(
+    host_health: dict[str, object],
+    network_health: dict[str, object],
+    service: ServiceDescriptor,
+    introduction: IntroductionDescriptor,
+    *,
+    now: int,
+) -> tuple[str, str]:
+    if service.expires_at is None or now >= service.expires_at:
+        return "service-unpublished", "SERVICE_DESCRIPTOR_EXPIRED"
+    if now >= introduction.expires_at:
+        return "intro-unavailable", "INTRO_DESCRIPTOR_EXPIRED"
+    if host_health["recoveryRequested"]:
+        return "recovering", "ROUTE_RECOVERY"
+    if not host_health["running"] or not host_health["ready"]:
+        return "recovering", "HOST_WORKER_UNAVAILABLE"
+    if host_health["healthyIntroductions"] < host_health["requiredIntroductions"]:
+        return "intro-unavailable", "INTRO_HEARTBEAT_STALE"
+    age = now - int(network_health["updatedAt"])
+    if not 0 <= age <= HOSTING_DHT_HEALTH_SECONDS:
+        return "degraded", "DHT_HEALTH_STALE"
+    if network_health["state"] != "CONNECTED" or not network_health["dhtReady"]:
+        return "network-unavailable", "DHT_UNAVAILABLE"
+    return "online", ""
 
 
 def serve_hosted_service(
@@ -1313,20 +1344,47 @@ def serve_hosted_service(
             runtime.discovery.publish(introduction)
             recovery_cycles = 0
             generation += 1
-            _write_status(
-                root,
-                "online",
-                service,
-                generation=generation,
-                introductionNodeIds=[node.node_id for node in selected_introductions],
-                networkHealth=runtime.discovery.health().to_document(),
-                rendezvousNodeId=rendezvous_node.node_id,
-                startupFailures=failures,
-            )
             refresh_at = introduction.expires_at - 2 * 60
+            next_status = 0.0
+            next_dht_check = time.monotonic() + HOSTING_DHT_CHECK_INTERVAL
+            dht_check_failed = False
             while not host.wait(0.25):
                 if int(time.time()) >= refresh_at:
                     break
+                if time.monotonic() >= next_dht_check:
+                    # This bounded authenticated lookup belongs to the hosting
+                    # worker, never a UI refresh. A stalled lookup expires the
+                    # previously written status lease instead of claiming ONLINE.
+                    try:
+                        runtime.discovery.find_nodes(
+                            _target(service.service_id, b"health"), "discovery",
+                        )
+                        dht_check_failed = False
+                    except (GrangerNetworkError, OSError, TimeoutError, ValueError):
+                        dht_check_failed = True
+                    next_dht_check = time.monotonic() + HOSTING_DHT_CHECK_INTERVAL
+                if time.monotonic() >= next_status:
+                    network_health = runtime.discovery.health().to_document()
+                    host_health = host.health()
+                    state, reason = _hosting_health_state(
+                        host_health, network_health, service, introduction,
+                        now=int(time.time()),
+                    )
+                    if state == "online" and dht_check_failed:
+                        state, reason = "network-unavailable", "DHT_CHECK_FAILED"
+                    _write_status(
+                        root, state, service,
+                        generation=generation,
+                        stage="serving" if state == "online" else "health-check",
+                        healthReason=reason,
+                        healthLeaseSeconds=HOSTING_STATUS_LEASE_SECONDS,
+                        hostHealth=host_health,
+                        networkHealth=network_health,
+                        introductionNodeIds=[node.node_id for node in selected_introductions],
+                        rendezvousNodeId=rendezvous_node.node_id,
+                        startupFailures=failures,
+                    )
+                    next_status = time.monotonic() + HOSTING_STATUS_INTERVAL
             if host.recovery_requested:
                 _write_status(
                     root,

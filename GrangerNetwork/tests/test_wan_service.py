@@ -5,11 +5,13 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from granger_network.browser_gateway import CircuitRotationPolicy, _WanGateway
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.errors import GrangerNetworkError, OverlayRoutingError, ProtocolError
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
@@ -396,6 +398,68 @@ class WanServiceTests(unittest.TestCase):
         finally:
             for session in sessions:
                 session.close()
+            host.stop()
+
+    def test_gateway_reopens_parallel_assets_after_host_restart(self) -> None:
+        host, client, intro = self._rotation_pair()
+        gateway = _WanGateway.__new__(_WanGateway)
+        gateway._runtime = object()
+        gateway._resolver = object()
+        gateway._route_attempts = 1
+        gateway._timeout = 3.0
+        gateway._sessions = {}
+        gateway._session_locks = tuple(threading.Lock() for _ in range(4))
+        gateway._rotation_policy = CircuitRotationPolicy()
+        gateway._rotation_count = 0
+        gateway._closed = False
+        gateway._lock = threading.Lock()
+
+        def connect(*_args, **_kwargs):
+            return SimpleNamespace(service=client.service, session=client.connect(intro))
+
+        def fetch(path: str) -> bytes:
+            return gateway.fetch_gateway(
+                client.service.canonical_name, path, "GET", {}, b"",
+            ).body
+
+        replacement = None
+        try:
+            with (
+                patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")),
+                patch("granger_network.browser_gateway.connect_service", side_effect=connect),
+            ):
+                host.start_background()
+                host.wait_ready(15.0)
+                self.assertEqual(fetch("/"), HTML)
+                self.assertEqual(host.health()["healthyIntroductions"], 1)
+                self.assertTrue(host.health()["running"])
+                host.stop()
+                self.assertFalse(host.health()["running"])
+                introduction = IntroductionDescriptor.create(
+                    host.identity, host.service, [intro.node_id], sequence=2, lifetime=900,
+                )
+                replacement = WanServiceHost(
+                    host.identity, host.service, introduction,
+                    host.introduction_routes, host.rendezvous_route, host.bridge,
+                    timeout=2.0, rendezvous_lifetime=120,
+                )
+                client.introduction = introduction
+                replacement.start_background()
+                replacement.wait_ready(15.0)
+                with ThreadPoolExecutor(max_workers=4) as workers:
+                    requests = [workers.submit(fetch, path) for path in (
+                        "/", "/style.css", "/script.js", "/messages",
+                    )]
+                    self.assertEqual(
+                        [request.result(timeout=20.0) for request in requests],
+                        [HTML, CSS, SCRIPT, b""],
+                    )
+                self.assertFalse(replacement.recovery_requested)
+                self.assertEqual(replacement.active_sessions, 1)
+        finally:
+            gateway.close()
+            if replacement is not None:
+                replacement.stop()
             host.stop()
 
     def test_static_dynamic_and_concurrent_requests_stay_inside_overlay(self) -> None:
@@ -943,6 +1007,7 @@ class WanServiceTests(unittest.TestCase):
 
         class FakeEndpoint:
             rpc = FakeRpc()
+            remote = SimpleNamespace(node_id=introduction_node.node_id)
 
         class FakeCircuit:
             endpoint = FakeEndpoint()

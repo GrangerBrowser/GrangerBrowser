@@ -11746,9 +11746,7 @@ QString MainWindow::hostingSettingsHtml() const
             const auto serviceAction = [&idQuery](const QString &path) {
                 return actionUrl(path, idQuery);
             };
-            const bool running = service.status == QStringLiteral("online")
-                || service.status == QStringLiteral("starting")
-                || service.status == QStringLiteral("stopping");
+            const bool running = service.pid > 0 || service.status == QStringLiteral("stopping");
             const QString typeLabel = text(service.type == QStringLiteral("static")
                 ? "hosting.static.title" : "hosting.application.title");
             QString actions;

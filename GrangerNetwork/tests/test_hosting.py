@@ -25,6 +25,7 @@ from granger_network.hosting import (
     StaticSiteBridge,
     _ensure_publication_snapshot,
     _service_route_startup_timeout,
+    _hosting_health_state,
     initialize_hosted_service,
     inspect_static_site,
     load_hosted_service,
@@ -33,6 +34,55 @@ from granger_network.hosting import (
     update_hosted_service,
 )
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
+from granger_network.descriptor import ServiceDescriptor
+from granger_network.identity import ServiceIdentity
+from granger_network.introduction import IntroductionDescriptor
+from granger_network.peer import node_id_from_public_key
+
+
+class HostingHealthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        identity = ServiceIdentity.generate()
+        self.service = ServiceDescriptor.create_remote(identity, "health-test", lifetime=1800)
+        self.introduction = IntroductionDescriptor.create(
+            identity, self.service,
+            [node_id_from_public_key(ServiceIdentity.generate().public_key_bytes)],
+            sequence=1, lifetime=900,
+        )
+        self.now = int(time.time())
+        self.host = {
+            "ready": True, "running": True, "recoveryRequested": False,
+            "healthyIntroductions": 1, "requiredIntroductions": 1,
+        }
+        self.network = {"updatedAt": self.now, "state": "CONNECTED", "dhtReady": True}
+
+    def check(self) -> tuple[str, str]:
+        return _hosting_health_state(
+            self.host, self.network, self.service, self.introduction, now=self.now,
+        )
+
+    def test_online_requires_recent_authenticated_health(self) -> None:
+        self.assertEqual(self.check(), ("online", ""))
+        self.network["updatedAt"] = self.now - 121
+        self.assertEqual(self.check(), ("degraded", "DHT_HEALTH_STALE"))
+        self.network["updatedAt"] = self.now + 1
+        self.assertEqual(self.check(), ("degraded", "DHT_HEALTH_STALE"))
+
+    def test_lost_dht_and_introduction_have_distinct_states(self) -> None:
+        self.network["dhtReady"] = False
+        self.assertEqual(self.check(), ("network-unavailable", "DHT_UNAVAILABLE"))
+        self.host["healthyIntroductions"] = 0
+        self.assertEqual(self.check(), ("intro-unavailable", "INTRO_HEARTBEAT_STALE"))
+        self.host["recoveryRequested"] = True
+        self.assertEqual(self.check(), ("recovering", "ROUTE_RECOVERY"))
+
+    def test_expiry_and_dead_worker_cannot_remain_online(self) -> None:
+        self.host["running"] = False
+        self.assertEqual(self.check(), ("recovering", "HOST_WORKER_UNAVAILABLE"))
+        self.now = self.introduction.expires_at
+        self.assertEqual(self.check(), ("intro-unavailable", "INTRO_DESCRIPTOR_EXPIRED"))
+        self.now = self.service.expires_at
+        self.assertEqual(self.check(), ("service-unpublished", "SERVICE_DESCRIPTOR_EXPIRED"))
 
 
 class RecordingHandler(BaseHTTPRequestHandler):

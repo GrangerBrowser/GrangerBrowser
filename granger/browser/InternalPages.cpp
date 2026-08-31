@@ -708,6 +708,7 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-status.online i{background:var(--ds-success);box-shadow:0 0 0 3px color-mix(in srgb,var(--ds-success) 13%,transparent)}
 .settings-page .hosting-status.starting i,.settings-page .hosting-status.stopping i{background:var(--ds-warning);animation:hostingPulse 1.1s ease-in-out infinite}
 .settings-page .hosting-status.error i{background:var(--ds-danger)}
+.settings-page .hosting-status.degraded i,.settings-page .hosting-status.recovering i,.settings-page .hosting-status.network-unavailable i,.settings-page .hosting-status.service-unpublished i,.settings-page .hosting-status.intro-unavailable i{background:var(--ds-warning)}
 .settings-page .hosting-address{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-radius-md);background:var(--ds-bg-control)}
 .settings-page .hosting-address code{min-width:0;overflow:hidden;color:var(--ds-text-secondary);font:11px "Cascadia Mono","Consolas",monospace;text-overflow:ellipsis;white-space:nowrap}
 .settings-page .hosting-address a{flex:0 0 auto;color:var(--ds-accent-hover);font-size:10px;font-weight:650;text-decoration:none}
