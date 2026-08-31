@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from granger_network.bootstrap import BootstrapSet, PeerCache
-from granger_network.errors import DiscoveryError
+from granger_network.errors import DescriptorError, DiscoveryError
 from granger_network.identity import ServiceIdentity
 from granger_network.node import NodeListenerEndpoint, initialize_node, load_node
 from granger_network.operator import (
@@ -28,6 +28,7 @@ from granger_network.operator import (
     _discovery_wait_seconds,
     _load_bootstrap_sets,
     _persistent_router_peers,
+    _renew_running_descriptor,
     _stopped_status_document,
     load_operator_config,
     main as operator_main,
@@ -213,6 +214,94 @@ class OperatorTests(unittest.TestCase):
         public_content = (public / "node-descriptor.json").read_text(encoding="utf-8")
         self.assertNotIn("privateKey", public_content)
         NodeDescriptor.from_json(public_content, now=first.expires_at - config.renew_before + 1)
+
+    def test_running_operator_renews_descriptor_without_changing_runtime_identity(self) -> None:
+        config = load_operator_config(self._config())
+        state = self.root / "renew-running-state"
+        public = self.root / "renew-running-public"
+        now = int(time.time())
+        first, _created = prepare_node(config, state, public, now=now)
+        identity_content = (state / "node-identity.json").read_text(encoding="utf-8")
+        node = load_node(state)
+        supervisor = _DiscoverySupervisor(
+            node,
+            ServiceIdentity.load(state / "node-identity.json"),
+            (),
+            300,
+        )
+        supervisor._descriptor_published_at = 123.0
+        try:
+            unchanged, changed = _renew_running_descriptor(
+                config,
+                state,
+                public,
+                node,
+                supervisor,
+                now=now + 1,
+            )
+            renewed, rotated = _renew_running_descriptor(
+                config,
+                state,
+                public,
+                node,
+                supervisor,
+                now=first.expires_at - config.renew_before + 1,
+            )
+
+            self.assertFalse(changed)
+            self.assertEqual(unchanged, first)
+            self.assertTrue(rotated)
+            self.assertEqual(renewed.node_id, first.node_id)
+            self.assertEqual(renewed.endpoint, first.endpoint)
+            self.assertEqual(renewed.capabilities, first.capabilities)
+            self.assertEqual(renewed.relay_policy, first.relay_policy)
+            self.assertGreater(renewed.issued_at, first.issued_at)
+            self.assertGreater(renewed.expires_at, first.expires_at)
+            self.assertEqual(node.descriptor, renewed)
+            self.assertEqual(node.runtime.descriptor, renewed)
+            self.assertEqual(
+                {peer.node_id: peer for peer in node._known_peers()}[renewed.node_id],
+                renewed,
+            )
+            stored = node.records.fetch("node", renewed.node_id, now=renewed.issued_at)
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored.sequence, renewed.issued_at)
+            self.assertIsNone(supervisor._descriptor_published_at)
+            self.assertTrue(supervisor.wake_event.is_set())
+            self.assertEqual(
+                identity_content,
+                (state / "node-identity.json").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "privateKey",
+                (public / "node-descriptor.json").read_text(encoding="utf-8"),
+            )
+        finally:
+            node.stop()
+
+    def test_running_operator_rejects_descriptor_policy_change(self) -> None:
+        config = load_operator_config(self._config())
+        state = self.root / "renew-policy-state"
+        public = self.root / "renew-policy-public"
+        now = int(time.time())
+        first, _created = prepare_node(config, state, public, now=now)
+        identity = ServiceIdentity.load(state / "node-identity.json")
+        node = load_node(state)
+        changed_endpoint = NodeDescriptor.create(
+            identity,
+            RendezvousEndpoint("203.0.113.91", first.endpoint.port),
+            first.capabilities,
+            first.relay_policy,
+            issued_at=first.issued_at + 1,
+            lifetime=config.descriptor_lifetime,
+        )
+        try:
+            with self.assertRaisesRegex(DescriptorError, "listener policy"):
+                node.replace_descriptor(changed_endpoint)
+            self.assertEqual(node.descriptor, first)
+            self.assertEqual(node.runtime.descriptor, first)
+        finally:
+            node.stop()
 
     def test_listener_can_bind_separately_from_advertised_endpoint(self) -> None:
         port = self._free_port()

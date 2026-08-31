@@ -485,6 +485,37 @@ class GrangerNode:
         self._bandwidth_window_started = self._read_monotonic()
         self._bandwidth_bytes = 0
 
+    def replace_descriptor(
+        self,
+        descriptor: NodeDescriptor,
+        *,
+        now: int | None = None,
+    ) -> None:
+        descriptor.verify(now=now)
+        with self._lock:
+            current = self.descriptor
+            if (
+                descriptor.node_id != current.node_id
+                or descriptor.identity_public_key != self.identity.public_key_bytes
+            ):
+                raise DescriptorError("renewed node descriptor changes the node identity")
+            if (
+                descriptor.endpoint != current.endpoint
+                or descriptor.capabilities != current.capabilities
+                or descriptor.relay_policy != self.policy
+                or descriptor.reachability != current.reachability
+                or descriptor.network_id != current.network_id
+                or descriptor.protocol_version != current.protocol_version
+                or descriptor.version != current.version
+            ):
+                raise DescriptorError("renewed node descriptor changes the runtime policy")
+            if (
+                descriptor.issued_at <= current.issued_at
+                or descriptor.expires_at <= current.expires_at
+            ):
+                raise DescriptorError("renewed node descriptor does not advance its validity")
+            self.descriptor = descriptor
+
     def _read_monotonic(self) -> float:
         try:
             value = float(self._monotonic())

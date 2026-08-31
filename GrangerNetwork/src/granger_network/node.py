@@ -261,6 +261,7 @@ class WanNodeServer:
         self._threads: set[threading.Thread] = set()
         self._connections: set[socket.socket] = set()
         self._lock = threading.Lock()
+        self._descriptor_lock = threading.Lock()
         self.errors: list[str] = []
         self.accepted_connections = 0
         self.rejected_connections = 0
@@ -320,10 +321,51 @@ class WanNodeServer:
                     self._diagnostics_bytes += len(encoded)
 
     @staticmethod
-    def _record_for_descriptor(descriptor: NodeDescriptor):
+    def _record_for_descriptor(descriptor: NodeDescriptor, now: int | None = None):
         from .distributed import encode_record
 
-        return encode_record(descriptor)
+        return encode_record(descriptor, now=now)
+
+    def replace_descriptor(
+        self,
+        descriptor: NodeDescriptor,
+        *,
+        now: int | None = None,
+    ) -> None:
+        descriptor.verify(
+            now=now,
+            expected_network_id=self.descriptor.network_id,
+            expected_protocol_version=self.descriptor.protocol_version,
+        )
+        with self._descriptor_lock:
+            current = self.descriptor
+            if (
+                descriptor.node_id != current.node_id
+                or descriptor.identity_public_key != self.identity.public_key_bytes
+            ):
+                raise DescriptorError("renewed WAN descriptor changes the node identity")
+            if (
+                descriptor.endpoint != current.endpoint
+                or descriptor.capabilities != current.capabilities
+                or descriptor.relay_policy != current.relay_policy
+                or descriptor.reachability != current.reachability
+                or descriptor.network_id != current.network_id
+                or descriptor.protocol_version != current.protocol_version
+                or descriptor.version != current.version
+            ):
+                raise DescriptorError("renewed WAN descriptor changes the listener policy")
+            if (
+                descriptor.issued_at <= current.issued_at
+                or descriptor.expires_at <= current.expires_at
+            ):
+                raise DescriptorError("renewed WAN descriptor does not advance its validity")
+
+            record = self._record_for_descriptor(descriptor, now=now)
+            self.records.store(record, now=now)
+            self.runtime.replace_descriptor(descriptor, now=now)
+            with self._lock:
+                self.descriptor = descriptor
+                self._known[descriptor.node_id] = descriptor
 
     def start_background(self) -> None:
         if self._listener is not None:

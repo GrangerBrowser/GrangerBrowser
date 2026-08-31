@@ -479,6 +479,7 @@ class _DiscoverySupervisor:
         self.node = node
         self.interval = interval
         self.stop_event = threading.Event()
+        self.wake_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
         self._descriptor_published_at: float | None = None
@@ -558,11 +559,23 @@ class _DiscoverySupervisor:
         )
         self.thread.start()
 
+    def descriptor_renewed(self) -> None:
+        with self.lock:
+            self._descriptor_published_at = None
+        self.wake_event.set()
+
+    def _wait(self, timeout: float) -> bool:
+        if self.stop_event.is_set():
+            return True
+        self.wake_event.wait(timeout)
+        self.wake_event.clear()
+        return self.stop_event.is_set()
+
     def _run(self) -> None:
         assert self.discovery is not None
         target_seed = hashlib.sha256(self.node.descriptor.node_id.encode("ascii")).digest()
         cycle = 0
-        if self.stop_event.wait(
+        if self._wait(
             _discovery_wait_seconds(
                 self.node.descriptor.node_id,
                 self.interval,
@@ -577,10 +590,18 @@ class _DiscoverySupervisor:
                 learned: dict[str, NodeDescriptor] = {}
                 if health.state.value != "OFFLINE":
                     current = time.monotonic()
-                    if _descriptor_publication_due(self._descriptor_published_at, current):
-                        stored_replicas = self.discovery.publish(self.node.descriptor)
+                    descriptor = self.node.descriptor
+                    with self.lock:
+                        publication_due = _descriptor_publication_due(
+                            self._descriptor_published_at,
+                            current,
+                        )
+                    if publication_due:
+                        stored_replicas = self.discovery.publish(descriptor)
                         if stored_replicas >= self.discovery.replication_factor:
-                            self._descriptor_published_at = current
+                            with self.lock:
+                                if self.node.descriptor == descriptor:
+                                    self._descriptor_published_at = current
                     capability = _discovery_capability(
                         self.node.descriptor.node_id,
                         cycle,
@@ -610,7 +631,7 @@ class _DiscoverySupervisor:
                         }
                     )
             cycle += 1
-            self.stop_event.wait(
+            self._wait(
                 _discovery_wait_seconds(
                     self.node.descriptor.node_id,
                     self.interval,
@@ -625,9 +646,38 @@ class _DiscoverySupervisor:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.wake_event.set()
         if self.thread is not None:
             self.thread.join(timeout=5.0)
             self.thread = None
+
+
+def _renew_running_descriptor(
+    config: OperatorConfig,
+    state_dir: Path,
+    public_dir: Path,
+    node: WanNodeServer,
+    supervisor: _DiscoverySupervisor,
+    *,
+    now: int | None = None,
+) -> tuple[NodeDescriptor, bool]:
+    current_time = int(time.time()) if now is None else now
+    current = node.descriptor
+    if current.expires_at - current_time > config.renew_before:
+        return current, False
+    renewed, changed = prepare_node(
+        config,
+        state_dir,
+        public_dir,
+        now=current_time,
+    )
+    if not changed:
+        if renewed != current:
+            raise DescriptorError("operator descriptor state changed without renewal")
+        return current, False
+    node.replace_descriptor(renewed, now=current_time)
+    supervisor.descriptor_renewed()
+    return renewed, True
 
 
 class _PidLease:
@@ -848,7 +898,16 @@ def run_operator(
             mode=0o600,
         )
         while not stop_event.wait(DEFAULT_STATUS_INTERVAL):
-            if int(time.time()) >= descriptor.expires_at:
+            current_time = int(time.time())
+            descriptor, _renewed = _renew_running_descriptor(
+                config,
+                state,
+                public_dir,
+                node,
+                supervisor,
+                now=current_time,
+            )
+            if current_time >= descriptor.expires_at:
                 raise DescriptorError("node descriptor expired while the operator was running")
             atomic_write_text(
                 status_file,
