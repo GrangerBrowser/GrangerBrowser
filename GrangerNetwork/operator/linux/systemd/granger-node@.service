@@ -43,7 +43,8 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 LimitNOFILE=4096
 TasksMax=256
-MemoryHigh=96M
+# Keep the soft reclaim threshold above the measured warm router footprint.
+MemoryHigh=128M
 MemoryMax=160M
 
 [Install]

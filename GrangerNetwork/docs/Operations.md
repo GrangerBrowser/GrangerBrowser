@@ -74,6 +74,21 @@ bandwidth. Signed relay policy also bounds streams, byte accounting, rate,
 burst, idle timeout, and connection timeout. Rejections should be monitored by
 category, not worked around by enabling direct transport.
 
+The Linux systemd unit uses `MemoryHigh=128M` and `MemoryMax=160M`.
+The soft threshold must leave room for the warm interpreter, cryptographic
+backend, peer cache, and active circuits. A threshold below the working set
+can stall authenticated handshakes even when TCP connect succeeds and the
+process remains active. Raising the soft threshold does not remove the hard
+memory limit or the signed connection, circuit, and stream limits.
+
+For a slow node, inspect the unit's `MemoryCurrent`, `MemoryHigh`, and
+`MemoryMax`, then its cgroup `memory.events` and `memory.pressure`. Increasing
+`high` events and sustained full memory pressure distinguish reclaim stalls
+from a merely reachable TCP listener. Compare authentication from the node
+itself with authentication from the remote client before attributing a
+failure to an ISP or VPN. See the
+[kernel cgroup memory documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files).
+
 ## Diagnostics and captures
 
 `granger_network.node run` supports:
@@ -101,6 +116,13 @@ Operators should monitor:
 Client diagnostics expose only bounded network health metadata:
 `OFFLINE`, `BOOTSTRAPPING`, `JOINING`, `CONNECTED`, `DEGRADED`, or
 `RESEEDING`, plus aggregate peer/DHT counters and a short failure category.
+
+`WanDiscoveryClient.first_contact_diagnostics()` returns at most 32 local
+records for the current join attempt. Records contain an operation ID,
+monotonic timing, public node ID, stage, attempt count, configured timeout,
+and a fixed reason code. TCP, authentication, and peer-sample failures remain
+distinct; unavailable private ingress and missing seed sources retain their
+own health reasons. These diagnostics do not change retry or trust policy.
 
 Do not log private identities, channel keys, introduction cookies, application
 bodies, or endpoint addresses across the client/service boundary.

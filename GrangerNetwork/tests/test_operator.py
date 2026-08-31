@@ -607,6 +607,7 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=true", service)
         self.assertIn("ProtectSystem=strict", service)
         self.assertIn("MemoryMax=160M", service)
+        self.assertIn("MemoryHigh=128M", service)
         self.assertIn("TasksMax=256", service)
         self.assertIn("TimeoutStopSec=120s", service)
         self.assertIn("RuntimeDirectory=granger-node/%i", service)
