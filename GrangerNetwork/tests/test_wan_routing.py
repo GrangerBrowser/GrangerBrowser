@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import unittest
 
+from granger_network.errors import OverlayRoutingError
 from granger_network.identity import ServiceIdentity
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
-from granger_network.wan_routing import WanRouteSelector
+from granger_network.wan_routing import WanRouteSelector, select_service_route_set
 
 
 class _StaticDiscovery:
@@ -142,6 +143,70 @@ class WanRouteSelectionTests(unittest.TestCase):
             failed_middle.node_id,
             {node.node_id for node, _role in selection.route},
         )
+
+    def test_exhausted_temporary_middle_exclusions_retry_required_routes(self) -> None:
+        nodes = _service_descriptors()
+        selector = WanRouteSelector(
+            _StaticDiscovery(
+                {capability: nodes for capability in nodes[0].capabilities}
+            ),
+            guard_seed=b"m" * 32,
+        )
+
+        introductions, rendezvous, retried = select_service_route_set(
+            selector,
+            "e" * 52,
+            nodes[:2],
+            nodes[2],
+            failed_middle_ids={node.node_id for node in nodes},
+        )
+
+        self.assertTrue(retried)
+        self.assertEqual(len(introductions), 2)
+        for selection in (*introductions, rendezvous):
+            self.assertEqual(len(selection.route), 4)
+            self.assertEqual(
+                len({node.node_id for node, _role in selection.route}),
+                4,
+            )
+
+    def test_exhausted_temporary_route_exclusions_retry_required_routes(self) -> None:
+        nodes = _service_descriptors()
+        selector = WanRouteSelector(
+            _StaticDiscovery(
+                {capability: nodes for capability in nodes[0].capabilities}
+            ),
+            guard_seed=b"x" * 32,
+        )
+
+        introductions, rendezvous, retried = select_service_route_set(
+            selector,
+            "f" * 52,
+            nodes[:2],
+            nodes[2],
+            failed_route_ids={node.node_id for node in nodes},
+        )
+
+        self.assertTrue(retried)
+        self.assertEqual(len(introductions), 2)
+        self.assertEqual(len(rendezvous.route), 4)
+
+    def test_temporary_failure_retry_cannot_create_a_three_node_route(self) -> None:
+        nodes = _service_descriptors()[:3]
+        selector = WanRouteSelector(
+            _StaticDiscovery(
+                {capability: nodes for capability in nodes[0].capabilities}
+            ),
+            guard_seed=b"z" * 32,
+        )
+        with self.assertRaisesRegex(OverlayRoutingError, "no complete service relay route"):
+            select_service_route_set(
+                selector,
+                "g" * 52,
+                nodes[:2],
+                nodes[2],
+                failed_route_ids={node.node_id for node in nodes},
+            )
 
     def test_service_route_separates_relays_from_the_same_network_group(self) -> None:
         capabilities = (

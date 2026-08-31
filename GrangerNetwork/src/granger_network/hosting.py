@@ -26,7 +26,7 @@ from .wan_config import (
     load_browser_wan_config,
     load_discovery_runtime,
 )
-from .wan_routing import WanRouteSelector
+from .wan_routing import WanRouteSelector, select_service_route_set
 from .wan_service import WanServiceHost
 
 
@@ -1255,21 +1255,17 @@ def serve_hosted_service(
                         routeAttempts=MAX_SERVICE_ROUTE_ATTEMPTS,
                         networkHealth=runtime.discovery.health().to_document(),
                     )
-                    intro_routes = tuple(
-                        selector.service_route(
+                    intro_routes, rendezvous_route, reused_required_route = (
+                        select_service_route_set(
+                            selector,
                             service.service_id,
-                            node,
-                            "introduction",
-                            excluded_ids=route_exclusions,
+                            selected_introductions,
+                            rendezvous_node,
+                            failed_route_ids=route_exclusions,
                         )
-                        for node in selected_introductions
                     )
-                    rendezvous_route = selector.service_route(
-                        service.service_id,
-                        rendezvous_node,
-                        "rendezvous",
-                        excluded_ids=route_exclusions,
-                    )
+                    if reused_required_route:
+                        route_exclusions.clear()
                     candidate = WanServiceHost(
                         identity,
                         service,

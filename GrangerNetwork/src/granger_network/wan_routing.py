@@ -299,3 +299,51 @@ class WanRouteSelector:
             ),
             relaxation > 0,
         )
+
+
+def select_service_route_set(
+    selector: WanRouteSelector,
+    service_id: str,
+    introduction_nodes: tuple[NodeDescriptor, ...] | list[NodeDescriptor],
+    rendezvous_node: NodeDescriptor,
+    *,
+    failed_route_ids: set[str] | None = None,
+    failed_middle_ids: set[str] | None = None,
+) -> tuple[tuple[WanRouteSelection, ...], WanRouteSelection, bool]:
+    """Retry transient failure hints without relaxing the selector's route policy."""
+    blocked_ids = set(failed_route_ids or ())
+    blocked_middles = set(failed_middle_ids or ())
+    if blocked_ids and blocked_middles:
+        raise OverlayRoutingError("service route exclusions are ambiguous")
+
+    def select(
+        route_ids: set[str] | None,
+        middle_ids: set[str] | None,
+    ) -> tuple[tuple[WanRouteSelection, ...], WanRouteSelection]:
+        introductions = tuple(
+            selector.service_route(
+                service_id,
+                node,
+                "introduction",
+                excluded_ids=route_ids,
+                excluded_middle_ids=middle_ids,
+            )
+            for node in introduction_nodes
+        )
+        rendezvous = selector.service_route(
+            service_id,
+            rendezvous_node,
+            "rendezvous",
+            excluded_ids=route_ids,
+            excluded_middle_ids=middle_ids,
+        )
+        return introductions, rendezvous
+
+    try:
+        introductions, rendezvous = select(blocked_ids, blocked_middles)
+        return introductions, rendezvous, False
+    except OverlayRoutingError:
+        if not blocked_ids and not blocked_middles:
+            raise
+    introductions, rendezvous = select(None, None)
+    return introductions, rendezvous, True

@@ -15,7 +15,7 @@ from .http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
 from .wan_config import load_discovery_runtime
-from .wan_routing import WanRouteSelector
+from .wan_routing import WanRouteSelector, select_service_route_set
 from .wan_service import WanServiceHost
 
 
@@ -156,21 +156,17 @@ def run_host(options: argparse.Namespace) -> int:
             for attempt in range(options.startup_attempts):
                 candidate: WanServiceHost | None = None
                 try:
-                    intro_routes = tuple(
-                        selector.service_route(
+                    intro_routes, rendezvous_route, reused_required_route = (
+                        select_service_route_set(
+                            selector,
                             service.service_id,
-                            introduction_node,
-                            "introduction",
-                            excluded_middle_ids=middle_exclusions,
+                            selected_introductions,
+                            rendezvous_node,
+                            failed_middle_ids=middle_exclusions,
                         )
-                        for introduction_node in selected_introductions
                     )
-                    rendezvous_route = selector.service_route(
-                        service.service_id,
-                        rendezvous_node,
-                        "rendezvous",
-                        excluded_middle_ids=middle_exclusions,
-                    )
+                    if reused_required_route:
+                        middle_exclusions.clear()
                     candidate = WanServiceHost(
                         identity,
                         service,
