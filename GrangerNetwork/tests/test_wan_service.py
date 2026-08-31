@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from granger_network.descriptor import ServiceDescriptor
-from granger_network.errors import OverlayRoutingError, ProtocolError
+from granger_network.errors import GrangerNetworkError, OverlayRoutingError, ProtocolError
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
 from granger_network.hosting import StaticSiteBridge
 from granger_network.identity import ServiceIdentity
@@ -271,6 +271,132 @@ class WanServiceTests(unittest.TestCase):
         self.backend.server_close()
         self.backend_thread.join(timeout=2.0)
         self.temporary.cleanup()
+
+    def _rotation_pair(self, *, max_sessions: int = 4) -> tuple[WanServiceHost, WanServiceClient, NodeDescriptor]:
+        client_access, client_entry, client_middle, access, guard, middle, intro, rendezvous = self.descriptors
+        identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(identity, "rotation-regression", lifetime=1800)
+        introduction = IntroductionDescriptor.create(
+            identity, service, [intro.node_id], sequence=1, lifetime=900,
+        )
+        host = WanServiceHost(
+            identity, service, introduction,
+            ((access, "access"), (guard, "service-relay"), (middle, "middle"), (intro, "introduction")),
+            ((access, "access"), (guard, "service-relay"), (middle, "middle"), (rendezvous, "rendezvous")),
+            LoopbackHttpBridge(LoopbackHttpTarget("127.0.0.1", self.backend.server_address[1])),
+            timeout=2.0, rendezvous_lifetime=120, max_sessions=max_sessions,
+        )
+        client = WanServiceClient(
+            ServiceIdentity.generate(), service, introduction,
+            ((client_access, "access"), (client_entry, "entry"), (client_middle, "middle")),
+            timeout=3.0,
+        )
+        return host, client, intro
+
+    def test_replacement_session_opens_before_previous_session_is_closed(self) -> None:
+        host, client, intro = self._rotation_pair()
+        keep_alive = threading.Event()
+        failures: list[BaseException] = []
+        worker = None
+        previous = None
+        replacement = None
+        try:
+            with patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")):
+                host.start_background()
+                host.wait_ready(15.0)
+                previous = client.connect(intro)
+                self.assertEqual(previous.fetch("/").body, HTML)
+
+                def keep_previous_usable() -> None:
+                    while not keep_alive.wait(0.1):
+                        try:
+                            self.assertEqual(previous.fetch("/").body, HTML)
+                        except BaseException as error:
+                            failures.append(error)
+                            return
+
+                worker = threading.Thread(target=keep_previous_usable)
+                worker.start()
+                replacement = client.connect(intro)
+                self.assertEqual(replacement.fetch("/").body, HTML)
+                keep_alive.set()
+                worker.join(timeout=5.0)
+                self.assertEqual(failures, [])
+                self.assertEqual(previous.fetch("/").body, HTML)
+                self.assertFalse(host.recovery_requested)
+        finally:
+            keep_alive.set()
+            if replacement is not None:
+                replacement.close()
+            if previous is not None:
+                previous.close()
+            if worker is not None:
+                worker.join(timeout=5.0)
+            host.stop()
+
+    def test_ten_replacements_release_sessions_and_preserve_service_identity(self) -> None:
+        host, client, intro = self._rotation_pair(max_sessions=2)
+        current = None
+        replacement = None
+        try:
+            with patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")):
+                host.start_background()
+                host.wait_ready(15.0)
+                current = client.connect(intro)
+                for cycle in range(10):
+                    with self.subTest(cycle=cycle):
+                        replacement = client.connect(intro)
+                        self.assertEqual(replacement.fetch("/").body, HTML)
+                        self.assertEqual(current.fetch("/").body, HTML)
+                        self.assertEqual(replacement.service, current.service)
+                        self.assertNotEqual(replacement.grant.cookie, current.grant.cookie)
+                        self.assertEqual(host.active_sessions, 2)
+                        current.close()
+                        current, replacement = replacement, None
+                        deadline = time.monotonic() + 5.0
+                        while host.active_sessions > 1 and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertEqual(host.active_sessions, 1)
+                        self.assertFalse(host.recovery_requested)
+        finally:
+            if current is not None:
+                current.close()
+            if replacement is not None:
+                replacement.close()
+            host.stop()
+        self.assertEqual(host.active_sessions, 0)
+        self.assertTrue(host.wait(0))
+        self.assertEqual(host.errors, [])
+
+    def test_session_capacity_fails_closed_and_stop_releases_active_sessions(self) -> None:
+        host, client, intro = self._rotation_pair(max_sessions=2)
+        sessions = []
+        try:
+            with patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")):
+                host.start_background()
+                host.wait_ready(15.0)
+                sessions.extend((client.connect(intro), client.connect(intro)))
+                self.assertEqual(host.active_sessions, 2)
+                with self.assertRaises(OverlayRoutingError):
+                    client.connect(intro)
+                for session in sessions:
+                    self.assertEqual(session.fetch("/").body, HTML)
+                self.assertEqual(host.active_sessions, 2)
+                self.assertIn("introduction:RENDEZVOUS_BUSY", host.session_failures)
+                self.assertFalse(host.recovery_requested)
+                with host._grant_condition:
+                    owners = tuple(host._sessions)
+                host.stop()
+                self.assertEqual(host.active_sessions, 0)
+                self.assertTrue(all(not owner.thread.is_alive() for owner in owners))
+                self.assertTrue(all(not owner.server._workers for owner in owners))
+                for session in sessions:
+                    with self.assertRaises((GrangerNetworkError, OSError)):
+                        session.fetch("/")
+        finally:
+            for session in sessions:
+                session.close()
+            host.stop()
 
     def test_static_dynamic_and_concurrent_requests_stay_inside_overlay(self) -> None:
         (

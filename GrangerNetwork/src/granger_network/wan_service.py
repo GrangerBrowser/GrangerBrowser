@@ -5,7 +5,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .cells import CellMultiplexer
 from .circuit import BuiltCircuit, CircuitBuilder
@@ -32,6 +32,7 @@ from .wan_control import (
 
 
 _RENDEZVOUS_ROUTE_FAILURE_LIMIT = 3
+MAX_HOSTED_SESSIONS = 4
 RoutePrefix = tuple[tuple[NodeDescriptor, str], ...]
 
 
@@ -268,6 +269,25 @@ class WanServiceClient:
             ) from error
 
 
+@dataclass(eq=False)
+class _HostedSession:
+    circuit: BuiltCircuit
+    rendezvous_mux: CellMultiplexer
+    channel: SecureChannel
+    application_mux: CellMultiplexer
+    server: WanApplicationServer
+    thread: threading.Thread | None = None
+    _close_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def close(self) -> None:
+        with self._close_lock:
+            self.server.stop()
+            self.application_mux.close()
+            self.channel.destroy()
+            self.rendezvous_mux.close()
+            self.circuit.close()
+
+
 class WanServiceHost:
     def __init__(
         self,
@@ -285,6 +305,7 @@ class WanServiceHost:
         *,
         timeout: float = 10.0,
         rendezvous_lifetime: int = MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
+        max_sessions: int = MAX_HOSTED_SESSIONS,
     ) -> None:
         service.verify()
         introduction.verify_for(service)
@@ -336,6 +357,13 @@ class WanServiceHost:
         if not 30 <= rendezvous_lifetime <= MAX_RENDEZVOUS_REGISTRATION_LIFETIME:
             raise ProtocolError("WAN service rendezvous lifetime is invalid")
         self.rendezvous_lifetime = rendezvous_lifetime
+        if (
+            isinstance(max_sessions, bool)
+            or not isinstance(max_sessions, int)
+            or not 2 <= max_sessions <= MAX_HOSTED_SESSIONS
+        ):
+            raise ProtocolError("hosted session limit is invalid")
+        self.max_sessions = max_sessions
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._recovery = threading.Event()
@@ -345,10 +373,7 @@ class WanServiceHost:
         self._intro_threads: list[threading.Thread] = []
         self._intro_circuits: list[BuiltCircuit] = []
         self._rendezvous_circuit: BuiltCircuit | None = None
-        self._rendezvous_mux: CellMultiplexer | None = None
-        self._channel: SecureChannel | None = None
-        self._application_mux: CellMultiplexer | None = None
-        self._application_server: WanApplicationServer | None = None
+        self._sessions: set[_HostedSession] = set()
         self._grant_condition = threading.Condition()
         self._grant_slot: tuple[bytes, int] | None = None
         self._startup_failed_route: tuple[tuple[NodeDescriptor, str], ...] = ()
@@ -367,6 +392,11 @@ class WanServiceHost:
     def recovery_reason(self) -> str:
         with self._recovery_lock:
             return self._recovery_reason
+
+    @property
+    def active_sessions(self) -> int:
+        with self._grant_condition:
+            return len(self._sessions)
 
     @property
     def startup_failed_middle_ids(self) -> frozenset[str]:
@@ -459,6 +489,20 @@ class WanServiceHost:
                 and not self._recovery.is_set()
                 and int(time.time()) < self.introduction.expires_at
             ):
+                with self._grant_condition:
+                    while (
+                        len(self._sessions) >= self.max_sessions
+                        and not self._stop.is_set()
+                        and not self._recovery.is_set()
+                        and int(time.time()) < self.introduction.expires_at
+                    ):
+                        self._grant_condition.wait(0.25)
+                    if (
+                        self._stop.is_set()
+                        or self._recovery.is_set()
+                        or int(time.time()) >= self.introduction.expires_at
+                    ):
+                        break
                 try:
                     self._serve_rendezvous_session(builder)
                     consecutive_route_failures = 0
@@ -505,38 +549,46 @@ class WanServiceHost:
         expires_at = int(time.time()) + self.rendezvous_lifetime
         cell_circuit_id = secrets.token_bytes(16)
         route_ready = False
+        circuit = None
+        rendezvous_mux = None
+        channel = None
+        application_mux = None
+        application_server = None
+        handed_off = False
         try:
-            self._rendezvous_circuit = builder.open(self.rendezvous_route)
-            self._rendezvous_circuit.endpoint.channel.connection.settimeout(self.timeout)
-            if self._recovery.is_set():
-                raise OverlayRoutingError("service route recovery was requested")
+            circuit = builder.open(self.rendezvous_route)
+            with self._grant_condition:
+                if self._stop.is_set() or self._recovery.is_set():
+                    raise OverlayRoutingError("service route recovery was requested")
+                self._rendezvous_circuit = circuit
+            circuit.endpoint.channel.connection.settimeout(self.timeout)
             registration = RendezvousRegistration.create(
                 cookie,
                 expires_at,
                 cell_circuit_id,
             )
-            self._rendezvous_circuit.endpoint.rpc.request(
+            circuit.endpoint.rpc.request(
                 RpcType.RENDEZVOUS_REGISTER,
                 registration.encode(),
                 expected=RpcType.RENDEZVOUS_REGISTER,
             )
-            self._rendezvous_mux = CellMultiplexer(
-                self._rendezvous_circuit.endpoint.channel,
+            rendezvous_mux = CellMultiplexer(
+                circuit.endpoint.channel,
                 cell_circuit_id,
                 initiator=True,
             )
-            rendezvous_stream = self._rendezvous_mux.open_stream(self.timeout)
-            self._rendezvous_circuit.endpoint.channel.connection.settimeout(None)
+            rendezvous_stream = rendezvous_mux.open_stream(self.timeout)
+            circuit.endpoint.channel.connection.settimeout(None)
             rendezvous_stream.settimeout(float(self.rendezvous_lifetime))
             route_ready = True
             with self._grant_condition:
-                if self._recovery.is_set():
+                if self._stop.is_set() or self._recovery.is_set():
                     raise OverlayRoutingError("service route recovery was requested")
                 self._grant_slot = (cookie, expires_at)
                 self._grant_condition.notify_all()
             self._ready.set()
 
-            self._channel = server_handshake(
+            channel = server_handshake(
                 rendezvous_stream,
                 self.identity,
                 expected_session_id=rendezvous_session_id(cookie),
@@ -545,17 +597,39 @@ class WanServiceHost:
             with self._grant_condition:
                 if self._grant_slot is not None and self._grant_slot[0] == cookie:
                     self._grant_slot = None
-            self._application_mux = CellMultiplexer(
-                self._channel,
+            application_mux = CellMultiplexer(
+                channel,
                 application_circuit_id(cookie),
                 initiator=False,
             )
-            self._application_server = WanApplicationServer(
-                self._application_mux,
+            application_server = WanApplicationServer(
+                application_mux,
                 self.bridge,
+                max_concurrent_streams=max(1, 32 // self.max_sessions),
                 timeout=self.timeout,
             )
-            self._application_server.serve_forever()
+            session = _HostedSession(
+                circuit, rendezvous_mux, channel, application_mux, application_server,
+            )
+            session.thread = threading.Thread(
+                target=self._serve_application_session,
+                args=(session,),
+                name="granger-hosted-session",
+                daemon=True,
+            )
+            # Transfer ownership before accepting the next client. A gateway must
+            # establish its replacement circuit while the previous one still works.
+            with self._grant_condition:
+                if self._stop.is_set() or self._recovery.is_set():
+                    raise OverlayRoutingError("service route recovery was requested")
+                self._sessions.add(session)
+                try:
+                    session.thread.start()
+                except BaseException:
+                    self._sessions.discard(session)
+                    raise
+                handed_off = True
+                self._rendezvous_circuit = None
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
             if not route_ready and not self._stop.is_set() and not self._recovery.is_set():
                 raise _RendezvousRouteUnavailable(str(error)) from error
@@ -565,7 +639,32 @@ class WanServiceHost:
                 if self._grant_slot is not None and self._grant_slot[0] == cookie:
                     self._grant_slot = None
                 self._grant_condition.notify_all()
-            self._close_rendezvous_session()
+                if self._rendezvous_circuit is circuit:
+                    self._rendezvous_circuit = None
+            if not handed_off:
+                if application_server is not None:
+                    application_server.stop()
+                if application_mux is not None:
+                    application_mux.close()
+                if channel is not None:
+                    channel.destroy()
+                if rendezvous_mux is not None:
+                    rendezvous_mux.close()
+                if circuit is not None:
+                    circuit.close()
+
+    def _serve_application_session(self, session: _HostedSession) -> None:
+        try:
+            session.server.serve_forever()
+        except (GrangerNetworkError, OSError, ValueError) as error:
+            with self._grant_condition:
+                if not self._stop.is_set() and len(self.session_failures) < 1024:
+                    self.session_failures.append(f"application:{type(error).__name__}")
+        finally:
+            session.close()
+            with self._grant_condition:
+                self._sessions.discard(session)
+                self._grant_condition.notify_all()
 
     def _answer_introductions(self, intro_circuit: BuiltCircuit) -> None:
         rendezvous = self.rendezvous_route[-1][0]
@@ -641,29 +740,20 @@ class WanServiceHost:
                     self._request_recovery(reason)
                 return
 
-    def _close_rendezvous_session(self) -> None:
-        if self._application_server is not None:
-            self._application_server.stop()
-            self._application_server = None
-        if self._application_mux is not None:
-            self._application_mux.close()
-            self._application_mux = None
-        if self._channel is not None:
-            self._channel.destroy()
-            self._channel = None
-        if self._rendezvous_mux is not None:
-            self._rendezvous_mux.close()
-            self._rendezvous_mux = None
-        if self._rendezvous_circuit is not None:
-            self._rendezvous_circuit.close()
-            self._rendezvous_circuit = None
-
     def stop(self) -> None:
         self._stop.set()
         with self._grant_condition:
             self._grant_slot = None
             self._grant_condition.notify_all()
-        self._close_rendezvous_session()
+            pending = self._rendezvous_circuit
+            sessions = tuple(self._sessions)
+        if pending is not None:
+            pending.close()
+        for session in sessions:
+            session.close()
+        for session in sessions:
+            if session.thread is not None and session.thread is not threading.current_thread():
+                session.thread.join(timeout=3.0)
         for circuit in self._intro_circuits:
             circuit.close()
         self._intro_circuits.clear()
