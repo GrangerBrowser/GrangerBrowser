@@ -230,8 +230,10 @@ class CircuitBuilder:
                     max_streams=self.max_streams,
                     cover_profile=self.cover_profile,
                 )
-                stream = multiplexer.open_stream(self.timeout)
                 multiplexers.append(multiplexer)
+                stream = multiplexer.open_stream(self.timeout)
+                # open_stream bounds only OPEN; the nested handshake must also expire.
+                stream.settimeout(self.timeout)
                 streams.append(stream)
                 circuit_ids.extend((incoming_id, outgoing_id))
                 next_identity = self._hop_identity(next_role)
@@ -242,9 +244,7 @@ class CircuitBuilder:
                     next_identity,
                     self.role,
                 )
-                if index + 1 < len(normalized) - 1:
-                    stream.settimeout(self.timeout)
-                else:
+                if index + 1 == len(normalized) - 1:
                     stream.settimeout(None)
             for multiplexer in multiplexers:
                 multiplexer.channel.connection.settimeout(None)

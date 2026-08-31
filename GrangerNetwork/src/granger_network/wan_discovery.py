@@ -52,6 +52,7 @@ MAX_PARALLEL_DISCOVERY_REQUESTS = 4
 MAX_RECORD_REQUEST_ROUNDS = 2
 MAX_ROUTE_CANDIDATE_CACHE_ENTRIES = 128
 ROUTE_CANDIDATE_CACHE_TTL_SECONDS = 5 * 60.0
+PRIVATE_ROUTE_HINT_TTL_SECONDS = 60.0
 _ROUTING_KEY_DOMAIN = b"granger-network-v0.4/wan-routing-key\x00"
 _PRIVATE_DISCOVERY_ROUTE_DOMAIN = b"granger-network-v0.5/private-discovery-route\x00"
 
@@ -337,6 +338,9 @@ class WanDiscoveryClient:
         self._route_candidate_cache: OrderedDict[
             tuple[bytes, str], tuple[float, tuple[NodeDescriptor, ...]]
         ] = OrderedDict()
+        self._private_route_hints: OrderedDict[
+            str, tuple[float, tuple[str, ...]]
+        ] = OrderedDict()
         self.direct_first_contact_requests = 0
         self.private_discovery_requests = 0
         self.last_private_route: tuple[str, ...] = ()
@@ -420,6 +424,30 @@ class WanDiscoveryClient:
         if not choices:
             raise DiscoveryError("private discovery ingress is unavailable")
         ordered_choices = order_diverse_relay_combinations(choices, limit=limit)
+        with self._lock:
+            hint = self._private_route_hints.get(peer.node_id)
+            if hint is not None and hint[0] <= time.monotonic():
+                self._private_route_hints.pop(peer.node_id, None)
+                hint = None
+        if hint is not None:
+            # Reuse only currently eligible identities; every circuit authenticates anew.
+            best_diversity = min(item[0] for item in choices)
+            preferred = next(
+                (
+                    choice for choice in choices
+                    if (*tuple(node.node_id for node in choice[3:]), peer.node_id) == hint[1]
+                    and choice[0] == best_diversity
+                ),
+                None,
+            )
+            if preferred is not None:
+                ordered_choices = (
+                    preferred,
+                    *(choice for choice in ordered_choices if choice != preferred),
+                )[:limit]
+            else:
+                with self._lock:
+                    self._private_route_hints.pop(peer.node_id, None)
         routes: list[tuple[tuple[NodeDescriptor, str], ...]] = []
         seen: set[tuple[str, str, str]] = set()
         for _relaxed, _guard, _offset, access, guard, middle in ordered_choices:
@@ -478,6 +506,7 @@ class WanDiscoveryClient:
                 routes = self._private_route_candidates(peer)
                 for route in routes:
                     circuit = None
+                    route_ids = tuple(node.node_id for node, _role in route)
                     try:
                         circuit = CircuitBuilder(
                             self.identity,
@@ -488,14 +517,27 @@ class WanDiscoveryClient:
                         self.last_private_route = tuple(
                             descriptor.node_id for descriptor, _role in circuit.route
                         )
+                        circuit.endpoint.channel.connection.settimeout(self.timeout)
                         response = circuit.endpoint.rpc.request(
                             message,
                             payload,
                             expected=expected,
                         )
+                        with self._lock:
+                            self._private_route_hints[peer.node_id] = (
+                                time.monotonic() + PRIVATE_ROUTE_HINT_TTL_SECONDS,
+                                route_ids,
+                            )
+                            self._private_route_hints.move_to_end(peer.node_id)
+                            while len(self._private_route_hints) > MAX_ROUTE_CANDIDATE_CACHE_ENTRIES:
+                                self._private_route_hints.popitem(last=False)
                         break
                     except (GrangerNetworkError, OSError) as error:
                         last_error = error
+                        with self._lock:
+                            hint = self._private_route_hints.get(peer.node_id)
+                            if hint is not None and hint[1] == route_ids:
+                                self._private_route_hints.pop(peer.node_id, None)
                     finally:
                         if circuit is not None:
                             circuit.close()

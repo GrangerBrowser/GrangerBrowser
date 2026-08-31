@@ -7,7 +7,8 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from granger_network.bootstrap import BootstrapPool, BootstrapSet, PeerCache
 from granger_network.descriptor import ServiceDescriptor
@@ -244,6 +245,147 @@ class WanDiscoveryTests(unittest.TestCase):
                 RpcType.FIND_NODE,
             )
         self.assertEqual(timeouts, [self.client.timeout] * len(routes))
+
+    def test_private_discovery_reaches_fourth_route_and_bounds_final_rpc(self) -> None:
+        assigned_timeouts: list[float | None] = []
+        attempts: list[tuple] = []
+
+        class FakeConnection:
+            def settimeout(self, value: float | None) -> None:
+                assigned_timeouts.append(value)
+
+        class FakeRpc:
+            def request(self, *_args, **_kwargs):
+                return SimpleNamespace(payload=b"response")
+
+        class FakeCircuit:
+            route = ()
+            endpoint = SimpleNamespace(
+                channel=SimpleNamespace(connection=FakeConnection()),
+                rpc=FakeRpc(),
+            )
+
+            def close(self) -> None:
+                return
+
+        class RecoveringBuilder:
+            def __init__(self, *_args, **_kwargs) -> None:
+                return
+
+            def open(self, _route):
+                attempts.append(_route)
+                if len(attempts) < 4:
+                    raise TimeoutError("controlled earlier route loss")
+                return FakeCircuit()
+
+        self.client._joined = True
+        self.client._private_routes_ready = True
+        with (
+            patch.object(self.client, "_private_route_candidates", return_value=((),) * 4),
+            patch("granger_network.circuit.CircuitBuilder", RecoveringBuilder),
+        ):
+            response = self.client._request(
+                self.descriptors[0],
+                RpcType.FIND_NODE,
+                b"request",
+                RpcType.FIND_NODE,
+            )
+        self.assertEqual(response, b"response")
+        self.assertEqual(len(attempts), 4)
+        self.assertEqual(assigned_timeouts, [self.client.timeout])
+
+    def test_private_discovery_remembers_a_working_four_node_ingress(self) -> None:
+        self.client._joined = True
+        self.client._private_routes_ready = True
+        peer = self.descriptors[0]
+        attempted: list[tuple[str, ...]] = []
+        with patch("granger_network.wan_discovery.secrets.token_bytes", return_value=b"\0" * 4):
+            routes = self.client._private_route_candidates(peer)
+            working_ids = tuple(node.node_id for node, _role in routes[-1])
+
+            def open_route(route):
+                route_ids = tuple(node.node_id for node, _role in route)
+                attempted.append(route_ids)
+                if route_ids != working_ids:
+                    raise TimeoutError("controlled unavailable ingress")
+                circuit = Mock(route=route)
+                circuit.endpoint.rpc.request.return_value = SimpleNamespace(payload=b"response")
+                return circuit
+
+            with patch("granger_network.circuit.CircuitBuilder") as builder:
+                builder.return_value.open.side_effect = open_route
+                self.client._request(peer, RpcType.FIND_NODE, b"first", RpcType.FIND_NODE)
+                self.assertEqual(len(attempted), 4)
+                attempted.clear()
+                self.client._request(peer, RpcType.FIND_NODE, b"next", RpcType.FIND_NODE)
+        self.assertEqual(attempted, [working_ids])
+        self.assertEqual(len(set(working_ids)), 4)
+        self.assertEqual(self.client.direct_first_contact_requests, 0)
+
+    def test_private_route_hint_expires_without_changing_route_policy(self) -> None:
+        peer = self.descriptors[0]
+        with patch("granger_network.wan_discovery.secrets.token_bytes", return_value=b"\0" * 4):
+            routes = self.client._private_route_candidates(peer)
+            preferred = tuple(node.node_id for node, _role in routes[-1])
+            self.client._private_route_hints[peer.node_id] = (time.monotonic() + 60.0, preferred)
+            self.assertEqual(self.client._private_route_candidates(peer)[0], routes[-1])
+            self.client._private_route_hints[peer.node_id] = (time.monotonic() - 1.0, preferred)
+            self.assertEqual(self.client._private_route_candidates(peer), routes)
+        self.assertNotIn(peer.node_id, self.client._private_route_hints)
+
+    def test_private_route_hint_cannot_restore_an_ineligible_relay(self) -> None:
+        peer = self.descriptors[0]
+        route = self.client._private_route_candidates(peer)[-1]
+        preferred = tuple(node.node_id for node, _role in route)
+        removed_id = preferred[0]
+        self.client._private_route_hints[peer.node_id] = (time.monotonic() + 60.0, preferred)
+        eligible = tuple(node for node in self.descriptors if node.node_id != removed_id)
+        with patch.object(self.client.pool, "candidates", return_value=eligible):
+            routes = self.client._private_route_candidates(peer)
+        self.assertNotIn(peer.node_id, self.client._private_route_hints)
+        for candidate in routes:
+            ids = {node.node_id for node, _role in candidate}
+            self.assertEqual(len(ids), 4)
+            self.assertNotIn(removed_id, ids)
+
+    def test_failed_private_route_hint_is_discarded_without_losing_alternatives(self) -> None:
+        self.client._joined = True
+        self.client._private_routes_ready = True
+        peer = self.descriptors[0]
+        preferred = tuple(
+            node.node_id for node, _role in self.client._private_route_candidates(peer)[-1]
+        )
+        self.client._private_route_hints[peer.node_id] = (time.monotonic() + 60.0, preferred)
+        with patch("granger_network.circuit.CircuitBuilder") as builder:
+            builder.return_value.open.side_effect = TimeoutError("controlled route loss")
+            with self.assertRaises(TimeoutError):
+                self.client._request(peer, RpcType.FIND_NODE, b"request", RpcType.FIND_NODE)
+        self.assertEqual(builder.return_value.open.call_count, 4)
+        first_route = builder.return_value.open.call_args_list[0].args[0]
+        self.assertEqual(tuple(node.node_id for node, _role in first_route), preferred)
+        self.assertNotIn(peer.node_id, self.client._private_route_hints)
+        self.assertEqual(self.client.direct_first_contact_requests, 0)
+
+    def test_private_route_hint_storage_is_bounded(self) -> None:
+        self.client._joined = True
+        self.client._private_routes_ready = True
+
+        def open_route(route):
+            circuit = Mock(route=route)
+            circuit.endpoint.rpc.request.return_value = SimpleNamespace(payload=b"response")
+            return circuit
+
+        with (
+            patch("granger_network.wan_discovery.MAX_ROUTE_CANDIDATE_CACHE_ENTRIES", 2),
+            patch("granger_network.circuit.CircuitBuilder") as builder,
+        ):
+            builder.return_value.open.side_effect = open_route
+            for peer in self.descriptors[:3]:
+                self.client._request(peer, RpcType.FIND_NODE, b"request", RpcType.FIND_NODE)
+        self.assertEqual(
+            tuple(self.client._private_route_hints),
+            tuple(node.node_id for node in self.descriptors[1:3]),
+        )
 
     def test_one_bootstrap_failure_keeps_quorum_and_two_failures_close_route(self) -> None:
         service_identity = ServiceIdentity.generate()

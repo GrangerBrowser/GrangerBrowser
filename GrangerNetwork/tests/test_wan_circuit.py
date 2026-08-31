@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import socket
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from granger_network.circuit import CircuitBuilder
+from granger_network.cells import MuxStream
+from granger_network.circuit import BuiltCircuit, CircuitBuilder
 from granger_network.errors import OverlayRoutingError, ProtocolError
 from granger_network.identity import ServiceIdentity
 from granger_network.node import WanNodeServer
 from granger_network.peer import NodeDescriptor, RelayPolicy
-from granger_network.peer_rpc import PeerRole, RpcType
+from granger_network.peer_rpc import PeerRole, RpcType, authenticate_server_stream
 from granger_network.transport import RendezvousEndpoint
 
 
@@ -105,6 +108,64 @@ class WanCircuitTests(unittest.TestCase):
         with self.assertRaises((OSError, ProtocolError, OverlayRoutingError)):
             builder.open(self.route)
         self.assertEqual(self.nodes[3].accepted_connections, 0)
+
+    def test_nested_peer_handshake_inherits_build_timeout(self) -> None:
+        observed_timeouts: list[float | None] = []
+
+        def fail_nested_handshake(stream, *_args, **_kwargs):
+            observed_timeouts.append(stream._timeout)
+            raise TimeoutError("simulated nested handshake loss")
+
+        builder = CircuitBuilder(ServiceIdentity.generate(), PeerRole.CLIENT, timeout=0.25)
+        with patch(
+            "granger_network.circuit.authenticate_client_stream",
+            side_effect=fail_nested_handshake,
+        ):
+            with self.assertRaises(TimeoutError):
+                builder.open(self.route[:2])
+        self.assertEqual(observed_timeouts, [0.25])
+
+    def test_silent_nested_peer_times_out_and_closes_partial_circuit(self) -> None:
+        reached = threading.Event()
+        release = threading.Event()
+        results: list[BuiltCircuit | Exception] = []
+
+        def silent_peer(connection, identity, descriptor, **kwargs):
+            if isinstance(connection, MuxStream) and descriptor.node_id == self.descriptors[1].node_id:
+                reached.set()
+                release.wait(3.0)
+                raise ProtocolError("controlled silent nested peer")
+            return authenticate_server_stream(connection, identity, descriptor, **kwargs)
+
+        def build() -> None:
+            try:
+                results.append(
+                    CircuitBuilder(
+                        ServiceIdentity.generate(), PeerRole.CLIENT, timeout=0.25
+                    ).open(self.route[:2])
+                )
+            except Exception as error:
+                results.append(error)
+
+        worker = threading.Thread(target=build, daemon=True)
+        with patch("granger_network.node.authenticate_server_stream", side_effect=silent_peer):
+            try:
+                worker.start()
+                self.assertTrue(reached.wait(2.0))
+                worker.join(timeout=1.0)
+                self.assertFalse(worker.is_alive(), "nested handshake ignored the timeout")
+                self.assertEqual(len(results), 1)
+                self.assertIsInstance(results[0], TimeoutError)
+            finally:
+                release.set()
+                worker.join(timeout=3.0)
+                for result in results:
+                    if not isinstance(result, Exception):
+                        result.close()
+        deadline = time.monotonic() + 3.0
+        while any(node.runtime.active_circuits for node in self.nodes) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(all(node.runtime.active_circuits == 0 for node in self.nodes))
 
     def test_completed_circuit_does_not_inherit_build_timeout(self) -> None:
         circuit = CircuitBuilder(
