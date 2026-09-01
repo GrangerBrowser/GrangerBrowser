@@ -318,6 +318,35 @@ def _verify_auth(public_key: bytes, signature: bytes, payload: bytes) -> None:
         raise IdentityVerificationError("peer authentication signature is invalid") from error
 
 
+def _verify_pinned_server_descriptor(
+    expected: NodeDescriptor,
+    connected: NodeDescriptor,
+) -> None:
+    connected.verify(
+        expected_network_id=expected.network_id,
+        expected_protocol_version=expected.protocol_version,
+    )
+    if connected.identity_public_key != expected.identity_public_key:
+        raise IdentityVerificationError("connected peer changed its pinned identity")
+    if (
+        connected.endpoint != expected.endpoint
+        or connected.capabilities != expected.capabilities
+        or connected.relay_policy != expected.relay_policy
+        or connected.reachability != expected.reachability
+        or connected.network_id != expected.network_id
+        or connected.protocol_version != expected.protocol_version
+    ):
+        raise IdentityVerificationError("connected peer changed its pinned listener policy")
+    if connected.issued_at < expected.issued_at:
+        raise IdentityVerificationError("connected peer descriptor rolled back")
+    if connected.issued_at == expected.issued_at:
+        if connected != expected:
+            raise IdentityVerificationError("connected peer descriptor equivocated")
+        return
+    if connected.expires_at <= expected.expires_at:
+        raise IdentityVerificationError("connected peer descriptor did not advance its validity")
+
+
 def authenticate_client_stream(
     connection: DuplexConnection,
     expected_server: NodeDescriptor,
@@ -348,10 +377,12 @@ def authenticate_client_stream(
         remote_hello = _decode_hello(response.payload)
         if (
             remote_hello.public_key != expected_server.identity_public_key
-            or remote_hello.descriptor != expected_server
             or remote_hello.role not in {PeerRole.RELAY, PeerRole.BOOTSTRAP}
         ):
             raise IdentityVerificationError("connected peer does not match its pinned descriptor")
+        if remote_hello.descriptor is None:
+            raise IdentityVerificationError("connected peer omitted its signed descriptor")
+        _verify_pinned_server_descriptor(expected_server, remote_hello.descriptor)
         transcript = _auth_payload(channel.channel_binding, local_hello, remote_hello.encoded)
         rpc.send(
             RpcType.AUTH,

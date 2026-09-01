@@ -24,6 +24,8 @@ from granger_network.peer_rpc import (
     RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcFrame,
     RpcType,
+    _verify_pinned_server_descriptor,
+    authenticate_client_stream,
     authenticate_server_stream,
     connect_authenticated_peer,
     decode_rpc_frame,
@@ -67,6 +69,114 @@ def make_descriptor(
 
 
 class PeerRpcTests(unittest.TestCase):
+    def test_pinned_peer_rejects_descriptor_rollback_equivocation_and_policy_changes(self) -> None:
+        relay_identity = ServiceIdentity.generate()
+        now = int(time.time())
+        expected = NodeDescriptor.create(
+            relay_identity,
+            RendezvousEndpoint("127.0.0.1", available_port()),
+            ("bootstrap", "discovery", "entry"),
+            RelayPolicy(enabled=True, max_bandwidth_kib_per_second=64 * 1024),
+            issued_at=now - 120,
+            lifetime=3600,
+        )
+
+        rollback = NodeDescriptor.create(
+            relay_identity,
+            expected.endpoint,
+            expected.capabilities,
+            expected.relay_policy,
+            issued_at=expected.issued_at - 60,
+            lifetime=3600,
+        )
+        with self.assertRaisesRegex(IdentityVerificationError, "rolled back"):
+            _verify_pinned_server_descriptor(expected, rollback)
+
+        equivocation = NodeDescriptor.create(
+            relay_identity,
+            expected.endpoint,
+            expected.capabilities,
+            expected.relay_policy,
+            issued_at=expected.issued_at,
+            lifetime=3660,
+        )
+        with self.assertRaisesRegex(IdentityVerificationError, "equivocated"):
+            _verify_pinned_server_descriptor(expected, equivocation)
+
+        changed_endpoint = NodeDescriptor.create(
+            relay_identity,
+            RendezvousEndpoint("127.0.0.1", available_port()),
+            expected.capabilities,
+            expected.relay_policy,
+            issued_at=expected.issued_at + 60,
+            lifetime=3600,
+        )
+        with self.assertRaisesRegex(IdentityVerificationError, "listener policy"):
+            _verify_pinned_server_descriptor(expected, changed_endpoint)
+
+        shorter_validity = NodeDescriptor.create(
+            relay_identity,
+            expected.endpoint,
+            expected.capabilities,
+            expected.relay_policy,
+            issued_at=expected.issued_at + 60,
+            lifetime=3000,
+        )
+        with self.assertRaisesRegex(IdentityVerificationError, "validity"):
+            _verify_pinned_server_descriptor(expected, shorter_validity)
+
+    def test_authenticated_peer_accepts_newer_signed_descriptor_for_pinned_identity(self) -> None:
+        relay_identity = ServiceIdentity.generate()
+        expected = make_descriptor(relay_identity, available_port())
+        renewed = NodeDescriptor.create(
+            relay_identity,
+            expected.endpoint,
+            expected.capabilities,
+            expected.relay_policy,
+            issued_at=expected.issued_at + 60,
+            lifetime=3600,
+            reachability=expected.reachability,
+            network_id=expected.network_id,
+            protocol_version=expected.protocol_version,
+        )
+        client_socket, server_socket = socket.socketpair()
+        failures: list[BaseException] = []
+        server_peer = None
+
+        def serve() -> None:
+            nonlocal server_peer
+            try:
+                server_peer = authenticate_server_stream(
+                    server_socket, relay_identity, renewed,
+                )
+            except BaseException as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        client_peer = None
+        try:
+            client_peer = authenticate_client_stream(
+                client_socket,
+                expected,
+                ServiceIdentity.generate(),
+                PeerRole.CLIENT,
+            )
+            self.assertEqual(client_peer.remote.descriptor, renewed)
+            self.assertEqual(client_peer.remote.node_id, expected.node_id)
+        finally:
+            if client_peer is not None:
+                client_peer.close()
+            else:
+                client_socket.close()
+            worker.join(timeout=5.0)
+            if server_peer is not None:
+                server_peer.close()
+            else:
+                server_socket.close()
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(failures, [])
+
     def test_transport_timeout_retries_within_one_total_budget(self) -> None:
         identity = ServiceIdentity.generate()
         descriptor = make_descriptor(ServiceIdentity.generate(), available_port())
