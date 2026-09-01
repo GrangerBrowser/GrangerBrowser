@@ -76,8 +76,9 @@ def run_host(options: argparse.Namespace) -> int:
     if not 300 <= options.service_refresh_margin < options.service_lifetime:
         raise ValueError("service descriptor refresh margin is invalid")
     identity = ServiceIdentity.load(root / SERVICE_IDENTITY_FILE)
-    service = ServiceDescriptor.from_json(
-        (root / SERVICE_DESCRIPTOR_FILE).read_text(encoding="utf-8")
+    service = ServiceDescriptor.from_json_for_owner_refresh(
+        (root / SERVICE_DESCRIPTOR_FILE).read_text(encoding="utf-8"),
+        identity,
     )
     runtime = load_discovery_runtime(
         options.bootstrap,

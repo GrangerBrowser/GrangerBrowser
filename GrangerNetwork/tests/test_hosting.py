@@ -504,6 +504,30 @@ class HostedServiceStorageTests(unittest.TestCase):
         self.assertEqual(updated.title, "After")
         self.assertEqual(updated_descriptor.metadata["title"], "After")
 
+    def test_expired_descriptor_remains_loadable_for_owner_refresh(self) -> None:
+        services = self.root / "services"
+        identifier = "2" * 32
+        _config, descriptor = initialize_hosted_service(
+            services, identifier, "Persistent", "static", source=str(self.site.resolve())
+        )
+        service_root = services / identifier
+        identity = ServiceIdentity.load(service_root / IDENTITY_FILE)
+        expired = ServiceDescriptor.create_remote(
+            identity,
+            "distributed-overlay",
+            metadata=descriptor.metadata,
+            issued_at=int(time.time()) - 7200,
+            lifetime=3600,
+        )
+        (service_root / SERVICE_DESCRIPTOR_FILE).write_text(
+            expired.to_json(), encoding="utf-8"
+        )
+
+        _loaded_config, loaded_identity, loaded_descriptor = load_hosted_service(service_root)
+        self.assertEqual(loaded_identity.public_key_bytes, identity.public_key_bytes)
+        self.assertEqual(loaded_descriptor, expired)
+        self.assertEqual(loaded_descriptor.canonical_name, descriptor.canonical_name)
+
     def test_static_publication_uses_filtered_immutable_snapshot(self) -> None:
         (self.site / ".git" / "objects").mkdir(parents=True)
         (self.site / ".git" / "config").write_text("private repository", encoding="utf-8")

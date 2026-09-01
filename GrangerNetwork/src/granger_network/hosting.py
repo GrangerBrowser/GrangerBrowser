@@ -917,11 +917,10 @@ def load_hosted_service(service_dir: Path) -> tuple[HostedServiceConfig, Service
         created_at,
     )
     identity = ServiceIdentity.load(root / IDENTITY_FILE)
-    descriptor = ServiceDescriptor.from_json(
-        (root / SERVICE_DESCRIPTOR_FILE).read_text(encoding="utf-8")
+    descriptor = ServiceDescriptor.from_json_for_owner_refresh(
+        (root / SERVICE_DESCRIPTOR_FILE).read_text(encoding="utf-8"),
+        identity,
     )
-    if descriptor.identity_public_key != identity.public_key_bytes:
-        raise ValueError("hosted service descriptor does not match its identity")
     return config, identity, descriptor
 
 

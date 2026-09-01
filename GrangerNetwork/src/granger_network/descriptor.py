@@ -292,3 +292,45 @@ class ServiceDescriptor:
             raise
         except (DiscoveryError, KeyError, TypeError, ValueError, TransportPolicyError) as error:
             raise DescriptorError(f"invalid service descriptor: {error}") from error
+
+    @classmethod
+    def from_json_for_owner_refresh(
+        cls,
+        content: str,
+        identity: ServiceIdentity,
+        now: int | None = None,
+    ) -> "ServiceDescriptor":
+        """Load signed local owner state so an expired descriptor can be renewed."""
+        if not isinstance(identity, ServiceIdentity):
+            raise DescriptorError("descriptor refresh requires the service identity")
+        current_time = int(time.time()) if now is None else now
+        if (
+            isinstance(current_time, bool)
+            or not isinstance(current_time, int)
+            or current_time < 0
+        ):
+            raise DescriptorError("descriptor refresh time must be a positive integer")
+        try:
+            document = parse_json_object(content)
+            issued_at = document["issuedAt"]
+            expires_at = document["expiresAt"]
+        except (KeyError, TypeError, ValueError) as error:
+            raise DescriptorError("invalid owner refresh descriptor metadata") from error
+        if (
+            document.get("version") != 2
+            or isinstance(issued_at, bool)
+            or not isinstance(issued_at, int)
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, int)
+            or issued_at < 0
+            or expires_at <= issued_at
+        ):
+            raise DescriptorError("invalid owner refresh descriptor timestamps")
+        if issued_at > current_time + MAX_CLOCK_SKEW:
+            raise DescriptorError("descriptor issue time is in the future")
+
+        verification_time = current_time if expires_at > current_time else expires_at - 1
+        descriptor = cls.from_json(content, now=verification_time)
+        if descriptor.identity_public_key != identity.public_key_bytes:
+            raise DescriptorError("service descriptor does not match its owner identity")
+        return descriptor

@@ -57,6 +57,36 @@ class RemoteDescriptorTests(unittest.TestCase):
         with self.assertRaises(DescriptorError):
             ServiceDescriptor.from_json(self.descriptor.to_json(), now=1_003_600)
 
+    def test_expired_owner_state_can_only_be_loaded_for_signed_refresh(self) -> None:
+        loaded = ServiceDescriptor.from_json_for_owner_refresh(
+            self.descriptor.to_json(), self.identity, now=1_003_600,
+        )
+        self.assertEqual(loaded, self.descriptor)
+
+        with self.assertRaises(DescriptorError):
+            ServiceDescriptor.from_json_for_owner_refresh(
+                self.descriptor.to_json(), ServiceIdentity.generate(), now=1_003_600,
+            )
+
+        modified = json.loads(self.descriptor.to_json())
+        modified["metadata"]["title"] = "Substituted service"
+        with self.assertRaises(DescriptorError):
+            ServiceDescriptor.from_json_for_owner_refresh(
+                json.dumps(modified), self.identity, now=1_003_600,
+            )
+
+    def test_owner_refresh_rejects_future_descriptor_state(self) -> None:
+        future = ServiceDescriptor.create_remote(
+            self.identity,
+            "test-relay",
+            issued_at=1_010_000,
+            lifetime=3600,
+        )
+        with self.assertRaises(DescriptorError):
+            ServiceDescriptor.from_json_for_owner_refresh(
+                future.to_json(), self.identity, now=1_000_000,
+            )
+
     def test_wrong_descriptor_signature_is_rejected(self) -> None:
         document = json.loads(self.descriptor.to_json())
         document["signature"] = encode_base64url(ServiceIdentity.generate().sign(b"wrong"))
