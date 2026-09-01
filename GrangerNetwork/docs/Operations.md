@@ -130,6 +130,31 @@ and a fixed reason code. TCP, authentication, and peer-sample failures remain
 distinct; unavailable private ingress and missing seed sources retain their
 own health reasons. These diagnostics do not change retry or trust policy.
 
+`tools/health_snapshot.py` can explicitly export a local, bounded JSON snapshot
+from existing generation, network, hosting, Tor, I2P, and resource status
+documents. It whitelists aggregate counters, freshness, expiry, and fixed
+reason codes; raw errors, paths, routes, request data, headers, credentials,
+and private material are not copied. Example:
+
+```bash
+python3 tools/health_snapshot.py \
+  --generation /srv/granger/public/bootstrap-set.json \
+  --network /run/granger-node/node-a/status.json \
+  --peers /run/granger-node/node-a/peer-health.json \
+  --routing /run/granger-node/node-a/route-health.json \
+  --rendezvous /run/granger-node/node-a/rendezvous-health.json \
+  --output /srv/granger/diagnostics/network-health.json \
+  --required-peers 4
+```
+
+Optional source files may be omitted when that subsystem does not expose an
+existing bounded status document. The exporter does not inspect raw logs or
+create new runtime instrumentation to fill missing fields.
+
+Export is an observer operation. Routing, DHT, hosting, descriptor validation,
+and process startup never read the exported file and remain unaffected if an
+export cannot be written.
+
 An introduction request can race a hosting descriptor refresh. The client
 re-resolves the signed introduction record once after a request-stage failure,
 using the same authenticated DHT quorum. A newer sequence replaces the old
