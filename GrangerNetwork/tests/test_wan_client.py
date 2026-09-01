@@ -72,12 +72,56 @@ class IntroductionRefreshTests(unittest.TestCase):
         self.assertEqual(connected.introduction_node, self.nodes[4])
         self.assertEqual(self.resolver.resolve_introduction.call_count, 2)
 
+    def test_retries_signed_resolution_until_new_sequence_propagates(self):
+        self.resolver.resolve_introduction.side_effect = [self.old, self.old, self.new]
+        connected = self.connect()
+        self.assertEqual(self.used_sequences, [2, 2, 3])
+        self.assertEqual(connected.attempts, 3)
+        self.assertIs(connected.session, self.session)
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 3)
+
     def test_unchanged_introduction_does_not_expand_attempt_budget(self):
-        self.resolver.resolve_introduction.side_effect = [self.old, self.old]
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
         with self.assertRaises(OverlayRoutingError):
             self.connect()
         self.assertEqual(self.used_sequences, [2] * 6)
-        self.assertEqual(self.resolver.resolve_introduction.call_count, 2)
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 6)
+
+    def test_alternates_redundant_introduction_points(self):
+        self.old = IntroductionDescriptor.create(
+            self.identity,
+            self.service,
+            [self.nodes[3].node_id, self.nodes[4].node_id],
+            sequence=2,
+            lifetime=900,
+        )
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
+        used_nodes = []
+
+        def client(_identity, _service, _introduction, _route, **_options):
+            def reject(node):
+                used_nodes.append(node.node_id)
+                raise OverlayRoutingError(
+                    "introduction stage failed during request (ProtocolError)"
+                )
+
+            return SimpleNamespace(connect=reject)
+
+        with (
+            patch("granger_network.wan_client.WanRouteSelector", return_value=self.selector),
+            patch("granger_network.wan_client.WanServiceClient", side_effect=client),
+            self.assertRaises(OverlayRoutingError),
+        ):
+            connect_service(
+                self.runtime,
+                self.resolver,
+                self.service.canonical_name,
+                route_attempts=4,
+            )
+        ordered_points = [point.node_id for point in self.old.points]
+        self.assertEqual(used_nodes, ordered_points * 2)
 
     def test_single_attempt_does_not_start_unused_refresh(self):
         with self.assertRaises(OverlayRoutingError):
@@ -85,9 +129,25 @@ class IntroductionRefreshTests(unittest.TestCase):
         self.assertEqual(self.used_sequences, [2])
         self.assertEqual(self.resolver.resolve_introduction.call_count, 1)
 
-    def test_rendezvous_failure_does_not_refresh_introduction(self):
+    def test_refreshes_signed_introduction_after_rendezvous_rejection(self):
+        connected = self.connect(failure="rendezvous stage failed during join (ProtocolError)")
+        self.assertEqual(self.used_sequences, [2, 3])
+        self.assertEqual(connected.attempts, 2)
+        self.assertIs(connected.session, self.session)
+        self.assertEqual(connected.introduction_node, self.nodes[4])
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 2)
+
+    def test_unchanged_introduction_after_rendezvous_failure_does_not_expand_budget(self):
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
         with self.assertRaises(OverlayRoutingError):
             self.connect(failure="rendezvous stage failed during join (ProtocolError)")
+        self.assertEqual(self.used_sequences, [2] * 6)
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 6)
+
+    def test_rendezvous_route_failure_does_not_refresh_introduction(self):
+        with self.assertRaises(OverlayRoutingError):
+            self.connect(failure="rendezvous stage failed during route build (ProtocolError)")
         self.assertEqual(self.used_sequences, [2] * 6)
         self.assertEqual(self.resolver.resolve_introduction.call_count, 1)
 

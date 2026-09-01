@@ -46,7 +46,6 @@ def connect_service(
     )
     failures: list[str] = []
     attempts = 0
-    refreshed = False
     while attempts < route_attempts:
         introduction_nodes = []
         for point in introduction.points:
@@ -57,7 +56,7 @@ def connect_service(
                     f"introduction node resolution failed ({point.node_id[:12]}): "
                     f"{type(error).__name__}: {error}"
                 )
-        changed = False
+        candidate_sets: list[tuple[NodeDescriptor, list[WanRouteSelection]]] = []
         for introduction_node in introduction_nodes:
             try:
                 candidates = selector.client_candidates(
@@ -68,9 +67,21 @@ def connect_service(
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 failures.append(type(error).__name__)
                 continue
-            for prefix in candidates:
+            if candidates:
+                candidate_sets.append((introduction_node, candidates))
+
+        changed = False
+        candidate_count = max(
+            (len(candidates) for _, candidates in candidate_sets),
+            default=0,
+        )
+        for candidate_index in range(candidate_count):
+            for introduction_node, candidates in candidate_sets:
+                if candidate_index >= len(candidates):
+                    continue
                 if attempts >= route_attempts:
                     break
+                prefix = candidates[candidate_index]
                 attempts += 1
                 rendezvous_selection: list[WanRouteSelection] = []
 
@@ -112,13 +123,23 @@ def connect_service(
                         failures.append(detail)
                     else:
                         failures.append(type(error).__name__)
-                    if (not refreshed and attempts < route_attempts
+                    refreshable_failure = detail.startswith(
+                        "introduction stage failed during request"
+                    ) or detail.startswith((
+                        "rendezvous stage failed during join",
+                        "rendezvous stage failed during stream",
+                        "rendezvous stage failed during handshake",
+                    ))
+                    if (attempts < route_attempts
                             and isinstance(error, OverlayRoutingError)
-                            and detail.startswith("introduction stage failed during request")):
+                            and refreshable_failure):
                         # Intro tokens can rotate after lookup but before delivery.
-                        # Re-resolve once through the same authenticated quorum,
-                        # retaining the operation's total route-attempt budget.
-                        refreshed = True
+                        # A grant can also outlive the host circuit that issued it
+                        # while the next signed introduction becomes current.
+                        # Re-resolve through the same authenticated quorum within
+                        # the operation's existing route-attempt budget. Repeated
+                        # lookups let a newer sequence propagate without adding
+                        # attempts or accepting stale/equivocated state.
                         latest = resolver.resolve_introduction(service)
                         if (latest.sequence < introduction.sequence
                                 or (latest.sequence == introduction.sequence
