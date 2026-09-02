@@ -2,7 +2,9 @@
 param(
     [string]$PackageDirectory = "release/.local-staging",
     [string]$PythonExecutable = "",
-    [string]$WanBundleDirectory = $env:GRANGER_NETWORK_RELEASE_BUNDLE
+    [string]$WanBundleDirectory = $env:GRANGER_NETWORK_RELEASE_BUNDLE,
+    [ValidateRange(0, 604800)]
+    [int]$MinimumWanRemainingSeconds = 21600
 )
 
 $ErrorActionPreference = "Stop"
@@ -327,8 +329,11 @@ $wanBundleInfo = [ordered]@{
     ConfigSHA256 = ""
     ExpiresAt = 0
     Generation = 0
+    IssuedAt = 0
+    LifetimeState = "UNAVAILABLE"
     NetworkId = ""
     ProtocolVersion = 0
+    RemainingAtBuildSeconds = 0
 }
 if (-not [string]::IsNullOrWhiteSpace($WanBundleDirectory)) {
     $wanSourceRoot = [IO.Path]::GetFullPath($WanBundleDirectory).TrimEnd('\')
@@ -361,6 +366,7 @@ print(json.dumps({
     "configSha256": config.sha256,
     "expiresAt": config.expires_at,
     "generation": config.generation,
+    "issuedAt": config.issued_at,
     "networkId": config.network_id,
     "protocolVersion": config.protocol_version,
 }, separators=(",", ":"), sort_keys=True))
@@ -371,6 +377,10 @@ print(json.dumps({
         throw "Signed Granger WAN release bundle validation failed."
     }
     $sourceWan = $wanValidationText | ConvertFrom-Json
+    $remainingAtBuild = [long]$sourceWan.expiresAt - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ($remainingAtBuild -lt $MinimumWanRemainingSeconds) {
+        throw "Signed Granger WAN bundle is EXPIRING_SOON: $remainingAtBuild seconds remain, $MinimumWanRemainingSeconds required."
+    }
     $packagedWanBundle = Join-Path $packageRoot "runtime/granger-network/bundle"
     $packagedWanTrust = Join-Path $packageRoot "runtime/granger-network/trust"
     New-Item -ItemType Directory -Path $packagedWanBundle,$packagedWanTrust -Force | Out-Null
@@ -402,8 +412,11 @@ print(json.dumps({
         ConfigSHA256 = [string]$packagedWan.configSha256
         ExpiresAt = [long]$packagedWan.expiresAt
         Generation = [long]$packagedWan.generation
+        IssuedAt = [long]$packagedWan.issuedAt
+        LifetimeState = "VALID"
         NetworkId = [string]$packagedWan.networkId
         ProtocolVersion = [int]$packagedWan.protocolVersion
+        RemainingAtBuildSeconds = $remainingAtBuild
     }
 }
 Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force |
@@ -420,6 +433,15 @@ $sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
     throw "Could not record the source HEAD for the local runtime."
 }
+$runtimeManifestVersion = 1
+$runtimeProtocolVersion = if ([bool]$wanBundleInfo.Bundled) {
+    [int]$wanBundleInfo.ProtocolVersion
+} else {
+    3
+}
+$runtimeReleaseId = "granger-runtime-v{0}-p{1}-{2}-{3}" -f `
+    $runtimeManifestVersion, $runtimeProtocolVersion, $sourceHead.Substring(0, 12), `
+    ([string]$packagedNetworkIdentity.SHA256).Substring(0, 16).ToLowerInvariant()
 $criticalRuntimeFiles = @(
     "runtime/python/python.exe",
     "runtime/python/$([string]$runtimeInfo.python_dll)",
@@ -467,12 +489,18 @@ $runtimeFileRecords = foreach ($relativePath in $criticalRuntimeFiles) {
     GrangerNetworkSourceSHA256 = [string]$packagedNetworkIdentity.SHA256
     GrangerNetworkSourceFiles = [int]$packagedNetworkIdentity.FileCount
     GrangerNetworkFiles = @($packagedNetworkIdentity.Files)
+    GrangerProtocolVersion = $runtimeProtocolVersion
+    GrangerRuntimeManifestVersion = $runtimeManifestVersion
+    GrangerRuntimeReleaseId = $runtimeReleaseId
     SignedWanBundle = [bool]$wanBundleInfo.Bundled
     WanConfigSHA256 = [string]$wanBundleInfo.ConfigSHA256
     WanConfigExpiresAt = [long]$wanBundleInfo.ExpiresAt
     WanConfigGeneration = [long]$wanBundleInfo.Generation
+    WanConfigIssuedAt = [long]$wanBundleInfo.IssuedAt
+    WanConfigLifetimeState = [string]$wanBundleInfo.LifetimeState
     WanNetworkId = [string]$wanBundleInfo.NetworkId
     WanProtocolVersion = [int]$wanBundleInfo.ProtocolVersion
+    WanConfigRemainingAtBuildSeconds = [long]$wanBundleInfo.RemainingAtBuildSeconds
     IsolatedRuntime = $true
     RuntimeFiles = @($runtimeFileRecords)
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $packageRoot "local-runtime-metadata.json") -Encoding UTF8
@@ -497,6 +525,7 @@ $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $manifestPath -En
     GrangerNetworkVersion = [string]$packagedNetworkIdentity.Version
     GrangerNetworkSourceSHA256 = [string]$packagedNetworkIdentity.SHA256
     GrangerNetworkSourceFiles = [int]$packagedNetworkIdentity.FileCount
+    GrangerRuntimeReleaseId = $runtimeReleaseId
     SourceHead = $sourceHead
     RuntimeFiles = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File).Count
     RuntimeSize = (Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File |

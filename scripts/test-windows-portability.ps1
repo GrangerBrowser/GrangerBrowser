@@ -313,6 +313,8 @@ if (-not ([string]$qtPaths.LibraryExecutables).Equals('.', [StringComparison]::O
 $deploymentMetadataPath = Join-Path $packageRoot "deployment-metadata.json"
 $deploymentMetadata = Get-Content -LiteralPath $deploymentMetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([int]$deploymentMetadata.SchemaVersion -ne 2 -or
+    [string]$deploymentMetadata.SourceCommit -notmatch '^[0-9a-f]{40}$' -or
+    [string]$deploymentMetadata.BuildTimestampUtc -notmatch '^20[0-9]{2}-' -or
     [string]$deploymentMetadata.Architecture -ne "x64" -or
     [string]$deploymentMetadata.QtVersion -notmatch '^6\.11\.2(?:\.0)?$' -or
     [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.2(?:\.0)?$' -or
@@ -329,7 +331,10 @@ if ([int]$deploymentMetadata.SchemaVersion -ne 2 -or
     [string]$deploymentMetadata.I2pVersion -ne "2.61.0" -or
     [string]$deploymentMetadata.I2pArchiveSHA256 -ne "A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F" -or
     [string]$deploymentMetadata.I2pLicense -ne "BSD-3-Clause" -or
-    [int]$deploymentMetadata.I2pCertificateCount -lt 1) {
+    [int]$deploymentMetadata.I2pCertificateCount -lt 1 -or
+    [int]$deploymentMetadata.GrangerProtocolVersion -ne 3 -or
+    [int]$deploymentMetadata.GrangerRuntimeManifestVersion -ne 1 -or
+    [string]$deploymentMetadata.GrangerRuntimeReleaseId -notmatch '^granger-runtime-v1-p3-[0-9a-f]{12}-[0-9a-f]{16}$') {
     throw "Deployment metadata does not describe the supported Qt 6.11.2 x64 runtime."
 }
 $pinnedPrivateNetworkFiles = [ordered]@{
@@ -401,6 +406,9 @@ if (Test-Path -LiteralPath $localRuntimeMetadataPath -PathType Leaf) {
         [string]$localRuntimeMetadata.GrangerNetworkVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
         [string]$localRuntimeMetadata.GrangerNetworkSourceSHA256 -notmatch '^[0-9A-Fa-f]{64}$' -or
         [int]$localRuntimeMetadata.GrangerNetworkSourceFiles -lt 1 -or
+        [int]$localRuntimeMetadata.GrangerProtocolVersion -ne 3 -or
+        [int]$localRuntimeMetadata.GrangerRuntimeManifestVersion -ne 1 -or
+        [string]$localRuntimeMetadata.GrangerRuntimeReleaseId -notmatch '^granger-runtime-v1-p3-[0-9a-f]{12}-[0-9a-f]{16}$' -or
         -not [bool]$localRuntimeMetadata.IsolatedRuntime) {
         throw "Local Granger Network runtime metadata is invalid."
     }
@@ -410,6 +418,24 @@ if (Test-Path -LiteralPath $localRuntimeMetadataPath -PathType Leaf) {
         [string]$networkIdentity.SHA256 -ne [string]$localRuntimeMetadata.GrangerNetworkSourceSHA256 -or
         [int]$networkIdentity.FileCount -ne [int]$localRuntimeMetadata.GrangerNetworkSourceFiles) {
         throw "Packaged Granger Network identity does not match local runtime metadata."
+    }
+    $expectedRuntimeReleaseId = "granger-runtime-v1-p3-{0}-{1}" -f `
+        ([string]$localRuntimeMetadata.SourceHead).Substring(0, 12), `
+        ([string]$networkIdentity.SHA256).Substring(0, 16).ToLowerInvariant()
+    if ([string]$localRuntimeMetadata.GrangerRuntimeReleaseId -ne $expectedRuntimeReleaseId) {
+        throw "Packaged Granger Network runtime release ID does not match its source and content."
+    }
+    if ([string]$deploymentMetadata.SourceCommit -ne [string]$localRuntimeMetadata.SourceHead -or
+        [string]$deploymentMetadata.GrangerRuntimeReleaseId -ne
+            [string]$localRuntimeMetadata.GrangerRuntimeReleaseId) {
+        throw "Deployment and local runtime metadata identify different Granger releases."
+    }
+    if ([bool]$localRuntimeMetadata.SignedWanBundle -and (
+            [string]$localRuntimeMetadata.WanConfigLifetimeState -ne "VALID" -or
+            [long]$localRuntimeMetadata.WanConfigExpiresAt -le [long]$localRuntimeMetadata.WanConfigIssuedAt -or
+            [long]$localRuntimeMetadata.WanConfigExpiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -or
+            [long]$localRuntimeMetadata.WanConfigRemainingAtBuildSeconds -lt 1)) {
+        throw "Packaged signed WAN configuration is expired or lacks valid lifetime metadata."
     }
     $networkFileRecords = @($localRuntimeMetadata.GrangerNetworkFiles)
     if ($networkFileRecords.Count -ne [int]$networkIdentity.FileCount) {

@@ -27,6 +27,23 @@ from granger_network.wan_config import (
 )
 
 
+class BundleLifetimeError(ValueError):
+    def __init__(self, state: str, remaining_seconds: int) -> None:
+        super().__init__(state)
+        self.state = state
+        self.remaining_seconds = remaining_seconds
+
+
+def _remaining_seconds(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("remaining lifetime must be an integer") from error
+    if not 0 <= result <= 7 * 24 * 60 * 60:
+        raise argparse.ArgumentTypeError("remaining lifetime must be between 0 and 604800")
+    return result
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
@@ -153,11 +170,25 @@ def verify_bundle(options: argparse.Namespace) -> dict[str, object]:
     root = options.public_root.resolve()
     config_path = root / "browser-wan.json"
     config_pin_path = root / "config-authority.pin"
+    now = int(time.time())
+    try:
+        unsigned_expiry = json.loads(config_path.read_text(encoding="utf-8"))["expiresAt"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError("browser WAN lifetime metadata is invalid") from error
+    if isinstance(unsigned_expiry, bool) or not isinstance(unsigned_expiry, int):
+        raise ValueError("browser WAN lifetime metadata is invalid")
+    if unsigned_expiry <= now:
+        raise BundleLifetimeError("EXPIRED", unsigned_expiry - now)
     config = load_browser_wan_config(
         config_path,
         trust_anchor_path=config_pin_path,
         allow_legacy=False,
     )
+    remaining = config.expires_at - now
+    if remaining <= 0:
+        raise BundleLifetimeError("EXPIRED", remaining)
+    if remaining < options.minimum_remaining_seconds:
+        raise BundleLifetimeError("EXPIRING_SOON", remaining)
     files = (
         root / "bootstrap-set.json",
         root / "bootstrap-authority.pin",
@@ -171,10 +202,13 @@ def verify_bundle(options: argparse.Namespace) -> dict[str, object]:
         "expiresAt": config.expires_at,
         "files": {path.name: _sha256(path) for path in files},
         "generation": config.generation,
+        "issuedAt": config.issued_at,
+        "lifetimeState": "VALID",
         "networkId": config.network_id,
         "ok": True,
         "privateKeysPublished": False,
         "protocolVersion": config.protocol_version,
+        "remainingSeconds": remaining,
         "version": 1,
     }
 
@@ -196,6 +230,11 @@ def _build_parser() -> argparse.ArgumentParser:
     create.add_argument("--timeout-seconds", type=float, default=8.0)
     verify = commands.add_parser("verify")
     verify.add_argument("--public-root", type=Path, required=True)
+    verify.add_argument(
+        "--minimum-remaining-seconds",
+        type=_remaining_seconds,
+        default=0,
+    )
     return parser
 
 
@@ -206,9 +245,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True))
         return 0
     except Exception as error:
+        failure = {"error": type(error).__name__, "ok": False}
+        if isinstance(error, BundleLifetimeError):
+            failure.update(
+                {
+                    "lifetimeState": error.state,
+                    "remainingSeconds": error.remaining_seconds,
+                }
+            )
         print(
             json.dumps(
-                {"error": type(error).__name__, "ok": False},
+                failure,
                 ensure_ascii=True,
                 separators=(",", ":"),
                 sort_keys=True,

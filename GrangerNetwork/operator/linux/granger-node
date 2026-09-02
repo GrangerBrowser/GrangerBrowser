@@ -4,6 +4,19 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 CONFIG="${GRANGER_NODE_CONFIG:-$ROOT/config/granger-node.json}"
 PYTHON_BIN="$ROOT/runtime/venv/bin/python3"
+SYSTEM_PYTHON="${PYTHON:-python3}"
+
+command -v "$SYSTEM_PYTHON" >/dev/null 2>&1 || {
+    printf 'Granger node runtime integrity check requires python3.\n' >&2
+    exit 78
+}
+"$SYSTEM_PYTHON" -B "$ROOT/tools/runtime_manifest.py" verify \
+    --root "$ROOT" \
+    --manifest "$ROOT/runtime-manifest.json" \
+    --expected-protocol-version 3 >/dev/null || {
+    printf 'Granger node runtime integrity validation failed.\n' >&2
+    exit 78
+}
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
     "$ROOT/install-granger-node.sh"

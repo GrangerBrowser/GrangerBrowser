@@ -22,6 +22,11 @@ assert (3, 11) <= sys.version_info[:2] <= (3, 14)
 PY
 "$PYTHON_BIN" -m venv --help >/dev/null 2>&1 \
     || fail "python3-venv is required"
+"$PYTHON_BIN" -B "$ROOT/tools/runtime_manifest.py" verify \
+    --root "$ROOT" \
+    --manifest "$ROOT/runtime-manifest.json" \
+    --expected-protocol-version 3 >/dev/null \
+    || fail "immutable runtime integrity validation failed"
 
 if [[ -x "$VENV/bin/python3" ]]; then
     PYTHONPATH="$RUNTIME/src" PYTHONNOUSERSITE=1 "$VENV/bin/python3" -B - <<'PY' \

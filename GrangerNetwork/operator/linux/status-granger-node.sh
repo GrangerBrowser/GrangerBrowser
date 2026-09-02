@@ -4,6 +4,19 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 PID_FILE="$ROOT/run/granger-node.pid"
 STATUS_FILE="$ROOT/run/status.json"
+PYTHON_BIN="${PYTHON:-python3}"
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
+    printf 'Granger node runtime integrity: MANIFEST_INVALID (python3 unavailable)\n' >&2
+    exit 78
+}
+integrity="$("$PYTHON_BIN" -B "$ROOT/tools/runtime_manifest.py" verify \
+    --root "$ROOT" \
+    --manifest "$ROOT/runtime-manifest.json" \
+    --expected-protocol-version 3)" || {
+    printf 'Granger node runtime integrity: %s\n' "$integrity" >&2
+    exit 78
+}
+printf 'Granger node runtime integrity: %s\n' "$integrity"
 if [[ ! -f "$PID_FILE" ]]; then
     printf 'Granger node: STOPPED\n'
     [[ ! -f "$STATUS_FILE" ]] || cat -- "$STATUS_FILE"

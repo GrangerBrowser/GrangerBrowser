@@ -224,10 +224,14 @@ try {
 
     $runtime = & (Join-Path $PSScriptRoot "package-local-granger-runtime.ps1") `
         -PackageDirectory "release/.local-staging" -PythonExecutable $PythonExecutable
+    $expectedRuntimeReleaseId = "granger-runtime-v1-p3-{0}-{1}" -f `
+        $sourceHead.Substring(0, 12), `
+        ([string]$expectedNetworkIdentity.SHA256).Substring(0, 16).ToLowerInvariant()
     if (-not $runtime.OK -or $runtime.SourceHead -ne $sourceHead -or
         [string]$runtime.GrangerNetworkVersion -ne [string]$expectedNetworkIdentity.Version -or
         [string]$runtime.GrangerNetworkSourceSHA256 -ne [string]$expectedNetworkIdentity.SHA256 -or
-        [int]$runtime.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount) {
+        [int]$runtime.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount -or
+        [string]$runtime.GrangerRuntimeReleaseId -ne $expectedRuntimeReleaseId) {
         throw "App-local Granger Network runtime packaging failed."
     }
     Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
@@ -286,7 +290,8 @@ try {
     if ([string]$canonicalMetadata.SourceHead -ne $sourceHead -or
         [string]$canonicalMetadata.GrangerNetworkVersion -ne [string]$expectedNetworkIdentity.Version -or
         [string]$canonicalMetadata.GrangerNetworkSourceSHA256 -ne [string]$expectedNetworkIdentity.SHA256 -or
-        [int]$canonicalMetadata.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount) {
+        [int]$canonicalMetadata.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount -or
+        [string]$canonicalMetadata.GrangerRuntimeReleaseId -ne $expectedRuntimeReleaseId) {
         throw "Promoted local release does not match source HEAD $sourceHead."
     }
 

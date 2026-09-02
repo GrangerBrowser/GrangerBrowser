@@ -77,7 +77,7 @@ foreach ($spec in $wheelSpecs) {
         -Destination (Join-Path $staging "runtime/wheels/$($spec.Name)")
 }
 New-Item -ItemType Directory -Path (Join-Path $staging "tools") -Force | Out-Null
-foreach ($tool in @("operator_bundle.py", "reseed_tool.py", "wan_config_tool.py")) {
+foreach ($tool in @("operator_bundle.py", "reseed_tool.py", "runtime_manifest.py", "wan_config_tool.py")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot "GrangerNetwork/tools/$tool") `
         -Destination (Join-Path $staging "tools/$tool")
 }
@@ -101,6 +101,35 @@ foreach ($script in @(
 }
 
 $head = (& git -C $projectRoot rev-parse HEAD).Trim()
+$runtimeManifestPath = Join-Path $staging "runtime-manifest.json"
+$runtimeManifestText = & $Python -B (Join-Path $staging "tools/runtime_manifest.py") create `
+    --root $staging `
+    --manifest $runtimeManifestPath `
+    --managed-root "runtime/src/granger_network" `
+    --managed-root "tools" `
+    --source-commit $head `
+    --protocol-version 3 `
+    --created-at ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($runtimeManifestText)) {
+    throw "Granger node runtime manifest creation failed."
+}
+$runtimeManifestResult = $runtimeManifestText | ConvertFrom-Json
+if (-not [bool]$runtimeManifestResult.ok -or
+    [string]$runtimeManifestResult.status -ne "COMPLETE") {
+    throw "Granger node runtime manifest did not report COMPLETE."
+}
+$runtimeManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw -Encoding UTF8 |
+    ConvertFrom-Json
+$runtimeVerificationText = & $Python -B (Join-Path $staging "tools/runtime_manifest.py") verify `
+    --root $staging `
+    --manifest $runtimeManifestPath `
+    --expected-protocol-version 3 `
+    --expected-source-commit $head `
+    --expected-release-id ([string]$runtimeManifest.runtimeReleaseId)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($runtimeVerificationText) -or
+    -not [bool](($runtimeVerificationText | ConvertFrom-Json).ok)) {
+    throw "Granger node runtime manifest verification failed."
+}
 $manifest = [ordered]@{
     architecture = "x86_64"
     bundledPythonDependencies = [ordered]@{
@@ -115,6 +144,10 @@ $manifest = [ordered]@{
     physicalLinuxStart = "UNVERIFIED"
     protocolVersion = 3
     publicWan = "UNVERIFIED"
+    runtimeContentSHA256 = [string]$runtimeManifest.contentSha256
+    runtimeManifestSHA256 = (Get-FileHash -LiteralPath $runtimeManifestPath -Algorithm SHA256).Hash
+    runtimeManifestVersion = [int]$runtimeManifest.schemaVersion
+    runtimeReleaseId = [string]$runtimeManifest.runtimeReleaseId
     sourceHead = $head
     version = 1
 }

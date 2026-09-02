@@ -586,6 +586,23 @@ class OperatorTests(unittest.TestCase):
         self.assertTrue((private / "config-authority.json").is_file())
         self.assertFalse(any(b'"privateKey"' in path.read_bytes() for path in public.iterdir()))
         self.assertTrue(json.loads(verified.stdout)["ok"])
+        expiring = subprocess.run(
+            [
+                sys.executable,
+                str(tool),
+                "verify",
+                "--public-root",
+                str(public),
+                "--minimum-remaining-seconds",
+                "601",
+            ],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+        )
+        self.assertEqual(expiring.returncode, 2)
+        self.assertEqual(json.loads(expiring.stderr)["lifetimeState"], "EXPIRING_SOON")
 
     def test_linux_systemd_deployment_is_bounded_and_unprivileged(self) -> None:
         operator_root = Path(__file__).resolve().parents[1] / "operator" / "linux"
@@ -596,6 +613,13 @@ class OperatorTests(unittest.TestCase):
             encoding="utf-8"
         )
         distributed_installer = (operator_root / "install-public-router.sh").read_text(
+            encoding="utf-8"
+        )
+        launcher = (operator_root / "granger-node").read_text(encoding="utf-8")
+        runtime_installer = (operator_root / "install-granger-node.sh").read_text(
+            encoding="utf-8"
+        )
+        status_script = (operator_root / "status-granger-node.sh").read_text(
             encoding="utf-8"
         )
         firewall_installer = (operator_root / "install-granger-firewall.sh").read_text(
@@ -627,6 +651,9 @@ class OperatorTests(unittest.TestCase):
         self.assertNotIn("217.60.10.122", distributed_installer)
         self.assertNotIn('operator_bundle.py" create', distributed_installer)
         self.assertNotIn("private/authorities", distributed_installer)
+        for script in (launcher, runtime_installer, status_script):
+            self.assertIn("runtime_manifest.py", script)
+            self.assertIn("--expected-protocol-version 3", script)
         self.assertIn("--persist", firewall_installer)
         self.assertIn('nft -c -f "$NFTABLES_CONFIG"', firewall_installer)
         self.assertIn("systemctl enable nftables.service", firewall_installer)

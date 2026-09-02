@@ -239,9 +239,22 @@ $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/data/geoip6" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion) GeoIP database"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/i2p/i2pd.exe" -Source "PurpleI2P i2pd $($i2pRuntimeInfo.Version) official Windows x64 MinGW release"
 )
+$sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
+    throw "Could not record the source HEAD for deployment metadata."
+}
+$networkIdentity = & (Join-Path $PSScriptRoot "Get-GrangerNetworkRuntimeIdentity.ps1") `
+    -SourceDirectory (Join-Path $projectRoot "GrangerNetwork/src/granger_network")
+$grangerProtocolVersion = 3
+$grangerRuntimeManifestVersion = 1
+$grangerRuntimeReleaseId = "granger-runtime-v{0}-p{1}-{2}-{3}" -f `
+    $grangerRuntimeManifestVersion, $grangerProtocolVersion, $sourceHead.Substring(0, 12), `
+    ([string]$networkIdentity.SHA256).Substring(0, 16).ToLowerInvariant()
 [pscustomobject]@{
     SchemaVersion = 2
+    BuildTimestampUtc = [DateTimeOffset]::UtcNow.ToString("o")
     ProductVersion = (Get-Item -LiteralPath (Join-Path $resolvedPackage "GrangerBrowser.exe")).VersionInfo.ProductVersion
+    SourceCommit = $sourceHead
     Architecture = "x64"
     QtVersion = $qtVersion
     QtToolchain = "msvc2022_64"
@@ -269,6 +282,9 @@ $deploymentRuntimeFiles = @(
     I2pArchiveSHA256 = $i2pRuntimeInfo.ArchiveSHA256
     I2pLicense = $i2pRuntimeInfo.License
     I2pCertificateCount = $packagedI2pCertificates.Count
+    GrangerProtocolVersion = $grangerProtocolVersion
+    GrangerRuntimeManifestVersion = $grangerRuntimeManifestVersion
+    GrangerRuntimeReleaseId = $grangerRuntimeReleaseId
     RuntimeFiles = $deploymentRuntimeFiles
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $resolvedPackage "deployment-metadata.json") -Encoding UTF8
 
