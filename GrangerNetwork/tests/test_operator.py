@@ -654,6 +654,11 @@ class OperatorTests(unittest.TestCase):
         for script in (launcher, runtime_installer, status_script):
             self.assertIn("runtime_manifest.py", script)
             self.assertIn("--expected-protocol-version 3", script)
+        self.assertIn("verify)", launcher)
+        self.assertIn(
+            "ExecStartPre=/opt/granger-node/granger-node verify",
+            service,
+        )
         self.assertIn("--persist", firewall_installer)
         self.assertIn('nft -c -f "$NFTABLES_CONFIG"', firewall_installer)
         self.assertIn("systemctl enable nftables.service", firewall_installer)

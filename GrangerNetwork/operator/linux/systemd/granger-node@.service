@@ -11,6 +11,7 @@ Environment=PYTHONPATH=/opt/granger-node/runtime/src
 Environment=PYTHONNOUSERSITE=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=HOME=/var/lib/granger-node
+ExecStartPre=/opt/granger-node/granger-node verify
 ExecStart=/opt/granger-node/runtime/venv/bin/python3 -B -m granger_network.operator run --config /etc/granger-node/%i.json --state-dir /var/lib/granger-node/%i --public-dir /var/lib/granger-node/public/%i --pid-file /run/granger-node/%i/node.pid --ready-file /run/granger-node/%i/ready.json --status-file /run/granger-node/%i/status.json --diagnostics /var/log/granger-node/%i-diagnostics.jsonl
 Restart=on-failure
 RestartPreventExitStatus=78

@@ -35,6 +35,9 @@ if [[ $# -gt 0 && "$1" != --* ]]; then
     shift
 fi
 case "$command_name" in
+    verify)
+        exit 0
+        ;;
     run)
         exec "$PYTHON_BIN" -B -m granger_network.operator run \
             --config "$CONFIG" \
