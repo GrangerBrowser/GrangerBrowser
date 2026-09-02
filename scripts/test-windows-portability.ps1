@@ -312,9 +312,17 @@ if (-not ([string]$qtPaths.LibraryExecutables).Equals('.', [StringComparison]::O
 
 $deploymentMetadataPath = Join-Path $packageRoot "deployment-metadata.json"
 $deploymentMetadata = Get-Content -LiteralPath $deploymentMetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$deploymentTimestampValid = $false
+try {
+    $deploymentTimestamp = [DateTimeOffset]$deploymentMetadata.BuildTimestampUtc
+    $deploymentTimestampValid = $deploymentTimestamp.UtcDateTime.Year -ge 2020 -and
+        $deploymentTimestamp -le [DateTimeOffset]::UtcNow.AddMinutes(5)
+} catch {
+    $deploymentTimestampValid = $false
+}
 if ([int]$deploymentMetadata.SchemaVersion -ne 2 -or
     [string]$deploymentMetadata.SourceCommit -notmatch '^[0-9a-f]{40}$' -or
-    [string]$deploymentMetadata.BuildTimestampUtc -notmatch '^20[0-9]{2}-' -or
+    -not $deploymentTimestampValid -or
     [string]$deploymentMetadata.Architecture -ne "x64" -or
     [string]$deploymentMetadata.QtVersion -notmatch '^6\.11\.2(?:\.0)?$' -or
     [string]$deploymentMetadata.WinDeployQtVersion -notmatch '^6\.11\.2(?:\.0)?$' -or
