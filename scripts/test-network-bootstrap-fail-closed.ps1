@@ -73,7 +73,7 @@ try {
     $env:GRANGER_SETTINGS_ROOT = Join-Path $testRoot "settings"
     $env:GRANGER_DOWNLOAD_ROOT = Join-Path $testRoot "downloads"
     $env:QTWEBENGINE_CHROMIUM_FLAGS = `
-        '--no-proxy-server --proxy-bypass-list=* --host-resolver-rules="EXCLUDE *"'
+        '--no-proxy-server --proxy-bypass-list=* --host-resolver-rules="EXCLUDE *" --enable-quic'
 
     $target = "http://${probeAddress}:$probePort/direct-route-probe"
     $process = Start-GrangerProbe @("--smoke-url=$target", "--smoke-output=$browserResultPath")
@@ -100,7 +100,8 @@ try {
         ([Uri]$browserResult.startupProcessProxy).Host -eq "127.0.0.1"
     $untrustedFlagsRemoved = $flags -notmatch '(?i)--no-proxy-server' -and
         $flags -notmatch '(?i)--proxy-bypass-list=\*' -and
-        $flags -notmatch '(?i)EXCLUDE \*'
+        $flags -notmatch '(?i)EXCLUDE \*' -and
+        $flags -notmatch '(?i)--enable-quic' -and $flags -match '(?i)--disable-quic'
 
     $proxyProbe = Start-GrangerProbe @(
         "--smoke-proxy=socks5://${probeAddress}:$probePort",

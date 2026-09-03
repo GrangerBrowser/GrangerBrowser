@@ -217,6 +217,7 @@ void removeUntrustedChromiumNetworkOverrides()
 {
     qunsetenv("QTWEBENGINE_CHROMIUM_FLAGS");
     qunsetenv("QTWEBENGINE_DISABLE_SANDBOX");
+    qunsetenv("QTWEBENGINE_REMOTE_DEBUGGING");
 }
 
 bool hasUntrustedChromiumNetworkArguments(int argc, char *argv[])
@@ -227,6 +228,8 @@ bool hasUntrustedChromiumNetworkArguments(int argc, char *argv[])
         QStringLiteral("--proxy-bypass-list"),
         QStringLiteral("--host-resolver-rules"),
         QStringLiteral("--host-rules"),
+        QStringLiteral("--remote-debugging-"),
+        QStringLiteral("--remote-allow-origins"),
         QStringLiteral("--no-sandbox"),
         QStringLiteral("--disable-setuid-sandbox"),
         QStringLiteral("--single-process")

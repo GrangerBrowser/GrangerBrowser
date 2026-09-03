@@ -383,6 +383,12 @@ userAgentProfile=default
     $networkBootstrap = & (Join-Path $PSScriptRoot "test-network-bootstrap-fail-closed.ps1") `
         -PackageDirectory $relativeCopiedPackage -OutputPath $relativeBootstrapResult
     if (-not $networkBootstrap.ok) { throw "Network bootstrap fail-closed regression failed." }
+    $startupPolicyResult = Join-Path $testRoot "webengine-startup-policy.json"
+    $relativeStartupPolicyResult = $startupPolicyResult.Substring(
+        [IO.Path]::GetFullPath($projectRoot).TrimEnd('\').Length + 1)
+    $startupPolicy = & (Join-Path $PSScriptRoot "test-webengine-startup-policy.ps1") `
+        -PackageDirectory $relativeCopiedPackage -OutputPath $relativeStartupPolicyResult
+    if (-not $startupPolicy.ok) { throw "WebEngine startup policy regression failed." }
     try {
         $env:GRANGER_DATA_ROOT = Join-Path $testRoot "i2p runtime data"
         $env:GRANGER_SETTINGS_ROOT = Join-Path $testRoot "i2p runtime settings"
@@ -813,6 +819,7 @@ userAgentProfile=default
         NetworkEnvironmentSmoke = $networkEnvironmentResult
         PrivateRouteSmoke = $privateRouteResult
         NetworkBootstrapFailClosed = $networkBootstrapResult
+        WebEngineStartupPolicy = $startupPolicyResult
         I2pRuntimeSmoke = $i2pRuntimeResult
         NavigationErrorTests = $navigationResult
         BridgeTests = $bridgeResult
