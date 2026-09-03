@@ -25,7 +25,7 @@ from .distributed import (
     decode_record,
     encode_record,
 )
-from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, IdentityVerificationError, ProtocolError, ReplayError, ResolutionError
+from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, IdentityVerificationError, NetworkUnavailableError, ProtocolError, ReplayError, ResolutionError
 from .identity import ServiceIdentity
 from .peer import NodeDescriptor, validate_node_id
 from .peer_rpc import (
@@ -639,7 +639,7 @@ class WanDiscoveryClient:
             raise DiscoveryError("route candidate capability is invalid")
         joined = self.join_network()
         if joined.state is NetworkState.OFFLINE:
-            raise DiscoveryError(f"Granger Network first contact failed: {joined.failure_reason}")
+            raise NetworkUnavailableError(f"Granger Network first contact failed: {joined.failure_reason}")
         selected = {
             peer.node_id: peer for peer in self.pool.candidates(capability)
         }
@@ -995,7 +995,7 @@ class WanDiscoveryClient:
     def find_nodes(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]:
         joined = self.join_network()
         if joined.state is NetworkState.OFFLINE:
-            raise DiscoveryError(f"Granger Network first contact failed: {joined.failure_reason}")
+            raise NetworkUnavailableError(f"Granger Network first contact failed: {joined.failure_reason}")
         seeds = list(self.pool.candidates("discovery"))
         with self._lock:
             current = time.monotonic()
@@ -1092,7 +1092,7 @@ class WanDiscoveryClient:
         target = wan_routing_key(envelope.kind, envelope.key)
         peers = self.find_nodes(target, "discovery")
         if len(peers) < self.minimum_replicas:
-            raise DiscoveryError("WAN discovery found too few storage peers")
+            raise NetworkUnavailableError("WAN discovery found too few storage peers")
         stored_peers: set[str] = set()
         payload = encode_record_envelope(envelope)
         for round_index in range(MAX_RECORD_REQUEST_ROUNDS):
@@ -1121,7 +1121,7 @@ class WanDiscoveryClient:
             if round_index + 1 < MAX_RECORD_REQUEST_ROUNDS:
                 time.sleep(0.1 * (round_index + 1))
         if len(stored_peers) < self.minimum_replicas:
-            raise DiscoveryError("WAN publication did not reach its replica quorum")
+            raise NetworkUnavailableError("WAN publication did not reach its replica quorum")
         with self._lock:
             self._highest_seen[(envelope.kind, envelope.key)] = envelope.sequence
         return len(stored_peers)

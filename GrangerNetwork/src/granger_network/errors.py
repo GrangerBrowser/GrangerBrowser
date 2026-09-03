@@ -18,6 +18,10 @@ class DiscoveryError(ResolutionError):
     """Raised when discovery data is missing, malformed, or unsupported."""
 
 
+class NetworkUnavailableError(DiscoveryError):
+    """Raised when authenticated discovery cannot reach its required peers."""
+
+
 class TransportPolicyError(GrangerNetworkError):
     """Raised before a transport can escape the allowed private boundary."""
 

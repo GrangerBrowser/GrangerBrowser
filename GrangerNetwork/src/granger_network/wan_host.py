@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ._codec import atomic_write_text
 from .descriptor import ServiceDescriptor
-from .errors import GrangerNetworkError, OverlayRoutingError
+from .errors import GrangerNetworkError, NetworkUnavailableError, OverlayRoutingError
 from .http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
@@ -97,6 +97,8 @@ def run_host(options: argparse.Namespace) -> int:
     generation = 0
     recovery_cycles = 0
     while True:
+        if options.ready_file is not None:
+            options.ready_file.unlink(missing_ok=True)
         now = int(time.time())
         assert service.expires_at is not None
         if service.expires_at - now <= options.service_refresh_margin:
@@ -111,49 +113,42 @@ def run_host(options: argparse.Namespace) -> int:
                 service.to_json(),
                 mode=0o644,
             )
-        introductions = runtime.discovery.route_candidates(
-            _target(service.service_id, b"introduction"),
-            "introduction",
-        )
-        rendezvous_nodes = runtime.discovery.route_candidates(
-            _target(service.service_id, b"rendezvous"),
-            "rendezvous",
-        )
-        selected_introductions = introductions[: options.introduction_points]
-        if (
-            len(selected_introductions) < options.minimum_introduction_points
-            or not rendezvous_nodes
-        ):
-            raise OverlayRoutingError(
-                "introduction or rendezvous infrastructure is unavailable"
-            )
-        introduction_node_ids = {node.node_id for node in selected_introductions}
-        rendezvous_node = next(
-            (node for node in rendezvous_nodes if node.node_id not in introduction_node_ids),
-            None,
-        )
-        if rendezvous_node is None:
-            raise OverlayRoutingError("no independent rendezvous node is available")
-        introduction = IntroductionDescriptor.create(
-            identity,
-            service,
-            [node.node_id for node in selected_introductions],
-            sequence=_next_sequence(root / INTRODUCTION_SEQUENCE_FILE),
-            lifetime=options.introduction_lifetime,
-        )
-        atomic_write_text(
-            root / INTRODUCTION_DESCRIPTOR_FILE,
-            introduction.to_json(),
-            mode=0o644,
-        )
-        runtime.discovery.publish(service)
-
         host: WanServiceHost | None = None
         intro_routes = None
         rendezvous_route = None
         startup_failures: list[str] = []
         middle_exclusions: set[str] = set()
         try:
+            introductions = runtime.discovery.route_candidates(
+                _target(service.service_id, b"introduction"), "introduction",
+            )
+            rendezvous_nodes = runtime.discovery.route_candidates(
+                _target(service.service_id, b"rendezvous"), "rendezvous",
+            )
+            selected_introductions = introductions[: options.introduction_points]
+            if (
+                len(selected_introductions) < options.minimum_introduction_points
+                or not rendezvous_nodes
+            ):
+                raise NetworkUnavailableError(
+                    "introduction or rendezvous infrastructure is unavailable"
+                )
+            introduction_node_ids = {node.node_id for node in selected_introductions}
+            rendezvous_node = next(
+                (node for node in rendezvous_nodes if node.node_id not in introduction_node_ids),
+                None,
+            )
+            if rendezvous_node is None:
+                raise NetworkUnavailableError("no independent rendezvous node is available")
+            introduction = IntroductionDescriptor.create(
+                identity, service, [node.node_id for node in selected_introductions],
+                sequence=_next_sequence(root / INTRODUCTION_SEQUENCE_FILE),
+                lifetime=options.introduction_lifetime,
+            )
+            atomic_write_text(
+                root / INTRODUCTION_DESCRIPTOR_FILE, introduction.to_json(), mode=0o644,
+            )
+            runtime.discovery.publish(service)
             for attempt in range(options.startup_attempts):
                 candidate: WanServiceHost | None = None
                 try:
@@ -250,9 +245,21 @@ def run_host(options: argparse.Namespace) -> int:
                 if host.errors:
                     raise RuntimeError(host.errors[0])
                 raise RuntimeError("service host stopped before descriptor refresh")
+        except NetworkUnavailableError:
+            if generation == 0:
+                raise
+            if host is not None:
+                host.stop()
+                host = None
+            # Discovery loss must not terminate an already published service.
+            # Rebuilding remains gated by the unchanged authenticated quorum.
+            recovery_cycles += 1
+            time.sleep(min(30.0, 2.0 * recovery_cycles))
         finally:
             if host is not None:
                 host.stop()
+            if options.ready_file is not None:
+                options.ready_file.unlink(missing_ok=True)
 
 
 def _build_parser() -> argparse.ArgumentParser:
