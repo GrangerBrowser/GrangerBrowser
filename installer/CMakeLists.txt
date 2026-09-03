@@ -49,6 +49,8 @@ target_compile_definitions(GrangerSetup PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     GRANGER_SETUP_VERSION=L"${PROJECT_VERSION}"
+    # Do not embed build-machine paths in public WinRT error metadata.
+    $<$<CONFIG:Release>:WINRT_NO_SOURCE_LOCATION>
 )
 target_compile_options(GrangerSetup PRIVATE /W4 /permissive- /EHsc /utf-8)
 set_property(TARGET GrangerSetup PROPERTY

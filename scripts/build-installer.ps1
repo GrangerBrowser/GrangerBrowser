@@ -105,6 +105,14 @@ if (-not $selfTestResult.ok -or -not $selfTestResult.gifEmbedded -or $selfTestRe
     throw "Embedded installer release self-test failed."
 }
 
+$sourcePathMarkers = Join-Path $buildRoot 'release-path-markers.txt'
+@($workspaceRoot, $workspaceRoot.Replace('\', '/')) |
+    Set-Content -LiteralPath $sourcePathMarkers -Encoding UTF8
+$installerPrivacy = & (Join-Path $PSScriptRoot 'test-release-privacy.ps1') `
+    -Root $setup -MarkerFile $sourcePathMarkers -RequireMarkerFile `
+    -Report (Join-Path $outputRoot 'installer-privacy.json')
+if (-not $installerPrivacy.ok) { throw "Installer release privacy validation failed." }
+
 $embeddedTestRoot = Join-Path $projectRoot 'output/installer-embedded-check'
 if (Test-Path -LiteralPath $embeddedTestRoot) {
     Remove-Item -LiteralPath $embeddedTestRoot -Recurse -Force
