@@ -11,6 +11,7 @@ from granger_network.introduction import IntroductionDescriptor
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.transport import RendezvousEndpoint
 from granger_network.wan_client import connect_service
+from granger_network.wan_routing import WanRouteSelection
 
 
 class IntroductionRefreshTests(unittest.TestCase):
@@ -165,6 +166,71 @@ class IntroductionRefreshTests(unittest.TestCase):
                 with self.assertRaises(ReplayError):
                     self.connect()
                 self.assertEqual(self.used_sequences, [2])
+
+
+class RouteRetryCoverageTests(unittest.TestCase):
+    def test_shared_budget_covers_live_pairs_across_introduction_points(self):
+        identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(identity, "retry-coverage", lifetime=1800)
+        nodes = [
+            NodeDescriptor.create(
+                ServiceIdentity.generate(), RendezvousEndpoint("127.0.0.1", 31000 + index),
+                ("access", "entry", "middle", "introduction"), RelayPolicy(enabled=True),
+                lifetime=1800,
+            )
+            for index in range(8)
+        ]
+        access, guards, middles, points = nodes[0], nodes[1:3], nodes[3:6], nodes[6:8]
+        introduction = IntroductionDescriptor.create(
+            identity, service, [node.node_id for node in points], sequence=1, lifetime=900,
+        )
+        pairs = ((0, 0), (1, 1), (0, 2), (1, 0), (0, 1), (1, 2))
+        routes = [
+            WanRouteSelection(
+                ((access, "access"), (guards[guard], "entry"), (middles[middle], "middle")),
+                True,
+            )
+            for guard, middle in pairs
+        ]
+        resolver = Mock()
+        resolver.resolve.return_value = service
+        resolver.resolve_introduction.return_value = introduction
+        resolver.resolve_node.side_effect = {node.node_id: node for node in points}.__getitem__
+        runtime = SimpleNamespace(identity=ServiceIdentity.generate(), discovery=Mock())
+        selector = Mock()
+        selector.client_candidates.return_value = tuple(routes)
+        session = object()
+
+        for failed_guard in guards:
+            for failed_middle in middles:
+                with self.subTest(guard=guards.index(failed_guard), middle=middles.index(failed_middle)):
+                    attempted = []
+                    used_points = []
+
+                    def client(_identity, _service, _introduction, route, **_options):
+                        def connect(node):
+                            attempted.append((route[1][0], route[2][0]))
+                            used_points.append(node.node_id)
+                            if route[1][0] == failed_guard or route[2][0] == failed_middle:
+                                raise OverlayRoutingError(
+                                    "introduction stage failed during route build (TimeoutError)"
+                                )
+                            return session
+                        return SimpleNamespace(connect=connect)
+
+                    with (
+                        patch("granger_network.wan_client.WanRouteSelector", return_value=selector),
+                        patch("granger_network.wan_client.WanServiceClient", side_effect=client),
+                    ):
+                        connected = connect_service(
+                            runtime, resolver, service.canonical_name, route_attempts=6,
+                        )
+                    self.assertIs(connected.session, session)
+                    self.assertLessEqual(connected.attempts, 6)
+                    self.assertEqual(attempted[0], (guards[0], middles[0]))
+                    self.assertEqual(len(set(attempted)), len(attempted))
+                    ordered_points = [point.node_id for point in introduction.points]
+                    self.assertEqual(used_points, (ordered_points * 3)[:len(used_points)])
 
 
 if __name__ == "__main__":

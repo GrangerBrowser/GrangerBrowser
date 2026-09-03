@@ -46,6 +46,7 @@ def connect_service(
     )
     failures: list[str] = []
     attempts = 0
+    pair_use: dict[tuple[str, ...], int] = {}
     while attempts < route_attempts:
         introduction_nodes = []
         for point in introduction.points:
@@ -68,20 +69,33 @@ def connect_service(
                 failures.append(type(error).__name__)
                 continue
             if candidates:
-                candidate_sets.append((introduction_node, candidates))
+                candidate_sets.append((introduction_node, list(candidates)))
 
         changed = False
         candidate_count = max(
             (len(candidates) for _, candidates in candidate_sets),
             default=0,
         )
-        for candidate_index in range(candidate_count):
+        for _ in range(candidate_count):
             for introduction_node, candidates in candidate_sets:
-                if candidate_index >= len(candidates):
+                if not candidates:
                     continue
                 if attempts >= route_attempts:
                     break
-                prefix = candidates[candidate_index]
+                # Introduction points share the attempt budget. Cover distinct
+                # guard/middle pairs before repeating one through another point.
+                candidate_index = min(
+                    range(len(candidates)),
+                    key=lambda index: (
+                        pair_use.get(tuple(
+                            node.node_id for node, _role in candidates[index].route[1:3]
+                        ), 0),
+                        index,
+                    ),
+                )
+                prefix = candidates.pop(candidate_index)
+                pair = tuple(node.node_id for node, _role in prefix.route[1:3])
+                pair_use[pair] = pair_use.get(pair, 0) + 1
                 attempts += 1
                 rendezvous_selection: list[WanRouteSelection] = []
 
