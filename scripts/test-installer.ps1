@@ -87,6 +87,8 @@ $self = Get-Content -LiteralPath $selfTest -Raw | ConvertFrom-Json
 if (-not $self.ok -or -not $self.gifEmbedded -or $self.gifFrames -lt 2 `
     -or $self.externalGifRequired -or -not $self.releaseManifestEmbedded `
     -or -not $self.packageEmbedded -or -not $self.embeddedMetadataValid `
+    -or -not $self.longPathTraversal -or -not $self.longPathCleanup `
+    -or [int]$self.longPathFixtureCharacters -le 260 `
     -or [uint64]$self.embeddedPackageSize -ne [uint64](Get-Item -LiteralPath $packagePath).Length) {
     throw "Standalone embedded release self-test failed."
 }
@@ -130,6 +132,8 @@ $env:GRANGER_DOWNLOAD_ROOT = Join-Path $testPath 'launched-browser/downloads'
 $i2pOutput = Join-Path $testPath 'managed-i2p.json'
 
 $results = [ordered]@{}
+$results.LongPathTraversal = [bool]$self.longPathTraversal
+$results.LongPathCleanup = [bool]$self.longPathCleanup
 try {
     Invoke-Setup @(
         '--test-mode', '--unattended',

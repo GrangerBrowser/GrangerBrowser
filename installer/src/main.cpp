@@ -606,7 +606,7 @@ bool TryGetRegularFileSize(const fs::path &path, uint64_t &size)
 
 void RejectReparsePoints(const fs::path &root)
 {
-    for (const auto &entry : fs::recursive_directory_iterator(root)) {
+    for (const auto &entry : fs::recursive_directory_iterator(ExtendedLengthPath(root))) {
         const std::wstring path = ExtendedLengthPath(entry.path());
         const DWORD attributes = GetFileAttributesW(path.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) {
@@ -616,6 +616,11 @@ void RejectReparsePoints(const fs::path &root)
             throw InstallerError("Package contains a reparse point");
         }
     }
+}
+
+void RemoveDirectoryTree(const fs::path &root, std::error_code &error)
+{
+    fs::remove_all(ExtendedLengthPath(root), error);
 }
 
 std::wstring NormalizedArchivePath(std::wstring path)
@@ -706,10 +711,11 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
     RejectReparsePoints(extractRoot);
     model.update(Phase::Installing, L"Installing Granger Browser", L"Validating browser runtime...");
 
-    fs::path runtimeRoot = extractRoot / L"Granger Browser";
+    const fs::path validatedExtractRoot = ExtendedLengthPath(extractRoot);
+    fs::path runtimeRoot = validatedExtractRoot / L"Granger Browser";
     if (!fs::exists(runtimeRoot / L"GrangerBrowser.exe")
-        && fs::exists(extractRoot / L"GrangerBrowser.exe")) {
-        runtimeRoot = extractRoot;
+        && fs::exists(validatedExtractRoot / L"GrangerBrowser.exe")) {
+        runtimeRoot = validatedExtractRoot;
     }
     const std::array required = {
         L"GrangerBrowser.exe", L"Qt6Core.dll", L"Qt6Gui.dll", L"Qt6Widgets.dll",
@@ -727,7 +733,8 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         L"release-manifest.json"
     };
     for (const wchar_t *relative : required) {
-        if (!fs::is_regular_file(runtimeRoot / relative)) {
+        uint64_t requiredSize = 0;
+        if (!TryGetRegularFileSize(runtimeRoot / relative, requiredSize)) {
             throw InstallerError("Package validation failed: missing " + WideToUtf8(relative));
         }
     }
@@ -757,7 +764,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         || deployment.GetNamedNumber(L"I2pCertificateCount") < 1) {
         throw InstallerError("Package metadata does not match the release manifest");
     }
-    const fs::path i2pCertificates = runtimeRoot / L"runtime/i2p/certificates";
+    const fs::path i2pCertificates = ExtendedLengthPath(runtimeRoot / L"runtime/i2p/certificates");
     size_t i2pCertificateCount = 0;
     if (fs::is_directory(i2pCertificates)) {
         for (const auto &entry : fs::recursive_directory_iterator(i2pCertificates)) {
@@ -798,7 +805,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
     for (const wchar_t *relative : criticalHashes) {
         const auto record = records.find(NormalizedArchivePath(relative));
         if (record == records.end()
-            || Sha256File(runtimeRoot / relative) != record->second.second) {
+            || Sha256File(ExtendedLengthPath(runtimeRoot / relative)) != record->second.second) {
             throw InstallerError("Critical runtime file failed release-manifest verification");
         }
     }
@@ -812,7 +819,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         {L"runtime/i2p/i2pd.exe", L"3bfac576443ea76586c2ab3d688cba98edaaacaaaabd72308c058249f10c493e"}
     }};
     for (const auto &[relative, expected] : pinnedPrivateNetworkHashes) {
-        if (Sha256File(runtimeRoot / relative) != expected) {
+        if (Sha256File(ExtendedLengthPath(runtimeRoot / relative)) != expected) {
             throw InstallerError("Pinned private-network runtime hash mismatch");
         }
     }
@@ -1041,7 +1048,7 @@ void PromoteRuntime(const fs::path &runtimeRoot, const fs::path &installRoot, Lo
         }
         throw;
     }
-    if (hadExisting) fs::remove_all(backup, error);
+    if (hadExisting) RemoveDirectoryTree(backup, error);
     log.write(L"Browser runtime promoted to " + installRoot.wstring());
 }
 
@@ -1057,10 +1064,10 @@ void RunUninstall(Model &model, Options options, Logger &log)
         RemoveShortcuts(options);
         DeleteUninstallRegistration(options);
         std::error_code error;
-        fs::remove_all(installRoot, error);
+        RemoveDirectoryTree(installRoot, error);
         if (error) throw InstallerError("Unable to remove the Granger Browser installation directory");
         if (options.deleteUserData || model.snapshot().deleteUserData) {
-            fs::remove_all(ResolveProfileRoot(options), error);
+            RemoveDirectoryTree(ResolveProfileRoot(options), error);
             if (error) throw InstallerError("Browser was removed, but browsing data could not be deleted");
             outcome.userProfileDeleted = true;
         }
@@ -1220,7 +1227,7 @@ void RunInstall(Model &model, Options options, Logger &log)
             outcome.uninstallRegistered = true;
         }
         std::error_code cleanupError;
-        fs::remove_all(staging, cleanupError);
+        RemoveDirectoryTree(staging, cleanupError);
 
         if (!options.noLaunch) outcome.launched = LaunchBrowser(installRoot);
         outcome.ok = true;
@@ -1242,7 +1249,7 @@ void RunInstall(Model &model, Options options, Logger &log)
     }
     if (!staging.empty()) {
         std::error_code cleanupError;
-        fs::remove_all(staging, cleanupError);
+        RemoveDirectoryTree(staging, cleanupError);
     }
 }
 
@@ -1865,6 +1872,28 @@ int RunUnattended(Options options)
 
 int RunSelfTest(const Options &options)
 {
+    const fs::path pathFixture = fs::absolute(options.selfTestPath).parent_path()
+        / (L"long-path-check-" + RandomToken());
+    fs::path deepPath = pathFixture;
+    while (deepPath.wstring().size() < MAX_PATH + 64) {
+        deepPath /= L"nested-runtime-directory";
+    }
+    bool longPathTraversal = false;
+    bool longPathCleanup = false;
+    try {
+        fs::create_directories(ExtendedLengthPath(deepPath));
+        WriteFileUtf8(ExtendedLengthPath(deepPath / L"fixture.txt"), "installer path regression");
+        RejectReparsePoints(pathFixture);
+        longPathTraversal = true;
+        std::error_code error;
+        RemoveDirectoryTree(pathFixture, error);
+        longPathCleanup = !error && !fs::exists(ExtendedLengthPath(pathFixture));
+    } catch (const std::exception &) {
+        longPathTraversal = false;
+    }
+    std::error_code fixtureCleanup;
+    fs::remove_all(ExtendedLengthPath(pathFixture), fixtureCleanup);
+
     GifPlayer gif;
     const bool loaded = gif.load();
     const auto embeddedManifest = GetEmbeddedResource(IDR_GRANGER_MANIFEST);
@@ -1904,7 +1933,7 @@ int RunSelfTest(const Options &options)
     const bool embeddedResourcesOk = embeddedPairComplete
         && (!embeddedManifest.has_value() || embeddedMetadataValid);
     const bool ok = loaded && gif.frameCount() > 1 && geometryOk
-        && externalGifAbsent && embeddedResourcesOk;
+        && externalGifAbsent && embeddedResourcesOk && longPathTraversal && longPathCleanup;
     JsonObject result;
     result.Insert(L"ok", JsonValue::CreateBooleanValue(ok));
     result.Insert(L"gifEmbedded", JsonValue::CreateBooleanValue(loaded));
@@ -1916,6 +1945,10 @@ int RunSelfTest(const Options &options)
         embeddedPackage ? static_cast<double>(embeddedPackage->size) : 0.0));
     result.Insert(L"embeddedMetadataValid", JsonValue::CreateBooleanValue(embeddedMetadataValid));
     result.Insert(L"dpiChecks", dpiChecks);
+    result.Insert(L"longPathTraversal", JsonValue::CreateBooleanValue(longPathTraversal));
+    result.Insert(L"longPathCleanup", JsonValue::CreateBooleanValue(longPathCleanup));
+    result.Insert(L"longPathFixtureCharacters", JsonValue::CreateNumberValue(
+        static_cast<double>((deepPath / L"fixture.txt").wstring().size())));
     WriteFileUtf8(options.selfTestPath, winrt::to_string(result.Stringify()));
     return ok ? 0 : 1;
 }
