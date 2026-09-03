@@ -50,6 +50,10 @@ class WanMultiProcessAcceptanceTests(unittest.TestCase):
             self.assertGreaterEqual(report["processCount"], 26)
             self.assertTrue(all(report["checks"].values()))
             self.assertEqual(report["markerHits"], [])
+            startup = report["hostStartup"]
+            for phase in ("initialSeconds", "restartSeconds"):
+                self.assertGreater(startup[phase], 0)
+                self.assertLess(startup[phase], startup["deadlineSeconds"])
 
 
 if __name__ == "__main__":

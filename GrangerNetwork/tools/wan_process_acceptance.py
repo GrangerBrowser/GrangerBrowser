@@ -36,6 +36,16 @@ from granger_network.wan_config import (
 
 
 MESSAGE = "GRANGER_TEST_MESSAGE_123"
+HOST_NETWORK_TIMEOUT_SECONDS = 8.0
+HOST_STARTUP_TIMEOUT_SECONDS = 15.0
+HOST_STARTUP_ATTEMPTS = 4
+# A failed discovery target can consume four private-route attempts before
+# host startup begins. Keep its budget separate from the host's own retries.
+HOST_READY_TIMEOUT_SECONDS = (
+    4 * HOST_NETWORK_TIMEOUT_SECONDS
+    + HOST_STARTUP_ATTEMPTS * HOST_STARTUP_TIMEOUT_SECONDS
+    + 15.0
+)
 PLAINTEXT_MARKERS = (
     MESSAGE.encode("ascii"),
     b"GRANGER_BROWSER_WAN_MESSAGE_456",
@@ -547,11 +557,16 @@ def run_acceptance(
                 "--ready-file",
                 str(ready_path),
                 "--timeout",
-                "8",
+                str(HOST_NETWORK_TIMEOUT_SECONDS),
+                "--startup-timeout",
+                str(HOST_STARTUP_TIMEOUT_SECONDS),
+                "--startup-attempts",
+                str(HOST_STARTUP_ATTEMPTS),
                 "--replication-factor",
                 "6",
             ]
 
+        host_started = time.monotonic()
         host = start_child(
             root,
             "host",
@@ -559,7 +574,11 @@ def run_acceptance(
             role="service",
         )
         children.append(host)
-        host_ready = wait_json(host_ready_path, host, 45.0)
+        host_ready = wait_json(host_ready_path, host, HOST_READY_TIMEOUT_SECONDS)
+        report["hostStartup"] = {
+            "deadlineSeconds": HOST_READY_TIMEOUT_SECONDS,
+            "initialSeconds": round(time.monotonic() - host_started, 3),
+        }
         if host_ready.get("canonicalName") != canonical_name:
             raise AcceptanceError("host readiness returned a different service identity")
         host_route_ids = sorted(
@@ -926,6 +945,7 @@ def run_acceptance(
 
         time.sleep(0.5)
         restarted_ready_path = root / "ready" / "host-restarted.json"
+        host_started = time.monotonic()
         host_restarted = start_child(
             root,
             "host-restarted",
@@ -933,7 +953,8 @@ def run_acceptance(
             role="service-restarted",
         )
         children.append(host_restarted)
-        host_ready = wait_json(restarted_ready_path, host_restarted, 45.0)
+        host_ready = wait_json(restarted_ready_path, host_restarted, HOST_READY_TIMEOUT_SECONDS)
+        report["hostStartup"]["restartSeconds"] = round(time.monotonic() - host_started, 3)
         if host_ready.get("canonicalName") != canonical_name:
             raise AcceptanceError("restarted host changed its service identity")
         host_route_ids = sorted(
