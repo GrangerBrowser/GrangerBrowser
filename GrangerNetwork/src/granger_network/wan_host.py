@@ -117,6 +117,8 @@ def run_host(options: argparse.Namespace) -> int:
         intro_routes = None
         rendezvous_route = None
         startup_failures: list[str] = []
+        access_exclusions: set[str] = set()
+        service_relay_exclusions: set[str] = set()
         middle_exclusions: set[str] = set()
         try:
             introductions = runtime.discovery.route_candidates(
@@ -158,10 +160,14 @@ def run_host(options: argparse.Namespace) -> int:
                             service.service_id,
                             selected_introductions,
                             rendezvous_node,
+                            failed_access_ids=access_exclusions,
+                            failed_service_relay_ids=service_relay_exclusions,
                             failed_middle_ids=middle_exclusions,
                         )
                     )
                     if reused_required_route:
+                        access_exclusions.clear()
+                        service_relay_exclusions.clear()
                         middle_exclusions.clear()
                     candidate = WanServiceHost(
                         identity,
@@ -178,10 +184,22 @@ def run_host(options: argparse.Namespace) -> int:
                     host = candidate
                     break
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                    startup_failures.append(f"{type(error).__name__}:{error}")
+                    failure_context = ""
                     if candidate is not None:
+                        access_exclusions.update(candidate.startup_failed_access_ids)
+                        service_relay_exclusions.update(
+                            candidate.startup_failed_service_relay_ids
+                        )
                         middle_exclusions.update(candidate.startup_failed_middle_ids)
+                        if candidate.startup_failed_role or candidate.startup_failure_stage:
+                            failure_context = (
+                                f":route-role={candidate.startup_failed_role or 'unknown'}"
+                                f":route-stage={candidate.startup_failure_stage or 'unknown'}"
+                            )
                         candidate.stop()
+                    startup_failures.append(
+                        f"{type(error).__name__}:{error}{failure_context}"
+                    )
                     if attempt + 1 < options.startup_attempts:
                         time.sleep(min(1.0, 0.2 * (attempt + 1)))
             if host is None or intro_routes is None or rendezvous_route is None:

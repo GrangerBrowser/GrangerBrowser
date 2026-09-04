@@ -191,6 +191,44 @@ class WanRouteSelectionTests(unittest.TestCase):
         self.assertEqual(len(introductions), 2)
         self.assertEqual(len(rendezvous.route), 4)
 
+    def test_failed_service_access_hop_moves_roles_without_dropping_a_relay(self) -> None:
+        nodes = _service_descriptors()
+        selector = WanRouteSelector(
+            _StaticDiscovery(
+                {capability: nodes for capability in nodes[0].capabilities}
+            ),
+            guard_seed=b"a" * 32,
+        )
+        service_id = "h" * 52
+        introductions, rendezvous, _retried = select_service_route_set(
+            selector,
+            service_id,
+            nodes[:2],
+            nodes[2],
+        )
+        failed_access = introductions[0].route[0][0]
+
+        retry_introductions, retry_rendezvous, reused = select_service_route_set(
+            selector,
+            service_id,
+            nodes[:2],
+            nodes[2],
+            failed_access_ids={failed_access.node_id},
+        )
+
+        self.assertFalse(reused)
+        for selection in (*retry_introductions, retry_rendezvous):
+            self.assertEqual(len(selection.route), 4)
+            self.assertEqual(
+                {node.node_id for node, _role in selection.route},
+                {node.node_id for node in nodes},
+            )
+            self.assertNotEqual(selection.route[0][0].node_id, failed_access.node_id)
+            self.assertIn(
+                failed_access.node_id,
+                {node.node_id for node, _role in selection.route[1:]},
+            )
+
     def test_temporary_failure_retry_cannot_create_a_three_node_route(self) -> None:
         nodes = _service_descriptors()[:3]
         selector = WanRouteSelector(

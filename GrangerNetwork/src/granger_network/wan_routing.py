@@ -230,6 +230,8 @@ class WanRouteSelector:
         final_role: str,
         *,
         excluded_ids: set[str] | None = None,
+        excluded_access_ids: set[str] | None = None,
+        excluded_service_relay_ids: set[str] | None = None,
         excluded_middle_ids: set[str] | None = None,
     ) -> WanRouteSelection:
         if final_role not in {"introduction", "rendezvous"}:
@@ -241,6 +243,13 @@ class WanRouteSelector:
         used = {
             validate_node_id(node_id) for node_id in (excluded_ids or ())
         } | {final_node.node_id}
+        blocked_accesses = used | {
+            validate_node_id(node_id) for node_id in (excluded_access_ids or ())
+        }
+        blocked_service_relays = used | {
+            validate_node_id(node_id)
+            for node_id in (excluded_service_relay_ids or ())
+        }
         blocked_middles = used | {
             validate_node_id(node_id) for node_id in (excluded_middle_ids or ())
         }
@@ -249,14 +258,14 @@ class WanRouteSelector:
             for node in self._candidates(
                 _selection_target(context, "access"), "access"
             )
-            if node.node_id not in used
+            if node.node_id not in blocked_accesses
         ]
         guards = self._guard_order([
             node
             for node in self._candidates(
                 _selection_target(context, "service-relay"), "service-relay"
             )
-            if node.node_id not in used
+            if node.node_id not in blocked_service_relays
         ])
         middles = [
             node
@@ -308,16 +317,22 @@ def select_service_route_set(
     rendezvous_node: NodeDescriptor,
     *,
     failed_route_ids: set[str] | None = None,
+    failed_access_ids: set[str] | None = None,
+    failed_service_relay_ids: set[str] | None = None,
     failed_middle_ids: set[str] | None = None,
 ) -> tuple[tuple[WanRouteSelection, ...], WanRouteSelection, bool]:
     """Retry transient failure hints without relaxing the selector's route policy."""
     blocked_ids = set(failed_route_ids or ())
+    blocked_accesses = set(failed_access_ids or ())
+    blocked_service_relays = set(failed_service_relay_ids or ())
     blocked_middles = set(failed_middle_ids or ())
-    if blocked_ids and blocked_middles:
+    if blocked_ids and (blocked_accesses or blocked_service_relays or blocked_middles):
         raise OverlayRoutingError("service route exclusions are ambiguous")
 
     def select(
         route_ids: set[str] | None,
+        access_ids: set[str] | None,
+        service_relay_ids: set[str] | None,
         middle_ids: set[str] | None,
     ) -> tuple[tuple[WanRouteSelection, ...], WanRouteSelection]:
         introductions = tuple(
@@ -326,6 +341,8 @@ def select_service_route_set(
                 node,
                 "introduction",
                 excluded_ids=route_ids,
+                excluded_access_ids=access_ids,
+                excluded_service_relay_ids=service_relay_ids,
                 excluded_middle_ids=middle_ids,
             )
             for node in introduction_nodes
@@ -335,15 +352,27 @@ def select_service_route_set(
             rendezvous_node,
             "rendezvous",
             excluded_ids=route_ids,
+            excluded_access_ids=access_ids,
+            excluded_service_relay_ids=service_relay_ids,
             excluded_middle_ids=middle_ids,
         )
         return introductions, rendezvous
 
     try:
-        introductions, rendezvous = select(blocked_ids, blocked_middles)
+        introductions, rendezvous = select(
+            blocked_ids,
+            blocked_accesses,
+            blocked_service_relays,
+            blocked_middles,
+        )
         return introductions, rendezvous, False
     except OverlayRoutingError:
-        if not blocked_ids and not blocked_middles:
+        if not (
+            blocked_ids
+            or blocked_accesses
+            or blocked_service_relays
+            or blocked_middles
+        ):
             raise
-    introductions, rendezvous = select(None, None)
+    introductions, rendezvous = select(None, None, None, None)
     return introductions, rendezvous, True

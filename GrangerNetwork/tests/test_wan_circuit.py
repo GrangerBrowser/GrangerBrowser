@@ -129,6 +129,23 @@ class WanCircuitTests(unittest.TestCase):
                 builder.open(self.route[:2])
         self.assertEqual(observed_timeouts, [0.25])
 
+    def test_first_hop_failure_records_authentication_stage(self) -> None:
+        def fail_first_hop(*_args, **options):
+            options["on_stage"]("tcp", 1)
+            options["on_stage"]("authentication", 1)
+            raise TimeoutError("simulated first-hop authentication timeout")
+
+        builder = CircuitBuilder(ServiceIdentity.generate(), PeerRole.CLIENT, timeout=0.25)
+        with patch(
+            "granger_network.circuit.connect_authenticated_peer",
+            side_effect=fail_first_hop,
+        ):
+            with self.assertRaises(TimeoutError) as raised:
+                builder.open(self.route[:2])
+
+        self.assertEqual(raised.exception.circuit_failure_hop_index, 0)
+        self.assertEqual(raised.exception.circuit_failure_stage, "authentication")
+
     def test_silent_nested_peer_times_out_and_closes_partial_circuit(self) -> None:
         reached = threading.Event()
         release = threading.Event()

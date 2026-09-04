@@ -1233,7 +1233,9 @@ def serve_hosted_service(
             atomic_write_text(root / SERVICE_DESCRIPTOR_FILE, service.to_json(), mode=0o644)
         host: WanServiceHost | None = None
         failures: list[str] = []
-        route_exclusions: set[str] = set()
+        access_exclusions: set[str] = set()
+        service_relay_exclusions: set[str] = set()
+        middle_exclusions: set[str] = set()
         try:
             _write_status(
                 root, "recovering" if generation else "starting", service,
@@ -1287,11 +1289,15 @@ def serve_hosted_service(
                             service.service_id,
                             selected_introductions,
                             rendezvous_node,
-                            failed_route_ids=route_exclusions,
+                            failed_access_ids=access_exclusions,
+                            failed_service_relay_ids=service_relay_exclusions,
+                            failed_middle_ids=middle_exclusions,
                         )
                     )
                     if reused_required_route:
-                        route_exclusions.clear()
+                        access_exclusions.clear()
+                        service_relay_exclusions.clear()
+                        middle_exclusions.clear()
                     candidate = WanServiceHost(
                         identity,
                         service,
@@ -1312,10 +1318,22 @@ def serve_hosted_service(
                     host = candidate
                     break
                 except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                    failures.append(f"{type(error).__name__}:{str(error)[:160]}")
+                    failure_context = ""
                     if candidate is not None:
-                        route_exclusions.update(candidate.startup_failed_route_ids)
+                        access_exclusions.update(candidate.startup_failed_access_ids)
+                        service_relay_exclusions.update(
+                            candidate.startup_failed_service_relay_ids
+                        )
+                        middle_exclusions.update(candidate.startup_failed_middle_ids)
+                        if candidate.startup_failed_role or candidate.startup_failure_stage:
+                            failure_context = (
+                                f":route-role={candidate.startup_failed_role or 'unknown'}"
+                                f":route-stage={candidate.startup_failure_stage or 'unknown'}"
+                            )
                         candidate.stop()
+                    failures.append(
+                        f"{type(error).__name__}:{str(error)[:160]}{failure_context}"
+                    )
                     if attempt + 1 < MAX_SERVICE_ROUTE_ATTEMPTS:
                         time.sleep(0.2 * (attempt + 1))
             if host is None:

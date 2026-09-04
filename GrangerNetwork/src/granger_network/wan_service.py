@@ -379,6 +379,8 @@ class WanServiceHost:
         self._grant_condition = threading.Condition()
         self._grant_slot: tuple[bytes, int] | None = None
         self._startup_failed_route: tuple[tuple[NodeDescriptor, str], ...] = ()
+        self._startup_failed_hop_index: int | None = None
+        self._startup_failure_stage = ""
         self.errors: list[str] = []
         self.session_failures: list[str] = []
 
@@ -420,11 +422,49 @@ class WanServiceHost:
 
     @property
     def startup_failed_middle_ids(self) -> frozenset[str]:
-        return frozenset(
-            descriptor.node_id
-            for descriptor, role in self._startup_failed_route
-            if role == "middle"
-        )
+        return self._startup_failed_ids_for_role("middle")
+
+    @property
+    def startup_failed_access_ids(self) -> frozenset[str]:
+        return self._startup_failed_ids_for_role("access")
+
+    @property
+    def startup_failed_service_relay_ids(self) -> frozenset[str]:
+        return self._startup_failed_ids_for_role("service-relay")
+
+    @property
+    def startup_failed_role(self) -> str:
+        if self._startup_failed_hop_index is None:
+            return ""
+        return self._startup_failed_route[self._startup_failed_hop_index][1]
+
+    @property
+    def startup_failure_stage(self) -> str:
+        return self._startup_failure_stage
+
+    def _startup_failed_ids_for_role(self, role: str) -> frozenset[str]:
+        if self.startup_failed_role != role or self._startup_failed_hop_index is None:
+            return frozenset()
+        return frozenset({
+            self._startup_failed_route[self._startup_failed_hop_index][0].node_id
+        })
+
+    def _record_startup_failure(
+        self,
+        route: tuple[tuple[NodeDescriptor, str], ...],
+        error: Exception,
+        *,
+        default_hop_index: int | None = None,
+        default_stage: str = "",
+    ) -> None:
+        self._startup_failed_route = route
+        index = getattr(error, "circuit_failure_hop_index", default_hop_index)
+        if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(route):
+            self._startup_failed_hop_index = index
+        else:
+            self._startup_failed_hop_index = None
+        stage = getattr(error, "circuit_failure_stage", default_stage)
+        self._startup_failure_stage = stage if isinstance(stage, str) else default_stage
 
     @property
     def startup_failed_route_ids(self) -> frozenset[str]:
@@ -482,8 +522,8 @@ class WanServiceHost:
                 try:
                     circuit = builder.open(route)
                     circuit.endpoint.channel.connection.settimeout(self.timeout)
-                except (GrangerNetworkError, OSError, TimeoutError, ValueError):
-                    self._startup_failed_route = route
+                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                    self._record_startup_failure(route, error)
                     raise
                 try:
                     circuit.endpoint.rpc.request(
@@ -492,8 +532,13 @@ class WanServiceHost:
                         expected=RpcType.INTRO_REGISTER,
                     )
                     circuit.endpoint.channel.connection.settimeout(None)
-                except Exception:
-                    self._startup_failed_route = route
+                except Exception as error:
+                    self._record_startup_failure(
+                        route,
+                        error,
+                        default_hop_index=len(route) - 1,
+                        default_stage="introduction-registration",
+                    )
                     circuit.close()
                     raise
                 self._intro_circuits.append(circuit)
@@ -537,7 +582,13 @@ class WanServiceHost:
                     if self._stop.is_set() or self._recovery.is_set():
                         break
                     if not self._ready.is_set():
-                        self._startup_failed_route = self.rendezvous_route
+                        cause = error.__cause__ if isinstance(error.__cause__, Exception) else error
+                        self._record_startup_failure(
+                            self.rendezvous_route,
+                            cause,
+                            default_hop_index=len(self.rendezvous_route) - 1,
+                            default_stage="rendezvous-registration",
+                        )
                         raise
                     consecutive_route_failures += 1
                     if len(self.session_failures) < 1024:

@@ -12,7 +12,11 @@ from unittest.mock import Mock, patch
 
 from granger_network import hosting, wan_host
 from granger_network.descriptor import ServiceDescriptor
-from granger_network.errors import IdentityVerificationError, NetworkUnavailableError
+from granger_network.errors import (
+    IdentityVerificationError,
+    NetworkUnavailableError,
+    ProtocolError,
+)
 from granger_network.identity import ServiceIdentity
 from granger_network.peer import node_id_from_public_key
 
@@ -168,6 +172,87 @@ class HostRecoveryTests(unittest.TestCase):
                 result = self.run_case(kind, failure_at=3, error=IdentityVerificationError("invalid signature"))
                 self.assertIsInstance(result["error"], IdentityVerificationError)
                 self.assertEqual(result["unavailable"], [])
+
+    def test_browser_host_retry_moves_a_failed_access_node_out_of_that_role(self):
+        with tempfile.TemporaryDirectory(prefix="granger-host-access-retry-") as temporary:
+            root = Path(temporary)
+            identity = ServiceIdentity.generate()
+            service = ServiceDescriptor.create_remote(
+                identity,
+                "access-retry-test",
+                lifetime=86400,
+            )
+            peers = tuple(
+                SimpleNamespace(
+                    node_id=node_id_from_public_key(
+                        ServiceIdentity.generate().public_key_bytes
+                    )
+                )
+                for _ in range(4)
+            )
+            route = SimpleNamespace(
+                route=tuple(
+                    zip(
+                        peers,
+                        ("access", "service-relay", "middle", "introduction"),
+                        strict=True,
+                    )
+                )
+            )
+            discovery = Mock()
+            discovery.route_candidates.return_value = peers
+            discovery.health.return_value.to_document.return_value = {
+                "state": "CONNECTED",
+                "dhtReady": True,
+            }
+            discovery.publish.return_value = 4
+            runtime = SimpleNamespace(identity=identity, discovery=discovery)
+            failed_host = Mock()
+            failed_host.wait_ready.side_effect = ProtocolError(
+                "simulated first-hop authentication timeout"
+            )
+            failed_host.startup_failed_access_ids = frozenset({peers[0].node_id})
+            failed_host.startup_failed_service_relay_ids = frozenset()
+            failed_host.startup_failed_middle_ids = frozenset()
+            failed_host.startup_failed_role = "access"
+            failed_host.startup_failure_stage = "authentication"
+            select = Mock(side_effect=[((route, route), route, False), Finished()])
+            config = SimpleNamespace(
+                kind="static",
+                entry_page="index.html",
+                max_file_bytes=1024,
+            )
+            browser_config = SimpleNamespace(
+                bootstrap_path=root / "bootstrap.json",
+                authority_pin_path=root / "pin",
+                timeout=8,
+                replication_factor=4,
+                minimum_replicas=4,
+            )
+
+            with ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(hosting, "load_hosted_service", return_value=(config, identity, service))
+                )
+                stack.enter_context(
+                    patch.object(hosting, "load_browser_wan_config", return_value=browser_config)
+                )
+                stack.enter_context(patch.object(hosting, "load_discovery_runtime", return_value=runtime))
+                stack.enter_context(patch.object(hosting, "_ensure_publication_snapshot"))
+                stack.enter_context(patch.object(hosting, "StaticSiteBridge"))
+                stack.enter_context(patch.object(hosting, "WanRouteSelector"))
+                stack.enter_context(patch.object(hosting, "select_service_route_set", select))
+                stack.enter_context(patch.object(hosting, "WanServiceHost", return_value=failed_host))
+                stack.enter_context(patch.object(hosting.time, "sleep"))
+                with self.assertRaises(Finished):
+                    hosting.serve_hosted_service(root, root / "wan.json")
+
+            self.assertEqual(select.call_count, 2)
+            retry_options = select.call_args_list[1].kwargs
+            self.assertEqual(retry_options["failed_access_ids"], {peers[0].node_id})
+            self.assertEqual(retry_options["failed_service_relay_ids"], set())
+            self.assertEqual(retry_options["failed_middle_ids"], set())
+            failed_host.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":

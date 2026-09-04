@@ -204,9 +204,12 @@ class WanOperationTimeoutTests(unittest.TestCase):
             timeout=0.25,
         )
         try:
+            startup_error = TimeoutError("simulated protocol-silent relay")
+            startup_error.circuit_failure_hop_index = 0
+            startup_error.circuit_failure_stage = "authentication"
             with patch(
                 "granger_network.wan_service.CircuitBuilder.open",
-                side_effect=TimeoutError("simulated protocol-silent relay"),
+                side_effect=startup_error,
             ):
                 host.start_background()
                 with self.assertRaisesRegex(ProtocolError, "protocol-silent relay"):
@@ -216,9 +219,15 @@ class WanOperationTimeoutTests(unittest.TestCase):
                 frozenset(descriptor.node_id for descriptor in descriptors[:4]),
             )
             self.assertEqual(
-                host.startup_failed_middle_ids,
-                frozenset({descriptors[2].node_id}),
+                host.startup_failed_access_ids,
+                frozenset({descriptors[0].node_id}),
             )
+            self.assertEqual(
+                host.startup_failed_middle_ids,
+                frozenset(),
+            )
+            self.assertEqual(host.startup_failed_role, "access")
+            self.assertEqual(host.startup_failure_stage, "authentication")
         finally:
             host.stop()
 

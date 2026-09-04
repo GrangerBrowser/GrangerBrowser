@@ -26,6 +26,11 @@ from .peer_rpc import (
 MAX_CIRCUIT_CONTROL = 66 * 1024
 
 
+def _annotate_circuit_failure(error: Exception, hop_index: int, stage: str) -> None:
+    error.circuit_failure_hop_index = hop_index
+    error.circuit_failure_stage = stage
+
+
 @dataclass(frozen=True)
 class CircuitOpenRequest:
     circuit_id: bytes
@@ -195,13 +200,24 @@ class CircuitBuilder:
         try:
             first_identity = self._hop_identity(normalized[0][1])
             hop_keys.append(first_identity.public_key_bytes)
-            peer = connect_authenticated_peer(
-                normalized[0][0],
-                first_identity,
-                self.role,
-                timeout=self.timeout,
-                attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
-            )
+            first_stage = "tcp"
+
+            def observe_first_hop(stage: str, _attempt: int) -> None:
+                nonlocal first_stage
+                first_stage = stage
+
+            try:
+                peer = connect_authenticated_peer(
+                    normalized[0][0],
+                    first_identity,
+                    self.role,
+                    timeout=self.timeout,
+                    attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
+                    on_stage=observe_first_hop,
+                )
+            except Exception as error:
+                _annotate_circuit_failure(error, 0, first_stage)
+                raise
             peer.channel.connection.settimeout(self.timeout)
             for index in range(len(normalized) - 1):
                 current, current_role = normalized[index]
@@ -215,11 +231,15 @@ class CircuitBuilder:
                     next_role,
                     next_node,
                 )
-                response = peer.rpc.request(
-                    RpcType.EXTEND_CIRCUIT,
-                    encode_extend_circuit(request),
-                    expected=RpcType.CIRCUIT_CREATED,
-                )
+                try:
+                    response = peer.rpc.request(
+                        RpcType.EXTEND_CIRCUIT,
+                        encode_extend_circuit(request),
+                        expected=RpcType.CIRCUIT_CREATED,
+                    )
+                except Exception as error:
+                    _annotate_circuit_failure(error, index + 1, "extension")
+                    raise
                 if response.payload:
                     raise ProtocolError("circuit creation response has an unexpected payload")
                 peer.channel.connection.settimeout(None)
@@ -231,19 +251,27 @@ class CircuitBuilder:
                     cover_profile=self.cover_profile,
                 )
                 multiplexers.append(multiplexer)
-                stream = multiplexer.open_stream(self.timeout)
+                try:
+                    stream = multiplexer.open_stream(self.timeout)
+                except Exception as error:
+                    _annotate_circuit_failure(error, index + 1, "stream-open")
+                    raise
                 # open_stream bounds only OPEN; the nested handshake must also expire.
                 stream.settimeout(self.timeout)
                 streams.append(stream)
                 circuit_ids.extend((incoming_id, outgoing_id))
                 next_identity = self._hop_identity(next_role)
                 hop_keys.append(next_identity.public_key_bytes)
-                peer = authenticate_client_stream(
-                    stream,
-                    next_node,
-                    next_identity,
-                    self.role,
-                )
+                try:
+                    peer = authenticate_client_stream(
+                        stream,
+                        next_node,
+                        next_identity,
+                        self.role,
+                    )
+                except Exception as error:
+                    _annotate_circuit_failure(error, index + 1, "authentication")
+                    raise
                 if index + 1 == len(normalized) - 1:
                     stream.settimeout(None)
             for multiplexer in multiplexers:
