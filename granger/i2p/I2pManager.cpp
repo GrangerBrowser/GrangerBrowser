@@ -421,10 +421,6 @@ bool I2pManager::ensureAddressBookBootstrap(QString *error)
     const QDir data(m_status.dataDirectory);
     const QFileInfo persistedIndex(data.filePath(QStringLiteral("addressbook/addresses.csv")));
     const QFileInfo existingHosts(data.filePath(QStringLiteral("hosts.txt")));
-    if (persistedIndex.isFile() && persistedIndex.size() > 0) {
-        if (error) error->clear();
-        return true;
-    }
 
     QFile indexResource(QStringLiteral(":/i2p/addresses.csv"));
     QFile hostsResource(QStringLiteral(":/i2p/hosts.txt"));
@@ -474,9 +470,36 @@ bool I2pManager::ensureAddressBookBootstrap(QString *error)
         }
         return true;
     };
-    if (!writeBootstrap(persistedIndex.absoluteFilePath(), indexContents)) return false;
+
+    // i2pd only imports full destination identities from hosts.txt when its
+    // generated address-book index is empty. Older Granger builds copied a
+    // hash-only bootstrap index first, which made human-readable names known
+    // but unusable. Remove only that exact generated file so i2pd can rebuild
+    // its index and identity storage without touching user-managed state.
+    if (persistedIndex.isFile() && persistedIndex.size() > 0) {
+        QFile persistedFile(persistedIndex.absoluteFilePath());
+        if (!persistedFile.open(QIODevice::ReadOnly)) {
+            if (error) {
+                *error = QStringLiteral("Unable to inspect the I2P address-book index: %1")
+                             .arg(persistedFile.errorString());
+            }
+            return false;
+        }
+        if (persistedFile.readAll() != indexContents) {
+            if (error) error->clear();
+            return true;
+        }
+    }
+
     if ((!existingHosts.isFile() || existingHosts.size() == 0)
         && !writeBootstrap(existingHosts.absoluteFilePath(), hostsContents)) {
+        return false;
+    }
+    if (persistedIndex.isFile() && persistedIndex.size() > 0
+        && !QFile::remove(persistedIndex.absoluteFilePath())) {
+        if (error) {
+            *error = QStringLiteral("Unable to migrate the I2P address-book bootstrap");
+        }
         return false;
     }
     if (error) error->clear();

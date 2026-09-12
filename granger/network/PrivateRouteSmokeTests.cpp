@@ -890,6 +890,10 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
                     && secondVerified && destinationVerified
                     && firstStatus.addressBookReady && firstStatus.addressBookEntries >= 10
                     && secondStatus.addressBookReady && bootstrapContainsExpectedNames
+                    && externalB32.connected
+                    && externalB32.echo.startsWith(QByteArrayLiteral("HTTP/"))
+                    && humanName.connected
+                    && humanName.echo.startsWith(QByteArrayLiteral("HTTP/"))
                     && headlessConfigured && unknownNameBlocked
                     && !fakeCompleteState && stopped;
     QJsonObject report{
@@ -914,6 +918,7 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
         {QStringLiteral("humanReadableConnected"), humanName.connected},
         {QStringLiteral("humanReadableHttpResponse"), humanName.echo.startsWith(QByteArrayLiteral("HTTP/"))},
         {QStringLiteral("humanReadableError"), humanName.error},
+        {QStringLiteral("humanReadableReplyCode"), humanName.replyCode},
         {QStringLiteral("unknownNameBlocked"), unknownNameBlocked},
         {QStringLiteral("unknownNameReplyCode"), unknownName.replyCode},
         {QStringLiteral("reportedCompleteBeforeVerification"), fakeCompleteState},
