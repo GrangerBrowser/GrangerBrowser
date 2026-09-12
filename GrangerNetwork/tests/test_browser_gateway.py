@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from granger_network.browser_gateway import _LocalDemo, PROTOCOL_VERSION, handle_request, parse_request
+from granger_network.browser_gateway import (
+    PROTOCOL_VERSION,
+    _LocalDemo,
+    _load_browser_peer_identity,
+    handle_request,
+    parse_request,
+)
 from granger_network.client import GrangerClient, GrangerResponse
 from granger_network.errors import (
     DescriptorError,
@@ -17,6 +23,7 @@ from granger_network.errors import (
     ReplayError,
 )
 from granger_network.resolver import LocalResolver
+from granger_network.wan_config import load_or_create_identity
 
 
 def request_document(**changes: object) -> bytes:
@@ -35,6 +42,32 @@ def request_document(**changes: object) -> bytes:
 
 
 class BrowserGatewayTests(unittest.TestCase):
+    def test_gateway_distinguishes_negative_network_evidence(self):
+        from granger_network.browser_gateway import _error_code
+        from granger_network.errors import (
+            IntroductionOfflineError, NetworkUnavailableError, OverlayRoutingError,
+            RecordQuorumError, ResolutionError,
+        )
+        for error, code in (
+            (RecordQuorumError("missing replicas"), "QUORUM_UNAVAILABLE"),
+            (NetworkUnavailableError("first contact failed"), "NETWORK_UNAVAILABLE"),
+            (IntroductionOfflineError("no live registrations"), "INTRO_UNAVAILABLE"),
+            (OverlayRoutingError("route budget exhausted"), "NO_ROUTE"),
+            (ResolutionError("unknown local alias"), "SERVICE_NOT_FOUND"),
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(_error_code(error), code)
+
+    def test_browser_relay_identity_is_persistent_and_separate_from_client_seed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="granger-browser-identities-") as temporary:
+            state = Path(temporary)
+            client_identity = load_or_create_identity(state / "client-identity.json")
+            first = _load_browser_peer_identity(state)
+            second = _load_browser_peer_identity(state)
+
+        self.assertEqual(first.public_key_bytes, second.public_key_bytes)
+        self.assertNotEqual(first.public_key_bytes, client_identity.public_key_bytes)
+
     def test_local_demo_uses_identity_bound_encrypted_service_transport(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             demo = _LocalDemo(Path(temporary) / "registry")

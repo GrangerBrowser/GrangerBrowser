@@ -249,6 +249,16 @@ private:
 GrangerNetworkRuntime::GrangerNetworkRuntime(QObject *parent)
     : QObject(parent)
 {
+    m_restartTimer = new QTimer(this);
+    m_restartTimer->setSingleShot(true);
+    connect(m_restartTimer, &QTimer::timeout, this, [this] {
+        if (!m_restartEnabled || m_stopping || m_crashLoop) return;
+        QString error;
+        if (!startWorker(&error)) {
+            m_lastWorkerError = QStringLiteral("Granger Network runtime could not restart");
+            scheduleWorkerRestart();
+        }
+    });
 }
 
 GrangerNetworkRuntime::~GrangerNetworkRuntime()
@@ -279,6 +289,12 @@ void GrangerNetworkRuntime::installOnProfile(QWebEngineProfile *profile)
     profile->installUrlSchemeHandler(GrangerNetworkUrl::schemeName(), handler);
     m_handlers.insert(profile, handler);
     connect(profile, &QObject::destroyed, this, [this, profile] { m_handlers.remove(profile); });
+    if (GrangerWanConfigPaths::available()) {
+        QString error;
+        if (!startWorker(&error)) m_lastWorkerError = error;
+    } else {
+        m_lastWorkerError = QStringLiteral("WAN_BUNDLE_MISSING");
+    }
 }
 
 void GrangerNetworkRuntime::fetch(const QString &name,
@@ -338,8 +354,14 @@ void GrangerNetworkRuntime::fetch(const QString &name,
 
 bool GrangerNetworkRuntime::startWorker(QString *error)
 {
+    if (m_crashLoop) {
+        if (error) *error = QStringLiteral("Granger Network recovery paused after repeated worker failures");
+        return false;
+    }
+    if (m_restartTimer->isActive()) return true;
     if (m_process && m_process->state() != QProcess::NotRunning) return true;
     if (m_process) {
+        QObject::disconnect(m_process, nullptr, this, nullptr);
         delete m_process;
         m_process = nullptr;
     }
@@ -425,21 +447,29 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     connect(process, &QProcess::readyReadStandardOutput,
             this, &GrangerNetworkRuntime::processStdout);
     connect(process, &QProcess::readyReadStandardError, this, [this, process] {
+        if (m_process != process) return;
         const QString message = QString::fromUtf8(process->readAllStandardError()).trimmed();
         if (!message.isEmpty()) m_lastWorkerError = message.left(512);
     });
-    connect(process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
-        if (!m_stopping) failAll(QStringLiteral("NETWORK_UNAVAILABLE"));
+    connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
+        if (m_process != process || m_stopping) return;
+        failAll(QStringLiteral("NETWORK_UNAVAILABLE"));
+        if (error == QProcess::FailedToStart) scheduleWorkerRestart();
     });
     connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-            this, [this](int, QProcess::ExitStatus) {
+            this, [this, process](int, QProcess::ExitStatus) {
+        if (m_process != process) return;
         m_ready = false;
         m_workerPid = 0;
         m_localDemoActive = false;
         m_localDemoCanonical.clear();
-        if (!m_stopping) failAll(QStringLiteral("NETWORK_UNAVAILABLE"));
+        if (!m_stopping) {
+            failAll(QStringLiteral("NETWORK_UNAVAILABLE"));
+            scheduleWorkerRestart();
+        }
     });
     m_process = process;
+    m_restartEnabled = wanConfigured;
     m_runtimePython = QFileInfo(python).absoluteFilePath();
     m_runtimeModuleRoot = QDir(moduleRoot).absolutePath();
     m_appLocalRuntime = appLocalRuntime;
@@ -454,6 +484,23 @@ bool GrangerNetworkRuntime::startWorker(QString *error)
     ++m_workerStartCount;
     process->start();
     return true;
+}
+
+void GrangerNetworkRuntime::scheduleWorkerRestart()
+{
+    if (!m_restartEnabled || m_stopping || m_crashLoop || m_restartTimer->isActive()) return;
+    if (!m_crashWindow.isValid() || m_crashWindow.elapsed() >= 5 * 60 * 1000) {
+        m_crashWindow.start();
+        m_recentCrashes = 0;
+    }
+    ++m_recentCrashes;
+    m_crashLoop = m_recentCrashes > 3;
+    m_networkHealth.insert(QStringLiteral("state"),
+                          m_crashLoop ? QStringLiteral("DEGRADED") : QStringLiteral("RECOVERING"));
+    m_networkHealth.insert(QStringLiteral("dhtReady"), false);
+    m_networkHealth.insert(QStringLiteral("failureReason"),
+                          m_crashLoop ? QStringLiteral("WORKER_CRASH_LOOP") : QStringLiteral("WORKER_RESTART"));
+    if (!m_crashLoop) m_restartTimer->start(1000 * (1 << (m_recentCrashes - 1)));
 }
 
 void GrangerNetworkRuntime::flushPendingRequests()
@@ -501,6 +548,11 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
 {
     const QString type = document.value(QStringLiteral("type")).toString();
     const int version = document.value(QStringLiteral("version")).toInt(-1);
+    if (type == QStringLiteral("health") && version == kProtocolVersion
+        && document.value(QStringLiteral("networkHealth")).isObject()) {
+        m_networkHealth = document.value(QStringLiteral("networkHealth")).toObject();
+        return;
+    }
     if (type == QStringLiteral("ready") && version == kProtocolVersion) {
         m_workerPid = qint64(document.value(QStringLiteral("pid")).toDouble());
         m_localDemoActive = document.value(QStringLiteral("localDemo")).toBool(false);
@@ -593,6 +645,11 @@ void GrangerNetworkRuntime::stop()
 {
     if (m_stopping) return;
     m_stopping = true;
+    m_restartEnabled = false;
+    m_restartTimer->stop();
+    m_crashLoop = false;
+    m_recentCrashes = 0;
+    m_crashWindow.invalidate();
     failAll(QStringLiteral("NETWORK_UNAVAILABLE"));
     QProcess *process = m_process;
     m_process = nullptr;
@@ -709,6 +766,9 @@ QJsonObject GrangerNetworkRuntime::diagnostics() const
         {QStringLiteral("workerStops"), m_workerStopCount},
         {QStringLiteral("workerRunning"), m_process && m_process->state() != QProcess::NotRunning},
         {QStringLiteral("workerPid"), m_workerPid},
+        {QStringLiteral("workerRecoveryPending"), m_restartTimer->isActive()},
+        {QStringLiteral("workerCrashLoop"), m_crashLoop},
+        {QStringLiteral("recentWorkerCrashes"), m_recentCrashes},
         {QStringLiteral("dnsRequests"), m_dnsRequestCount},
         {QStringLiteral("runtimePython"), m_runtimePython},
         {QStringLiteral("runtimeModuleRoot"), m_runtimeModuleRoot},

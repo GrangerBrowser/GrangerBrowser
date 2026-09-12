@@ -36,9 +36,11 @@ const QRegularExpression kServiceTitle(QStringLiteral("^[^\\x00-\\x1f\\x7f]{1,80
 QJsonObject readObject(const QString &path)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return {};
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 1024 * 1024) return {};
+    const QByteArray bytes = file.readAll();
+    file.close();
     QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
     return parseError.error == QJsonParseError::NoError && document.isObject()
         ? document.object() : QJsonObject();
 }
@@ -521,6 +523,12 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
     result.id = config.value(QStringLiteral("id")).toString();
     if (!kServiceId.match(result.id).hasMatch()) return {};
     result.title = config.value(QStringLiteral("title")).toString();
+    result.visibility = config.value(QStringLiteral("visibility")).toString(QStringLiteral("unlisted"));
+    const QJsonObject runtimeStatus = readObject(QDir(root).filePath(QStringLiteral("metadata/status.json")));
+    const QJsonObject traffic = runtimeStatus.value(QStringLiteral("traffic")).toObject();
+    result.requests = qMax<qint64>(0, traffic.value(QStringLiteral("requests")).toInteger());
+    result.receivedBytes = qMax<qint64>(0, traffic.value(QStringLiteral("receivedBytes")).toInteger());
+    result.sentBytes = qMax<qint64>(0, traffic.value(QStringLiteral("sentBytes")).toInteger());
     result.type = config.value(QStringLiteral("type")).toString();
     result.source = config.value(QStringLiteral("source")).toString();
     result.entryPage = config.value(QStringLiteral("entryPage")).toString();
@@ -545,9 +553,7 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
             m_startedAt.value(result.id)).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
         result.uptimeSeconds = qMax<qint64>(
             0, (QDateTime::currentMSecsSinceEpoch() - m_startedAt.value(result.id)) / 1000);
-        const QJsonObject status = readObject(
-            QDir(root).filePath(QStringLiteral("metadata/status.json")));
-        result.applyRuntimeStatus(status, QDateTime::currentSecsSinceEpoch(),
+        result.applyRuntimeStatus(runtimeStatus, QDateTime::currentSecsSinceEpoch(),
                                   m_startedAt.value(result.id) / 1000);
         if (result.status == QStringLiteral("error")) {
             if (result.error.isEmpty()) result.error = m_lastErrors.value(result.id);
@@ -975,6 +981,28 @@ bool GrangerHostingManager::updateService(const QString &id,
     }
     emit servicesChanged();
     return true;
+}
+
+bool GrangerHostingManager::setVisibility(const QString &id, const QString &visibility, QString *error)
+{
+    const HostedServiceRecord previous = service(id);
+    if (previous.id.isEmpty()
+        || (visibility != QStringLiteral("public") && visibility != QStringLiteral("unlisted"))) {
+        if (error) *error = QStringLiteral("Invalid service visibility.");
+        return false;
+    }
+    if (previous.visibility == visibility) return true;
+    const bool wasRunning = previous.pid > 0;
+    if (wasRunning) stopProcess(id);
+    QJsonObject document;
+    if (!runUtility({QStringLiteral("set-visibility"), QStringLiteral("--service-dir"), serviceRoot(id),
+                     QStringLiteral("--visibility"), visibility}, &document, error)) {
+        if (wasRunning) launchService(id, nullptr);
+        return false;
+    }
+    const bool ok = !wasRunning || launchService(id, error);
+    emit servicesChanged();
+    return ok;
 }
 
 bool GrangerHostingManager::setAutoStart(const QString &id, bool enabled, QString *error)

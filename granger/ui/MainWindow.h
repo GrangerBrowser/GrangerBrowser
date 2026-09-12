@@ -23,6 +23,7 @@
 #include "granger/containers/ContainerManager.h"
 #include "granger/network/NetworkManager.h"
 #include "granger/network/GrangerHostingManager.h"
+#include "granger/core/UpdateManager.h"
 #include "granger/network/GrangerNetworkRuntime.h"
 #include "granger/network/PrivacyNetworkTypes.h"
 #include "granger/pamp_lite/network/PampRoutedEnricher.h"
@@ -143,6 +144,7 @@ public:
                                                      HostedServiceRecord *created,
                                                      QString *error);
     bool startHostedServiceForDiagnostics(const QString &id, QString *error);
+    bool setHostedVisibilityForDiagnostics(const QString &id, const QString &visibility, QString *error);
     bool stopHostedServiceForDiagnostics(const QString &id, QString *error);
     bool removeHostedServiceForDiagnostics(const QString &id, QString *error);
     HostedServiceRecord hostedServiceForDiagnostics(const QString &id) const;
@@ -498,6 +500,7 @@ private:
     NetworkManager m_network;
     GrangerNetworkRuntime m_grangerNetwork;
     GrangerHostingManager m_hosting;
+    UpdateManager m_updates;
     PrivacyPolicyManager m_privacy;
     ContainerManager m_containers;
     PermissionManager m_permissions;

@@ -108,9 +108,10 @@ class HostRecoveryTests(unittest.TestCase):
                     )
                     invoke = lambda: wan_host.run_host(options)
                 else:
-                    config = SimpleNamespace(kind="static", entry_page="index.html", max_file_bytes=1024)
+                    config = SimpleNamespace(kind="static", entry_page="index.html", max_file_bytes=1024, visibility="unlisted")
                     browser_config = SimpleNamespace(bootstrap_path=root / "bootstrap.json",
-                        authority_pin_path=root / "pin", timeout=8, replication_factor=4, minimum_replicas=4)
+                        authority_pin_path=root / "pin", timeout=8, replication_factor=4, minimum_replicas=4,
+                        version=2, generation=1, issued_at=int(time.time()), expires_at=int(time.time()) + 3600)
                     stack.enter_context(patch.object(hosting, "load_hosted_service", return_value=(config, identity, service)))
                     stack.enter_context(patch.object(hosting, "load_browser_wan_config", return_value=browser_config))
                     stack.enter_context(patch.object(hosting, "_ensure_publication_snapshot"))
@@ -219,10 +220,12 @@ class HostRecoveryTests(unittest.TestCase):
             select = Mock(side_effect=[((route, route), route, False), Finished()])
             config = SimpleNamespace(
                 kind="static",
+                visibility="unlisted",
                 entry_page="index.html",
                 max_file_bytes=1024,
             )
             browser_config = SimpleNamespace(
+                version=2, generation=1, issued_at=int(time.time()), expires_at=int(time.time()) + 3600,
                 bootstrap_path=root / "bootstrap.json",
                 authority_pin_path=root / "pin",
                 timeout=8,

@@ -713,6 +713,11 @@ margin-top:28px;padding:0;border:1px solid var(--ds-border-subtle);border-radius
 .settings-page .hosting-address code{min-width:0;overflow:hidden;color:var(--ds-text-secondary);font:11px "Cascadia Mono","Consolas",monospace;text-overflow:ellipsis;white-space:nowrap}
 .settings-page .hosting-address a{flex:0 0 auto;color:var(--ds-accent-hover);font-size:10px;font-weight:650;text-decoration:none}
 .settings-page .hosting-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.settings-page .hosting-visibility{display:flex;align-items:end;gap:var(--ds-space-3,12px);flex-wrap:wrap}
+.settings-page .hosting-visibility .field{flex:1;min-width:180px}
+.settings-page .hosting-details code{display:block;overflow-wrap:anywhere;white-space:normal;margin-top:12px}
+.settings-page .hosting-details dl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.settings-page .hosting-details dd{margin:0;overflow-wrap:anywhere}
 .settings-page .hosting-meta>div{display:grid;gap:3px;min-width:0}
 .settings-page .hosting-meta span{color:var(--ds-text-muted);font-size:9px;font-weight:650;text-transform:uppercase}
 .settings-page .hosting-meta strong{overflow:hidden;color:var(--ds-text-secondary);font-size:11px;font-weight:550;text-overflow:ellipsis;white-space:nowrap}
@@ -1918,6 +1923,7 @@ QString InternalPages::settings(const InternalPageContext &context)
                     .arg(e(t("settings.about_title")), infoRow(t("label.version"), context.applicationVersion),
                          infoRow(t("label.browser_engine"), QStringLiteral("Qt WebEngine / Chromium")),
                          infoRow(t("label.user_agent_mode"), context.userAgentProfile), e(t("settings.about_description")));
+        panel += context.updatesHtml;
     } else {
         const QString englishSelected = context.language == QStringLiteral("en") ? QStringLiteral(" selected") : QString();
         const QString russianSelected = context.language == QStringLiteral("ru") ? QStringLiteral(" selected") : QString();

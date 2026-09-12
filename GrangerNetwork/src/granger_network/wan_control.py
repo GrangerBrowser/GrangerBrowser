@@ -18,6 +18,7 @@ from .rendezvous_control import validate_service_id
 
 MAX_CONTROL_DOCUMENT = 64 * 1024
 MAX_RENDEZVOUS_GRANT_LIFETIME = 5 * 60
+DEFAULT_RENDEZVOUS_GRANT_LIFETIME = 2 * 60
 MAX_RENDEZVOUS_REGISTRATION_LIFETIME = 10 * 60
 RENDEZVOUS_GRANT_DOMAIN = b"granger-network-v0.4/rendezvous-grant\x00"
 RENDEZVOUS_COOKIE_TAG_DOMAIN = b"granger-network-v0.4/rendezvous-cookie-tag\x00"
@@ -166,7 +167,7 @@ class RendezvousGrant:
         *,
         cookie: bytes | None = None,
         now: int | None = None,
-        lifetime: int = 120,
+        lifetime: int = DEFAULT_RENDEZVOUS_GRANT_LIFETIME,
     ) -> "RendezvousGrant":
         timestamp = int(time.time()) if now is None else now
         if not 1 <= lifetime <= MAX_RENDEZVOUS_GRANT_LIFETIME:

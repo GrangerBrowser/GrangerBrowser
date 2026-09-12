@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import socket
 import struct
 import threading
 import time
@@ -25,6 +26,41 @@ MAX_STREAM_WINDOW = 4 * 1024 * 1024
 MAX_STREAMS_PER_MULTIPLEXER = 1024
 MAX_CELL_SEQUENCE = 2**64 - 1
 MAX_CELLS_PER_BATCH = 64
+
+
+class ReceiveMemoryBudget:
+    def __init__(self, maximum_bytes: int) -> None:
+        if (
+            isinstance(maximum_bytes, bool)
+            or not isinstance(maximum_bytes, int)
+            or not CELL_PAYLOAD_SIZE <= maximum_bytes <= 4 * 1024 * 1024 * 1024
+        ):
+            raise ResourceLimitError("relay receive memory budget is invalid")
+        self.maximum_bytes = maximum_bytes
+        self._used_bytes = 0
+        self._lock = threading.Lock()
+
+    def reserve(self, count: int) -> bool:
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ResourceLimitError("relay receive reservation is invalid")
+        with self._lock:
+            if self._used_bytes + count > self.maximum_bytes:
+                return False
+            self._used_bytes += count
+            return True
+
+    def release(self, count: int) -> None:
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ResourceLimitError("relay receive release is invalid")
+        with self._lock:
+            if count > self._used_bytes:
+                raise ResourceLimitError("relay receive budget accounting underflow")
+            self._used_bytes -= count
+
+    @property
+    def used_bytes(self) -> int:
+        with self._lock:
+            return self._used_bytes
 
 
 class CellType(IntEnum):
@@ -225,6 +261,7 @@ class MuxStream:
         self._send_credit = send_credit
         self._buffer = bytearray()
         self._received_not_consumed = 0
+        self._reserved_receive_bytes = 0
         self._open = threading.Event()
         if opened:
             self._open.set()
@@ -269,14 +306,25 @@ class MuxStream:
 
     def _feed(self, payload: bytes) -> None:
         with self._condition:
-            if self._remote_closed or self._error is not None:
+            if self._local_closed or self._remote_closed or self._error is not None:
                 return
             if self._received_not_consumed + len(payload) > self.multiplexer.stream_window:
                 self._fail(ResourceLimitError("multiplexed stream receive window was exceeded"))
                 return
+            if not self.multiplexer.receive_budget.reserve(len(payload)):
+                self._fail(ResourceLimitError("relay receive memory budget is exhausted"))
+                return
             self._buffer.extend(payload)
             self._received_not_consumed += len(payload)
+            self._reserved_receive_bytes += len(payload)
             self._condition.notify_all()
+
+    def _release_receive_buffer_unlocked(self) -> None:
+        if self._reserved_receive_bytes:
+            self.multiplexer.receive_budget.release(self._reserved_receive_bytes)
+            self._reserved_receive_bytes = 0
+        self._buffer.clear()
+        self._received_not_consumed = 0
 
     def _add_credit(self, credit: int) -> None:
         with self._condition:
@@ -291,12 +339,14 @@ class MuxStream:
             self._remote_closed = True
             if reset:
                 self._error = ProtocolError("multiplexed stream was reset")
+                self._release_receive_buffer_unlocked()
             self._condition.notify_all()
 
     def _fail(self, error: BaseException) -> None:
         with self._condition:
             if self._error is None:
                 self._error = error
+            self._release_receive_buffer_unlocked()
             self._condition.notify_all()
 
     def wait_open(self) -> None:
@@ -346,7 +396,9 @@ class MuxStream:
             result = bytes(self._buffer[:size])
             del self._buffer[:size]
             self._received_not_consumed -= len(result)
+            self._reserved_receive_bytes -= len(result)
         if result:
+            self.multiplexer.receive_budget.release(len(result))
             self.multiplexer._send(
                 CellType.WINDOW_UPDATE,
                 self.stream_id,
@@ -366,6 +418,7 @@ class MuxStream:
             if self._local_closed:
                 return
             self._local_closed = True
+            self._release_receive_buffer_unlocked()
             self._condition.notify_all()
         if not self.multiplexer.failed:
             try:
@@ -379,6 +432,7 @@ class MuxStream:
                 return
             self._local_closed = True
             self._error = ProtocolError("multiplexed stream was reset locally")
+            self._release_receive_buffer_unlocked()
             self._condition.notify_all()
         if not self.multiplexer.failed:
             try:
@@ -397,6 +451,7 @@ class CellMultiplexer:
         stream_window: int = DEFAULT_STREAM_WINDOW,
         max_streams: int = MAX_STREAMS_PER_MULTIPLEXER,
         cover_profile: CoverTrafficProfile | str = CoverTrafficProfile.OFF,
+        receive_budget: ReceiveMemoryBudget | None = None,
     ) -> None:
         if not isinstance(channel, SecureChannel) or channel.protocol_version != VERSION_3:
             raise ProtocolError("relay cells require a wire 3 channel")
@@ -416,6 +471,11 @@ class CellMultiplexer:
         self.initiator = initiator
         self.stream_window = stream_window
         self.max_streams = max_streams
+        if receive_budget is not None and not isinstance(receive_budget, ReceiveMemoryBudget):
+            raise ResourceLimitError("relay receive memory budget is invalid")
+        self.receive_budget = receive_budget or ReceiveMemoryBudget(
+            min(4 * 1024 * 1024 * 1024, stream_window * max_streams)
+        )
         self.cover_policy = CoverTrafficPolicy.for_profile(cover_profile)
         self._streams: dict[int, MuxStream] = {}
         self._accept_queue: deque[MuxStream] = deque()
@@ -663,37 +723,41 @@ class CellMultiplexer:
                 if cell.flags & CELL_FLAG_ACK:
                     if stream is None:
                         raise ProtocolError("relay stream OPEN acknowledgement is unsolicited")
-                    stream._mark_open(credit)
-                    return
-                expected_parity = 0 if self.initiator else 1
-                if cell.stream_id % 2 != expected_parity:
-                    raise ProtocolError("relay stream identifier parity is invalid")
-                if stream is not None or len(self._streams) >= self.max_streams:
-                    raise ResourceLimitError("relay stream limit is exhausted")
-                stream = MuxStream(self, cell.stream_id, send_credit=credit, opened=True)
-                self._streams[cell.stream_id] = stream
-                self._accept_queue.append(stream)
-                self._condition.notify_all()
-            elif stream is None:
-                raise ProtocolError("relay cell references an unknown stream")
-            elif cell.cell_type is CellType.DATA:
-                if not cell.payload:
-                    raise ProtocolError("relay DATA cell is empty")
-                stream._feed(cell.payload)
-            elif cell.cell_type is CellType.WINDOW_UPDATE:
-                if len(cell.payload) != 4:
-                    raise ProtocolError("relay flow-control update is invalid")
-                stream._add_credit(int.from_bytes(cell.payload, "big"))
-            elif cell.cell_type is CellType.CLOSE:
-                if cell.payload:
-                    raise ProtocolError("relay CLOSE cell has a payload")
-                stream._remote_close()
-            elif cell.cell_type is CellType.RESET:
-                if cell.payload:
-                    raise ProtocolError("relay RESET cell has a payload")
-                stream._remote_close(reset=True)
-            else:
-                raise ProtocolError("relay cell state is invalid")
+                else:
+                    expected_parity = 0 if self.initiator else 1
+                    if cell.stream_id % 2 != expected_parity:
+                        raise ProtocolError("relay stream identifier parity is invalid")
+                    if stream is not None or len(self._streams) >= self.max_streams:
+                        raise ResourceLimitError("relay stream limit is exhausted")
+                    stream = MuxStream(self, cell.stream_id, send_credit=credit, opened=True)
+                    self._streams[cell.stream_id] = stream
+                    self._accept_queue.append(stream)
+                    self._condition.notify_all()
+        # Stream waits check mux.failed under their own lock. Dispatch must not
+        # hold the mux lock while taking a stream lock (including OPEN ACK).
+        if stream is None:
+            raise ProtocolError("relay cell references an unknown stream")
+        if cell.cell_type is CellType.OPEN:
+            if cell.flags & CELL_FLAG_ACK:
+                stream._mark_open(credit)
+        elif cell.cell_type is CellType.DATA:
+            if not cell.payload:
+                raise ProtocolError("relay DATA cell is empty")
+            stream._feed(cell.payload)
+        elif cell.cell_type is CellType.WINDOW_UPDATE:
+            if len(cell.payload) != 4:
+                raise ProtocolError("relay flow-control update is invalid")
+            stream._add_credit(int.from_bytes(cell.payload, "big"))
+        elif cell.cell_type is CellType.CLOSE:
+            if cell.payload:
+                raise ProtocolError("relay CLOSE cell has a payload")
+            stream._remote_close()
+        elif cell.cell_type is CellType.RESET:
+            if cell.payload:
+                raise ProtocolError("relay RESET cell has a payload")
+            stream._remote_close(reset=True)
+        else:
+            raise ProtocolError("relay cell state is invalid")
         if cell.cell_type is CellType.OPEN and not cell.flags & CELL_FLAG_ACK:
             self._send(
                 CellType.OPEN,
@@ -713,6 +777,14 @@ class CellMultiplexer:
         for stream in streams:
             stream._fail(ProtocolError("relay multiplexer closed"))
         self.channel.destroy()
+        # On Linux, close alone does not wake a reader already blocked in recv.
+        # Only this multiplexer owns the physical socket; virtual streams keep
+        # their own close semantics without shutting down a shared connection.
+        if isinstance(self.channel.connection, socket.socket):
+            try:
+                self.channel.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         try:
             self.channel.connection.close()
         except OSError:

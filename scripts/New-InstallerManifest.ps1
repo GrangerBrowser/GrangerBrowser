@@ -46,7 +46,11 @@ if ([int]$metadata.SchemaVersion -ne 2 -or
     [string]$metadata.TorVersion -ne '0.4.9.11' -or
     -not [bool]$metadata.TorSignatureVerified -or
     [string]$metadata.LyrebirdVersion -ne '0.8.1' -or
-    [string]$metadata.I2pVersion -ne '2.61.0') {
+    [string]$metadata.I2pVersion -ne '2.61.0' -or
+    [string]$metadata.I2pArchiveSHA256 -ne 'AFEA2C34A8FDBE36DF5AFAAACE79CEB0B45898B9EF9011946E3A692F8F318099' -or
+    [string]$metadata.I2pExecutableSHA256 -ne '96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591' -or
+    -not [bool]$metadata.I2pReproducibleBuild -or
+    -not [bool]$metadata.I2pBuildPathMapped) {
     throw "Portable deployment metadata does not describe the validated private-network runtimes."
 }
 $expectedArchiveName = "Granger-Browser-v$version-windows-x64.zip"

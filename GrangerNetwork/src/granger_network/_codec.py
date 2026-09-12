@@ -62,16 +62,27 @@ def parse_json_object(content: str) -> dict[str, Any]:
 
 
 def atomic_write_text(path: Path, content: str, mode: int = 0o600) -> None:
+    atomic_write_bytes(path, content.encode("utf-8"), mode)
+
+
+def atomic_write_bytes(path: Path, content: bytes, mode: int = 0o600) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
+        with os.fdopen(descriptor, "wb") as output:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        if os.name != "nt":
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory = os.open(path.parent, directory_flags)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     except Exception:
         try:
             temporary.unlink(missing_ok=True)

@@ -1,19 +1,19 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = "output/granger-node-linux",
-    [string]$WheelCache = "output/granger-node-wheel-cache",
+    [string]$OutputDirectory = "build/node-package/granger-node-linux",
+    [string]$WheelCache = "build/dependency-cache/granger-node-wheels",
     [string]$Python = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "output"))
+$outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "build"))
 $destination = [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory))
 $cache = [IO.Path]::GetFullPath((Join-Path $projectRoot $WheelCache))
 foreach ($path in @($destination, $cache)) {
     if (-not $path.StartsWith($outputRoot + [IO.Path]::DirectorySeparatorChar,
             [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Granger node package path escaped output: $path"
+        throw "Granger node package path escaped build: $path"
     }
 }
 if ([string]::IsNullOrWhiteSpace($Python)) {
@@ -56,15 +56,16 @@ foreach ($spec in $wheelSpecs) {
     }
 }
 
-$staging = Join-Path $outputRoot (".granger-node-linux-staging-" + $PID)
+$staging = Join-Path (Split-Path -Parent $destination) (".granger-node-staging-" + [Guid]::NewGuid().ToString('N'))
 foreach ($target in @($staging, $destination)) {
     $full = [IO.Path]::GetFullPath($target)
     if (-not $full.StartsWith($outputRoot + [IO.Path]::DirectorySeparatorChar,
             [StringComparison]::OrdinalIgnoreCase)) {
         throw "Unsafe package target: $full"
     }
-    if ([IO.Directory]::Exists($full)) { [IO.Directory]::Delete($full, $true) }
+    if (Test-Path -LiteralPath $full) { throw "Package target already exists: $full" }
 }
+try {
 New-Item -ItemType Directory -Path $staging -Force | Out-Null
 $template = Join-Path $projectRoot "GrangerNetwork/operator/linux"
 Copy-Item -Path (Join-Path $template "*") -Destination $staging -Recurse -Force
@@ -176,3 +177,13 @@ $measure = Get-ChildItem -LiteralPath $destination -Recurse -File | Measure-Obje
     PhysicalLinuxStart = "UNVERIFIED"
     PublicWan = "UNVERIFIED"
 } | ConvertTo-Json
+} finally {
+    if (Test-Path -LiteralPath $staging) {
+        $resolved = [IO.Path]::GetFullPath($staging)
+        if (-not $resolved.StartsWith($outputRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($resolved) -notmatch '^\.granger-node-staging-[0-9a-f]{32}$') {
+            throw 'Unsafe node staging cleanup path.'
+        }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+}

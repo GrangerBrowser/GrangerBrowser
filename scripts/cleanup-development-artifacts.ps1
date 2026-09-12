@@ -2,6 +2,7 @@
 param(
     [switch]$Apply,
     [switch]$IncludeBuild,
+    [switch]$IncludeReleaseStaging,
     [string]$Report = "output/cleanup-development-artifacts.json"
 )
 
@@ -9,6 +10,8 @@ $ErrorActionPreference = "Stop"
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "output"))
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "build"))
+$releaseRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "release"))
+$canonicalRelease = [IO.Path]::GetFullPath((Join-Path $releaseRoot "Granger Browser"))
 $reportPath = [IO.Path]::GetFullPath((Join-Path $projectRoot $Report))
 
 $protectedOutputNames = @(
@@ -24,6 +27,22 @@ $protectedOutputNames = @(
 
 $generatedPatterns = @(
     "^test-roots$",
+    "^hosting-forensics$",
+    "^hosting-fixed$",
+    "^hosting-lifecycle-baseline$",
+    "^release-candidate$",
+    "^release-rollbacks$",
+    "^release-backups$",
+    "^wan-config-recovery$",
+    "^self-sustaining-overlay$",
+    "^installer-standalone-check$",
+    "^ai-context$",
+    "^\.granger-node-linux-staging-\d+$",
+    "^operator-wheel-probe$",
+    "^final-verification-[0-9a-f]+$",
+    "^wan-process-recovery-",
+    "^physical-browser-wan-",
+    "^hosting-runtime-repro-",
     "^remote-",
     "^superseded-",
     "^local-v0",
@@ -45,6 +64,13 @@ $generatedPatterns = @(
     "simulation"
 )
 
+$releaseGeneratedPatterns = @(
+    "^\.local-staging$",
+    "^\.local-previous-",
+    "^\.wan-generation",
+    "^(local-build-report|build-report)\.json$"
+)
+
 function Get-PathUsage([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force
     if (-not $item.PSIsContainer) {
@@ -58,20 +84,24 @@ function Get-PathUsage([string]$Path) {
 function Assert-SafeCandidate([string]$Path) {
     $resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\')
     $outputPrefix = $outputRoot.TrimEnd('\') + '\'
+    $releasePrefix = $releaseRoot.TrimEnd('\') + '\'
+    $canonicalReleasePrefix = $canonicalRelease.TrimEnd('\') + '\'
     $insideOutput = $resolved.StartsWith($outputPrefix, [StringComparison]::OrdinalIgnoreCase)
+    $insideRelease = $resolved.StartsWith($releasePrefix, [StringComparison]::OrdinalIgnoreCase)
+    $insideCanonicalRelease = $resolved.Equals(
+        $canonicalRelease.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) -or
+        $resolved.StartsWith($canonicalReleasePrefix, [StringComparison]::OrdinalIgnoreCase)
     $isBuild = $resolved.Equals($buildRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
     $isOldArchive = $resolved.Equals(
         [IO.Path]::GetFullPath((Join-Path $projectRoot "Granger-Browser-Windows-x64.zip")),
         [StringComparison]::OrdinalIgnoreCase)
-    if (-not ($insideOutput -or $isBuild -or $isOldArchive)) {
+    if (-not ($insideOutput -or $insideRelease -or $isBuild -or $isOldArchive)) {
         throw "Cleanup candidate escaped the generated roots: $resolved"
     }
     if ($resolved.Equals($outputRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove the complete output root"
     }
-    if ($resolved.StartsWith(
-            [IO.Path]::GetFullPath((Join-Path $projectRoot "release")).TrimEnd('\') + '\',
-            [StringComparison]::OrdinalIgnoreCase)) {
+    if ($insideCanonicalRelease) {
         throw "Refusing to remove the canonical release"
     }
     return $resolved
@@ -106,6 +136,29 @@ if ($IncludeBuild -and (Test-Path -LiteralPath $buildRoot)) {
         Path = Assert-SafeCandidate $buildRoot
         Bytes = $usage.Bytes
         Files = $usage.Files
+    }
+}
+
+if ($IncludeReleaseStaging -and (Test-Path -LiteralPath $releaseRoot)) {
+    foreach ($item in Get-ChildItem -LiteralPath $releaseRoot -Force) {
+        if ($item.FullName.Equals($canonicalRelease, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $generated = $false
+        foreach ($pattern in $releaseGeneratedPatterns) {
+            if ($item.Name -match $pattern) {
+                $generated = $true
+                break
+            }
+        }
+        if (-not $generated) { continue }
+        $usage = Get-PathUsage $item.FullName
+        $candidates += [pscustomobject]@{
+            Category = "RELEASE_STAGING"
+            Path = Assert-SafeCandidate $item.FullName
+            Bytes = $usage.Bytes
+            Files = $usage.Files
+        }
     }
 }
 

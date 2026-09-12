@@ -11,11 +11,17 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
 
 NETWORK_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = NETWORK_ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+from acceptance_diagnostics import capture, run_traced
+
 SOURCE_ROOT = NETWORK_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
@@ -195,7 +201,20 @@ def start_child(
     return ChildProcess(name, process, stdout_path, stderr_path, stdout, stderr)
 
 
+def capture_wait_timeout(child: ChildProcess, started: float, start_utc: str) -> None:
+    directory = os.environ.get("GRANGER_ACCEPTANCE_TRACE_DIR", "")
+    if not directory:
+        return
+    try:
+        root = Path(directory)
+        capture(root, root / "qt.json", child.process.pid, "deadline", started, start_utc)
+    except (OSError, ValueError):
+        print("acceptance diagnostic capture unavailable", file=sys.stderr, flush=True)
+
+
 def wait_json(path: Path, child: ChildProcess, timeout: float) -> dict:
+    started = time.monotonic()
+    start_utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -211,6 +230,7 @@ def wait_json(path: Path, child: ChildProcess, timeout: float) -> dict:
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 last_error = error
         time.sleep(0.05)
+    capture_wait_timeout(child, started, start_utc)
     suffix = f": {last_error}" if last_error is not None else ""
     raise AcceptanceError(f"timed out waiting for {child.name} readiness{suffix}")
 
@@ -252,9 +272,12 @@ def wait_status(
 
 
 def wait_exit(child: ChildProcess, timeout: float) -> int:
+    started = time.monotonic()
+    start_utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     try:
         return child.process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        capture_wait_timeout(child, started, start_utc)
         raise AcceptanceError(f"{child.name} did not exit within {timeout:.0f}s") from error
 
 
@@ -346,7 +369,7 @@ def initialize_topology(root: Path) -> tuple[list[NodeDescriptor], dict[str, Pat
         ("access-d", ("access",)),
         ("access-e", ("access",)),
         ("access-f", ("access",)),
-        ("client-entry-a", ("entry",)),
+        ("client-entry-a", ("discovery", "entry")),
         ("client-entry-b", ("entry",)),
         ("middle-a", ("middle",)),
         ("middle-b", ("middle",)),
@@ -412,6 +435,8 @@ def run_acceptance(
     expect_packaged_runtime: bool = False,
     hosting_source: Path | None = None,
     hosting_entry_page: str = "",
+    expired_wan_config: bool = False,
+    trace_hosting: bool = False,
 ) -> dict:
     root = Path(root).resolve()
     report_path = Path(report_path).resolve()
@@ -444,6 +469,7 @@ def run_acceptance(
         bootstrap = BootstrapSet.create(
             authority,
             [descriptors_by_name[f"bootstrap-{letter}"] for letter in "abc"],
+            generation=2 if expired_wan_config else 1,
             lifetime=24 * 60 * 60,
         )
         bootstrap_path = root / "bootstrap-set.json"
@@ -457,11 +483,39 @@ def run_acceptance(
             config_authority,
             bootstrap_path,
             authority_pin_path,
-            generation=1,
+            generation=2 if expired_wan_config else 1,
             issued_at=int(time.time()),
             expires_at=bootstrap.expires_at,
             replication_factor=6,
         )
+        shipped_config_path = browser_config_path
+        if expired_wan_config:
+            old_root = root / "expired-bundle"
+            old_root.mkdir()
+            old_issued = int(time.time()) - 7200
+            old_peers = []
+            for letter in "abc":
+                state = state_paths[f"bootstrap-{letter}"]
+                descriptor = descriptors_by_name[f"bootstrap-{letter}"]
+                old_peers.append(NodeDescriptor.create(
+                    ServiceIdentity.load(state / "node-identity.json"), descriptor.endpoint,
+                    descriptor.capabilities, descriptor.relay_policy,
+                    issued_at=old_issued, lifetime=3600,
+                ))
+            old_bootstrap = BootstrapSet.create(authority, old_peers, generation=1,
+                                                issued_at=old_issued, lifetime=3600)
+            old_path = old_root / "bootstrap-set.json"
+            atomic_write_text(old_path, old_bootstrap.to_json())
+            old_pin = old_root / "bootstrap-authority.pin"
+            atomic_write_text(old_pin, authority_pin_path.read_text(encoding="ascii"))
+            shipped_config_path = old_root / "browser-wan.json"
+            write_signed_browser_wan_config(
+                shipped_config_path, config_authority, old_path, old_pin,
+                generation=1, issued_at=old_issued, expires_at=old_issued + 3500,
+                replication_factor=6,
+            )
+            report["wanConfigRecovery"] = {"initialGeneration": 1, "initialExpired": True,
+                                           "availableGeneration": 2, "authorityReplaced": False}
 
         descriptor_paths = [state / NODE_DESCRIPTOR_FILE for state in state_paths.values()]
         node_ready: dict[str, dict] = {}
@@ -484,6 +538,9 @@ def run_acceptance(
             ]
             for descriptor_path in descriptor_paths:
                 command.extend(("--peer-descriptor", str(descriptor_path)))
+            if expired_wan_config:
+                command.extend(("--wan-config-publication", str(browser_config_path),
+                                "--wan-config-trust-anchor", str(browser_trust_anchor)))
             child = start_child(root, name, command, role=f"node:{name}")
             children.append(child)
             node_children[name] = child
@@ -776,6 +833,8 @@ def run_acceptance(
             browser_environment["GRANGER_CACHE_ROOT"] = str(root / "browser-cache")
             browser_environment["GRANGER_SETTINGS_ROOT"] = str(root / "browser-settings")
             browser_environment["GRANGER_DOWNLOAD_ROOT"] = str(root / "browser-downloads")
+            if expired_wan_config and os.name == "nt":
+                browser_environment["GRANGER_SMOKE_WORKER_RECOVERY"] = "1"
             if expect_packaged_runtime:
                 packaged_browser_environment(browser_environment)
             elif qt_bin is not None:
@@ -786,7 +845,7 @@ def run_acceptance(
                 str(browser),
                 "--smoke-granger-network-wan",
                 f"--smoke-output={browser_output}",
-                f"--granger-network-wan-bundle={browser_config_path}",
+                f"--granger-network-wan-bundle={shipped_config_path}",
                 f"--granger-network-wan-trust-anchor={browser_trust_anchor}",
                 f"--granger-network-wan-install-root={browser_install_root}",
                 f"--granger-network-wan-rollback-state={browser_rollback_state}",
@@ -821,6 +880,11 @@ def run_acceptance(
                 "stderr": browser_completed.stderr[-4000:],
                 "stdout": browser_completed.stdout[-4000:],
             }
+            if expired_wan_config:
+                pointer = json.loads((browser_install_root / "active.json").read_text())
+                report["wanConfigRecovery"]["browserInstalledGeneration"] = pointer["generation"]
+                if pointer["generation"] != 2:
+                    raise AcceptanceError("browser did not recover the expired signed WAN config")
             atomic_write_text(
                 root / "browser-process.json",
                 json.dumps(
@@ -866,7 +930,7 @@ def run_acceptance(
                     str(browser),
                     "--smoke-granger-hosting",
                     f"--smoke-output={hosting_output}",
-                    f"--granger-network-wan-bundle={browser_config_path}",
+                    f"--granger-network-wan-bundle={shipped_config_path}",
                     f"--granger-network-wan-trust-anchor={browser_trust_anchor}",
                     f"--granger-network-wan-install-root={hosting_install_root}",
                     f"--granger-network-wan-rollback-state={hosting_rollback_state}",
@@ -881,16 +945,20 @@ def run_acceptance(
                             f"--granger-network-python={sys.executable}",
                         )
                     )
-                hosting_completed = subprocess.run(
-                    hosting_command,
-                    cwd=root,
-                    env=hosting_environment,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    check=False,
-                )
+                if trace_hosting:
+                    trace_directory = root / "hosting-stage-traces"
+                    hosting_environment["GRANGER_ACCEPTANCE_TRACE_DIR"] = str(trace_directory)
+                    hosting_completed = run_traced(
+                        hosting_command, cwd=root, env=hosting_environment,
+                        directory=trace_directory,
+                        qt_path=Path(str(hosting_output) + ".stages.json"), timeout=300,
+                    )
+                else:
+                    hosting_completed = subprocess.run(
+                        hosting_command, cwd=root, env=hosting_environment,
+                        stdin=subprocess.DEVNULL, capture_output=True,
+                        text=True, timeout=300, check=False,
+                    )
                 if hosting_output.is_file():
                     hosting_browser_result = json.loads(
                         hosting_output.read_text(encoding="utf-8")
@@ -911,6 +979,11 @@ def run_acceptance(
                     "stderr": hosting_completed.stderr[-4000:],
                     "stdout": hosting_completed.stdout[-4000:],
                 }
+                if expired_wan_config:
+                    pointer = json.loads((hosting_install_root / "active.json").read_text())
+                    report["wanConfigRecovery"]["hostingInstalledGeneration"] = pointer["generation"]
+                    if pointer["generation"] != 2:
+                        raise AcceptanceError("hosting did not recover the expired signed WAN config")
                 atomic_write_text(
                     root / "browser-hosting-process.json",
                     json.dumps(
@@ -1157,10 +1230,12 @@ def run_acceptance(
         descriptors_by_id = {
             descriptor.node_id: descriptor for descriptor in descriptors_by_name.values()
         }
-        all_client_entry_ports = {
+        guard_only_ports = {
             descriptor.endpoint.port
             for descriptor in descriptors_by_name.values()
             if "entry" in descriptor.capabilities
+            and "discovery" not in descriptor.capabilities
+            and "access" not in descriptor.capabilities
         }
         all_access_ports = {
             descriptor.endpoint.port
@@ -1251,6 +1326,17 @@ def run_acceptance(
                 and browser_result.get("runtime", {}).get("gatewayMode") == "wan"
                 and browser_result.get("runtime", {}).get("dnsRequests") == 0
             ),
+            "browserPeerActive": browser is None
+            or (
+                browser_result.get("runtime", {})
+                .get("networkHealth", {})
+                .get("browserPeer", {})
+                .get("activeAdjacencies", 0) >= 1
+                and browser_result.get("runtime", {})
+                .get("networkHealth", {})
+                .get("browserPeer", {})
+                .get("registrations", 0) >= 1
+            ),
             "browserHostingIntegration": browser is None
             or hosting_source is None
             or (
@@ -1296,8 +1382,10 @@ def run_acceptance(
             and initial_host_ready["pid"] != host_ready["pid"],
             "hostConnectedOnlyToBootstrapAccessAndBackend": bool(host_ports)
             and host_ports.issubset(allowed_host_ports),
-            "hostDidNotConnectToClientEntry": host_ports.isdisjoint(
-                all_client_entry_ports
+            # A mixed discovery/entry node is a permitted authenticated first
+            # contact. A pure guard must never receive a host's direct socket.
+            "hostDidNotConnectToGuardOnlyPeer": bool(guard_only_ports) and host_ports.isdisjoint(
+                guard_only_ports
             ),
             "hostingConnectedOnlyToOverlayNodes": hosting_source is None
             or (
@@ -1470,6 +1558,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-packaged-runtime", action="store_true")
     parser.add_argument("--hosting-source", type=Path)
     parser.add_argument("--hosting-entry-page", default="")
+    parser.add_argument("--expired-wan-config", action="store_true")
+    parser.add_argument("--trace-hosting", action="store_true")
     parser.add_argument("--keep-work-dir", action="store_true")
     options = parser.parse_args(argv)
     try:
@@ -1487,6 +1577,8 @@ def main(argv: list[str] | None = None) -> int:
                 options.hosting_source.resolve() if options.hosting_source is not None else None
             ),
             hosting_entry_page=options.hosting_entry_page,
+            expired_wan_config=options.expired_wan_config,
+            trace_hosting=options.trace_hosting,
         )
     except Exception as error:
         print(f"wan-process-acceptance: {type(error).__name__}: {error}", file=sys.stderr)

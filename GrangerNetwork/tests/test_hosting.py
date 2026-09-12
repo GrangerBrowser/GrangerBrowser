@@ -658,6 +658,7 @@ class HostedServiceStorageTests(unittest.TestCase):
         config_path = services / identifier / CONFIG_FILE
         document = json.loads(config_path.read_text(encoding="utf-8"))
         document.pop("entryPage")
+        document.pop("visibility")
         document["version"] = 1
         config_path.write_text(json.dumps(document), encoding="utf-8")
         loaded, _identity, _descriptor = load_hosted_service(services / identifier)
@@ -726,6 +727,14 @@ class HostedServiceStorageTests(unittest.TestCase):
         thread.start()
         try:
             port = int(backend.server_address[1])
+            availability = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            try:
+                availability.settimeout(1.0)
+                availability.connect(("::1", port, 0, 0))
+            except OSError as error:
+                self.skipTest(f"IPv6 loopback connect is unavailable: {error}")
+            finally:
+                availability.close()
             target = probe_loopback_application(f"http://[::1]:{port}")
             self.assertEqual(target.host, "::1")
         finally:

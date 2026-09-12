@@ -74,6 +74,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <thread>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -619,6 +620,47 @@ int runFeatureSmokeTests(QApplication &app,
                            && containers.space(researchId).lastActiveTabId == stableTabId
                            && AppPaths::containerRoot(researchId) == researchRoot,
                        error);
+#ifdef Q_OS_WIN
+        const QString configurationPath = AppPaths::stateFile(QStringLiteral("containers.json"));
+        const auto readConfiguration = [&configurationPath] {
+            QFile file(configurationPath);
+            return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+        };
+        const auto holdConfiguration = [&configurationPath] {
+            return CreateFileW(QDir::toNativeSeparators(configurationPath).toStdWString().c_str(),
+                               GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        };
+        const HANDLE transientReader = holdConfiguration();
+        bool transientSaved = false;
+        error.clear();
+        if (transientReader != INVALID_HANDLE_VALUE) {
+            std::thread releaseReader([transientReader] {
+                QThread::msleep(40);
+                CloseHandle(transientReader);
+            });
+            transientSaved = containers.renameContainer(researchId, QStringLiteral("Research"), &error);
+            releaseReader.join();
+        }
+        results.record(QStringLiteral("container atomic save tolerates a transient Windows reader"),
+                       transientSaved, error);
+        const QByteArray configurationBefore = readConfiguration();
+        const QString nameBefore = containers.container(researchId).name;
+        const HANDLE persistentReader = holdConfiguration();
+        bool blockedSaved = true;
+        error.clear();
+        QElapsedTimer blockedSaveTimer;
+        blockedSaveTimer.start();
+        if (persistentReader != INVALID_HANDLE_VALUE) {
+            blockedSaved = containers.renameContainer(researchId, QStringLiteral("Blocked rename"), &error);
+            CloseHandle(persistentReader);
+        }
+        results.record(QStringLiteral("a persistent Windows reader preserves container disk and model state"),
+                       !blockedSaved && !error.isEmpty() && blockedSaveTimer.elapsed() < 1000
+                           && !configurationBefore.isEmpty() && readConfiguration() == configurationBefore
+                           && containers.container(researchId).name == nameBefore,
+                       error);
+#endif
         results.record(QStringLiteral("unknown legacy container icons use the neutral fallback"),
                        disposableCreated
                            && containers.container(disposableId).icon

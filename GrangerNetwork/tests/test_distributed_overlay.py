@@ -192,12 +192,13 @@ class DistributedOverlayTests(unittest.TestCase):
             issued_at=self.now,
             lifetime=1,
         )
-        expiring_node = GrangerNode(
-            identity,
-            expiring_descriptor,
-            policy,
-            monotonic=lambda: monotonic_time[0],
-        )
+        with patch("granger_network.peer.time.time", return_value=self.now):
+            expiring_node = GrangerNode(
+                identity,
+                expiring_descriptor,
+                policy,
+                monotonic=lambda: monotonic_time[0],
+            )
         with (
             patch("granger_network.peer.time.time", return_value=self.now + 2),
             self.assertRaisesRegex(DescriptorError, "expired"),

@@ -199,13 +199,20 @@ class SignedWanConfigTests(unittest.TestCase):
             now=self.now,
         )
         self.write_config(1)
+        # A stale application bundle must not prevent loading a newer installed
+        # generation; importing the stale object itself still rejects rollback.
+        self.assertEqual(load_browser_wan_config(
+            ensure_browser_wan_config(self.config_path, self.trust_anchor,
+                                      self.install_root, self.rollback_state, now=self.now),
+            trust_anchor_path=self.trust_anchor, now=self.now, allow_legacy=False,
+        ).generation, 2)
         with self.assertRaisesRegex(DiscoveryError, "rollback"):
-            ensure_browser_wan_config(
+            load_browser_wan_config(
                 self.config_path,
-                self.trust_anchor,
-                self.install_root,
-                self.rollback_state,
+                trust_anchor_path=self.trust_anchor,
+                rollback_state_path=self.rollback_state,
                 now=self.now,
+                allow_legacy=False,
             )
 
         self.write_config(2, timeout_seconds=7.0)
@@ -218,7 +225,7 @@ class SignedWanConfigTests(unittest.TestCase):
                 now=self.now,
             )
 
-    def test_newer_generation_replaces_active_config_and_prunes_old_bundle(self) -> None:
+    def test_newer_generation_replaces_active_config_and_retains_inflight_snapshot(self) -> None:
         first = ensure_browser_wan_config(
             self.config_path,
             self.trust_anchor,
@@ -235,7 +242,7 @@ class SignedWanConfigTests(unittest.TestCase):
             now=self.now,
         )
         self.assertNotEqual(first, second)
-        self.assertFalse(first.exists())
+        self.assertTrue(first.exists())
         self.assertEqual(
             load_browser_wan_config(
                 second,

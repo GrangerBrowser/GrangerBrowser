@@ -690,3 +690,28 @@ class BootstrapPool:
             elif peer.issued_at > previous.issued_at:
                 selected[peer.node_id] = peer
         return tuple(selected[node_id] for node_id in order)
+
+
+class CachedPeerPool:
+    """Bootstrap-compatible transport view over authenticated persistent peers."""
+
+    def __init__(self, cache: PeerCache) -> None:
+        if not isinstance(cache, PeerCache):
+            raise DiscoveryError("cached peer pool requires a peer cache")
+        self.cache = cache
+        self.network_id = cache.network_id
+        self.protocol_version = cache.protocol_version
+
+    def candidates(
+        self,
+        capability: str,
+        now: int | None = None,
+    ) -> tuple[NodeDescriptor, ...]:
+        return self.cache.ranked(capability, now=now)
+
+    def seed_candidates(
+        self,
+        capability: str,
+        now: int | None = None,
+    ) -> tuple[NodeDescriptor, ...]:
+        return ()

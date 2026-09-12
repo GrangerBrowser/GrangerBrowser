@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from ._codec import canonical_json, decode_base64url, encode_base64url, parse_json_object
 from .address import is_canonical_name, normalize_name, service_id_from_public_key
 from .descriptor import ServiceDescriptor
-from .errors import AddressError, DescriptorError, ReplayError
+from .errors import AddressError, DescriptorError, ReplayError, ResourceLimitError
 from .identity import ServiceIdentity
 from .peer import validate_node_id
 from .protocol import VERSION_3
@@ -28,6 +28,8 @@ MAX_ALIAS_LIFETIME = 24 * 60 * 60
 MAX_INTRODUCTION_POINTS = 8
 MAX_RECORD_CLOCK_SKEW = 120
 MAX_RECORD_SEQUENCE = 2**64 - 1
+MAX_INTRODUCTION_REGISTRY_RECORDS = 4096
+MAX_INTRODUCTION_REPLAY_ENTRIES = 65536
 
 
 def service_descriptor_digest(
@@ -410,10 +412,40 @@ class AliasRecord:
 class IntroductionRegistry:
     """Introduction-point state with signed-record and request replay checks."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_records: int = MAX_INTRODUCTION_REGISTRY_RECORDS,
+        max_replay_entries: int = MAX_INTRODUCTION_REPLAY_ENTRIES,
+    ) -> None:
+        if (
+            isinstance(max_records, bool)
+            or not isinstance(max_records, int)
+            or not 1 <= max_records <= MAX_INTRODUCTION_REGISTRY_RECORDS
+            or isinstance(max_replay_entries, bool)
+            or not isinstance(max_replay_entries, int)
+            or not 1 <= max_replay_entries <= MAX_INTRODUCTION_REPLAY_ENTRIES
+        ):
+            raise ResourceLimitError("introduction registry limits are invalid")
+        self.max_records = max_records
+        self.max_replay_entries = max_replay_entries
         self._records: dict[str, IntroductionDescriptor] = {}
-        self._used_requests: set[tuple[str, str, bytes]] = set()
+        self._used_requests: dict[tuple[str, str, bytes], int] = {}
         self._lock = threading.Lock()
+
+    def _purge_locked(self, now: int) -> None:
+        expired = {
+            service_id
+            for service_id, record in self._records.items()
+            if record.expires_at <= now
+        }
+        for service_id in expired:
+            self._records.pop(service_id, None)
+        self._used_requests = {
+            entry: expires_at
+            for entry, expires_at in self._used_requests.items()
+            if expires_at > now and entry[0] not in expired
+        }
 
     def install(
         self,
@@ -421,8 +453,10 @@ class IntroductionRegistry:
         descriptor: ServiceDescriptor,
         now: int | None = None,
     ) -> None:
-        record.verify_for(descriptor, now=now)
+        current = int(time.time()) if now is None else now
+        record.verify_for(descriptor, now=current)
         with self._lock:
+            self._purge_locked(current)
             previous = self._records.get(record.service_id)
             if previous is not None:
                 if record.sequence < previous.sequence:
@@ -432,10 +466,12 @@ class IntroductionRegistry:
                 if record.sequence == previous.sequence:
                     return
                 self._used_requests = {
-                    entry
-                    for entry in self._used_requests
+                    entry: expires_at
+                    for entry, expires_at in self._used_requests.items()
                     if entry[0] != record.service_id
                 }
+            elif len(self._records) >= self.max_records:
+                raise ResourceLimitError("introduction registry record limit is exhausted")
             self._records[record.service_id] = record
 
     def authorize(
@@ -451,11 +487,13 @@ class IntroductionRegistry:
             raise DescriptorError("introduction authorization token is invalid")
         if not isinstance(request_nonce, bytes) or len(request_nonce) != 16:
             raise DescriptorError("introduction request nonce is invalid")
+        current = int(time.time()) if now is None else now
         with self._lock:
+            self._purge_locked(current)
             record = self._records.get(service_id)
             if record is None:
                 raise DescriptorError("service has no installed introduction descriptor")
-            record.verify(now=now)
+            record.verify(now=current)
             point = next(
                 (candidate for candidate in record.points if candidate.node_id == node_id),
                 None,
@@ -465,4 +503,6 @@ class IntroductionRegistry:
             replay_key = (service_id, node_id, request_nonce)
             if replay_key in self._used_requests:
                 raise ReplayError("introduction request nonce was replayed")
-            self._used_requests.add(replay_key)
+            if len(self._used_requests) >= self.max_replay_entries:
+                raise ResourceLimitError("introduction replay state limit is exhausted")
+            self._used_requests[replay_key] = record.expires_at

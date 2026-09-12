@@ -14,7 +14,9 @@ from unittest.mock import Mock, patch
 from granger_network.browser_gateway import CircuitRotationPolicy, _WanGateway
 from granger_network.circuit import CircuitBuilder
 from granger_network.descriptor import ServiceDescriptor
-from granger_network.errors import GrangerNetworkError, OverlayRoutingError, ProtocolError
+from granger_network.errors import (
+    GrangerNetworkError, IntroductionOfflineError, OverlayRoutingError, PeerRpcError, ProtocolError,
+)
 from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
 from granger_network.hosting import StaticSiteBridge
 from granger_network.identity import ServiceIdentity
@@ -23,7 +25,7 @@ from granger_network.node import WanNodeServer
 from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import PeerRole, RpcFrame, RpcType
 from granger_network.transport import RendezvousEndpoint
-from granger_network.wan_control import IntroductionRequest, encode_intro_request
+from granger_network.wan_control import IntroductionRequest, RendezvousGrant, RendezvousRegistration, encode_intro_request
 from granger_network.wan_client import connect_service
 from granger_network.wan_service import WanServiceClient, WanServiceHost
 
@@ -87,6 +89,119 @@ def available_port() -> int:
 
 
 class WanOperationTimeoutTests(unittest.TestCase):
+    def test_initial_host_circuits_overlap_and_close_on_failure_or_stop(self):
+        identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(identity, "startup-overlap", lifetime=1800)
+        roles = ("access", "service-relay", "middle", "introduction", "introduction", "rendezvous")
+        nodes = tuple(NodeDescriptor.create(
+            ServiceIdentity.generate(), RendezvousEndpoint("127.0.0.1", 24200 + index),
+            (role,), RelayPolicy(enabled=True), lifetime=3600,
+        ) for index, role in enumerate(roles))
+        introduction = IntroductionDescriptor.create(identity, service, [n.node_id for n in nodes[3:5]],
+                                                    sequence=1, lifetime=900)
+        prefix = tuple(zip(nodes[:3], roles[:3], strict=True))
+        for outcome in ("ready", "failed", "early-failed", "stopped"):
+            with self.subTest(outcome=outcome):
+                host = WanServiceHost(identity, service, introduction,
+                    tuple((*prefix, (n, "introduction")) for n in nodes[3:5]),
+                    (*prefix, (nodes[5], "rendezvous")), Mock())
+                barrier = threading.Barrier(3, timeout=1)
+                opened, workers = [], []
+
+                def open_route(route):
+                    workers.append(threading.current_thread())
+                    barrier.wait()
+                    if outcome == "failed" and route[-1][1] == "rendezvous":
+                        raise ProtocolError("controlled rendezvous build failure")
+                    if outcome == "early-failed" and route[-1][0] == nodes[3]:
+                        raise ProtocolError("controlled first introduction build failure")
+                    circuit = Mock(route=route)
+                    circuit.endpoint.remote.node_id = route[-1][0].node_id
+                    opened.append(circuit)
+                    if outcome == "stopped":
+                        host._stop.set()
+                    return circuit
+
+                def serve(_builder, *, initial_circuit=None):
+                    self.assertIsNotNone(initial_circuit)
+                    initial_circuit.close()
+                    host._stop.set()
+
+                with patch("granger_network.wan_service.CircuitBuilder") as builder, \
+                        patch.object(host, "_answer_introductions"), \
+                        patch.object(host, "_serve_rendezvous_session", side_effect=serve) as rendezvous:
+                    builder.return_value.open.side_effect = open_route
+                    host.start_background()
+                    self.assertTrue(host.wait(3), "startup worker was not joined")
+                    host.stop()
+                self.assertEqual(len(workers), 3)
+                self.assertTrue(all(not worker.is_alive() for worker in workers))
+                self.assertTrue(all(circuit.close.called for circuit in opened))
+                if outcome == "ready":
+                    self.assertFalse(host.errors)
+                    rendezvous.assert_called_once()
+                else:
+                    rendezvous.assert_not_called()
+
+    def test_host_grant_survives_one_second_sender_clock_lead(self):
+        receiver_now = int(time.time())
+        identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(identity, "clock-lead", lifetime=1800)
+        nodes = tuple(NodeDescriptor.create(
+            ServiceIdentity.generate(), RendezvousEndpoint("127.0.0.1", 24100 + index),
+            (role,), RelayPolicy(enabled=True), lifetime=3600,
+        ) for index, role in enumerate(("access", "service-relay", "middle", "introduction", "rendezvous")))
+        introduction = IntroductionDescriptor.create(identity, service, [nodes[3].node_id], sequence=1, lifetime=900)
+        prefix = tuple(zip(nodes[:3], ("access", "service-relay", "middle"), strict=True))
+        host = WanServiceHost(identity, service, introduction,
+                              (*prefix, (nodes[3], "introduction")),
+                              (*prefix, (nodes[4], "rendezvous")), Mock())
+        nonce = b"n" * 16
+        request = IntroductionRequest(service.service_id, introduction.points[0].token, nonce)
+        rpc = Mock()
+        rpc.receive.return_value = SimpleNamespace(
+            message_type=RpcType.INTRO_DELIVER, is_response=False, request_id=7,
+            payload=encode_intro_request(request),
+        )
+        replies = []
+
+        def send(message, payload, **kwargs):
+            self.assertEqual(message, RpcType.INTRO_DELIVER)
+            self.assertEqual(kwargs["request_id"], 7)
+            replies.append(payload)
+            host._stop.set()
+
+        rpc.send.side_effect = send
+        circuit = SimpleNamespace(endpoint=SimpleNamespace(
+            remote=SimpleNamespace(node_id=nodes[3].node_id), rpc=rpc,
+        ))
+        host._grant_slot = (b"c" * 32, receiver_now + 600)
+        with patch("granger_network.wan_service.time.time", return_value=receiver_now + 1):
+            host._answer_introductions(circuit)
+        self.assertEqual(len(replies), 1)
+        grant = RendezvousGrant.decode(replies[0], service, request_nonce=nonce, now=receiver_now)
+        self.assertLessEqual(grant.expires_at, receiver_now + 121)
+        from granger_network.errors import ReplayError
+        with self.assertRaises(ReplayError):
+            grant.verify(service, request_nonce=nonce, now=grant.expires_at)
+
+        class RegistrationVerified(BaseException):
+            pass
+
+        host._stop.clear()
+        prepared = Mock()
+        def register(message, payload, **_kwargs):
+            self.assertEqual(message, RpcType.RENDEZVOUS_REGISTER)
+            registration = RendezvousRegistration.decode(payload, now=receiver_now)
+            with self.assertRaises(ReplayError):
+                registration.verify(now=registration.expires_at)
+            raise RegistrationVerified()
+        prepared.endpoint.rpc.request.side_effect = register
+        with patch("granger_network.wan_service.time.time", return_value=receiver_now + 1):
+            with self.assertRaises(RegistrationVerified):
+                host._serve_rendezvous_session(Mock(), initial_circuit=prepared)
+        prepared.close.assert_called_once()
+
     def test_introduction_request_uses_the_configured_operation_timeout(self) -> None:
         identities = [ServiceIdentity.generate() for _ in range(4)]
         capabilities = (("access",), ("entry",), ("middle",), ("introduction",))
@@ -152,6 +267,34 @@ class WanOperationTimeoutTests(unittest.TestCase):
             with self.assertRaisesRegex(OverlayRoutingError, "introduction stage failed during request"):
                 client.connect(descriptors[3])
 
+        for error, terminal in (
+            (PeerRpcError("SERVICE_OFFLINE"), True),
+            (PeerRpcError("INTRODUCTION_BUSY"), False),
+            (ProtocolError("peer RPC request failed: SERVICE_OFFLINE"), False),
+        ):
+            circuit = FakeCircuit()
+            circuit.close = Mock()
+            circuit.endpoint = SimpleNamespace(
+                channel=SimpleNamespace(connection=connection),
+                rpc=SimpleNamespace(request=Mock(side_effect=error)),
+            )
+            with (
+                self.subTest(error=type(error).__name__, terminal=terminal),
+                patch("granger_network.wan_service.CircuitBuilder.open", return_value=circuit),
+                self.assertRaises(OverlayRoutingError) as caught,
+            ):
+                client.connect(descriptors[3])
+            self.assertEqual(isinstance(caught.exception, IntroductionOfflineError), terminal)
+            circuit.close.assert_called_once()
+
+        with (
+            patch("granger_network.wan_service.CircuitBuilder.open",
+                  side_effect=PeerRpcError("SERVICE_OFFLINE")),
+            self.assertRaises(OverlayRoutingError) as caught,
+        ):
+            client.connect(descriptors[3])
+        self.assertNotIsInstance(caught.exception, IntroductionOfflineError)
+
     def test_startup_failure_reports_every_identity_in_the_failed_route(self) -> None:
         identities = [ServiceIdentity.generate() for _ in range(5)]
         capabilities = (
@@ -212,8 +355,9 @@ class WanOperationTimeoutTests(unittest.TestCase):
                 side_effect=startup_error,
             ):
                 host.start_background()
-                with self.assertRaisesRegex(ProtocolError, "protocol-silent relay"):
+                with self.assertRaisesRegex(ProtocolError, "service-session:TimeoutError"):
                     host.wait_ready(1.0)
+            self.assertNotIn("protocol-silent relay", " ".join(host.errors))
             self.assertEqual(
                 host.startup_failed_route_ids,
                 frozenset(descriptor.node_id for descriptor in descriptors[:4]),
@@ -447,8 +591,9 @@ class WanServiceTests(unittest.TestCase):
                 patch.object(threading.Thread, "start", start_worker),
             ):
                 host.start_background()
-                with self.assertRaisesRegex(ProtocolError, "worker could not start"):
+                with self.assertRaisesRegex(ProtocolError, "service-session:ProtocolError"):
                     host.wait_ready(15)
+                self.assertNotIn("worker start failure", " ".join(host.errors))
                 self.assertFalse(host._pending_rendezvous)
                 self.assertIsNone(host._grant_slot)
         finally:
@@ -467,6 +612,9 @@ class WanServiceTests(unittest.TestCase):
         resolver = Mock()
         resolver.resolve.return_value = previous.service
         resolver.resolve_introduction.side_effect = [previous.introduction, introduction]
+        resolver.resolve_connection.side_effect = lambda name: (
+            resolver.resolve(name), resolver.resolve_introduction(previous.service),
+        )
         resolver.resolve_node.return_value = intro
         selector = Mock()
         selector.client_candidates.return_value = [SimpleNamespace(route=client.route_prefix)]
@@ -1095,7 +1243,7 @@ class WanServiceTests(unittest.TestCase):
                 time.sleep(0.05)
 
             self.assertTrue(host.recovery_requested)
-            self.assertTrue(host.recovery_reason.startswith("introduction:"))
+            self.assertRegex(host.recovery_reason, r"^introduction:[A-Za-z]+Error$")
             self.assertTrue(host.wait(5.0))
             self.assertEqual(host.errors, [])
         finally:

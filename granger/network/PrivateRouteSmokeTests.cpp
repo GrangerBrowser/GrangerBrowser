@@ -814,14 +814,15 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
     const bool firstVerified = started && waitForVerified(qMax(1000, timeoutMs));
     const I2pStatus firstStatus = manager.status();
 
-    const QString bootstrapPath = QDir(firstStatus.dataDirectory).filePath(QStringLiteral("hosts.txt"));
+    const QString bootstrapPath = QDir(firstStatus.dataDirectory).filePath(
+        QStringLiteral("addressbook/addresses.csv"));
     QFile bootstrapFile(bootstrapPath);
     QByteArray bootstrapContents;
     if (bootstrapFile.open(QIODevice::ReadOnly)) bootstrapContents = bootstrapFile.readAll();
     const bool bootstrapContainsExpectedNames =
-        bootstrapContents.contains(QByteArrayLiteral("i2p-projekt.i2p="))
-        && bootstrapContents.contains(QByteArrayLiteral("i2pforum.i2p="))
-        && bootstrapContents.contains(QByteArrayLiteral("notbob.i2p="));
+        bootstrapContents.contains(QByteArrayLiteral("i2p-projekt.i2p,"))
+        && bootstrapContents.contains(QByteArrayLiteral("i2pforum.i2p,"))
+        && bootstrapContents.contains(QByteArrayLiteral("notbob.i2p,"));
 
     GatewayAttempt externalB32;
     GatewayAttempt humanName;

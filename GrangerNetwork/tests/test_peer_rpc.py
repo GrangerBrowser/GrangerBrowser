@@ -7,12 +7,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from granger_network.bootstrap import BootstrapPool, BootstrapSet, PeerCache
 from granger_network.errors import (
     DiscoveryError,
     IdentityVerificationError,
+    PeerRpcError,
     ProtocolError,
     TransportPolicyError,
 )
@@ -21,6 +22,9 @@ from granger_network.peer import NodeDescriptor, RelayPolicy
 from granger_network.peer_rpc import (
     MAX_SINGLE_CONNECT_ATTEMPT_SECONDS,
     PeerRole,
+    PeerRpcSession,
+    RPC_FLAG_ERROR,
+    RPC_FLAG_RESPONSE,
     RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcFrame,
     RpcType,
@@ -30,6 +34,7 @@ from granger_network.peer_rpc import (
     connect_authenticated_peer,
     decode_rpc_frame,
     encode_rpc_frame,
+    encode_error,
 )
 from granger_network.transport import RendezvousEndpoint
 
@@ -69,6 +74,67 @@ def make_descriptor(
 
 
 class PeerRpcTests(unittest.TestCase):
+    def test_remote_error_keeps_code_only_after_request_correlation(self) -> None:
+        request_id = b"a" * 16
+        session = PeerRpcSession.__new__(PeerRpcSession)
+        session.send = Mock(return_value=request_id)
+        response = RpcFrame(
+            RpcType.ERROR, RPC_FLAG_RESPONSE | RPC_FLAG_ERROR, request_id, 0,
+            encode_error("SERVICE_OFFLINE"),
+        )
+        session.receive = Mock(return_value=response)
+        with self.assertRaises(PeerRpcError) as caught:
+            session.request(RpcType.INTRO_REQUEST, expected=RpcType.INTRO_REQUEST)
+        self.assertEqual(caught.exception.code, "SERVICE_OFFLINE")
+        session.receive.return_value = RpcFrame(
+            response.message_type, response.flags, b"b" * 16, 0, response.payload,
+        )
+        with self.assertRaises(ProtocolError) as caught:
+            session.request(RpcType.INTRO_REQUEST, expected=RpcType.INTRO_REQUEST)
+        self.assertNotIsInstance(caught.exception, PeerRpcError)
+        session.receive.return_value = RpcFrame(
+            response.message_type, response.flags, request_id, 0, response.payload + b"extra",
+        )
+        with self.assertRaises(PeerRpcError) as caught:
+            session.request(RpcType.INTRO_REQUEST, expected=RpcType.INTRO_REQUEST)
+        self.assertEqual(caught.exception.code, "REMOTE_ERROR")
+
+    def test_authenticated_tcp_disables_nagle_on_both_ends(self) -> None:
+        identity = ServiceIdentity.generate()
+        finished = threading.Event()
+        errors = []
+        server_options = []
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(5)
+            descriptor = make_descriptor(identity, listener.getsockname()[1])
+            def serve():
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(5)
+                        peer = authenticate_server_stream(connection, identity, descriptor)
+                        server_options.append(connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+                        finished.wait(5)
+                        peer.close()
+                except Exception as error:
+                    errors.append(type(error).__name__)
+            worker = threading.Thread(target=serve)
+            worker.start()
+            try:
+                peer = connect_authenticated_peer(descriptor, ServiceIdentity.generate(), PeerRole.CLIENT, timeout=5)
+                try:
+                    self.assertEqual(peer.channel.connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY), 1)
+                finally:
+                    peer.close()
+            finally:
+                finished.set()
+                worker.join(6)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(errors)
+            self.assertEqual(server_options, [1])
+
     def test_pinned_peer_rejects_descriptor_rollback_equivocation_and_policy_changes(self) -> None:
         relay_identity = ServiceIdentity.generate()
         now = int(time.time())

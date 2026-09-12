@@ -2,10 +2,11 @@
 
 Granger Browser is a native C++20/Qt 6 application. Windows is the public
 release target. A native Linux x86_64 AppImage target is available as a local
-RC build and does not use Wine. Public Windows and Linux packages do not invoke
-Python at runtime. The canonical local Windows build additionally carries an
-isolated app-local Python runtime for the experimental Granger Network browser
-integration; no system Python or developer environment is used at runtime.
+RC build and does not use Wine. The base Windows deployment excludes Python.
+The local Windows build and current Linux packaging script additionally carry
+an isolated app-local Python runtime for experimental Granger Network browser
+integration; a system Python or source checkout must not be needed at runtime.
+This describes packaging policy, not acceptance of a particular artifact.
 
 ## Windows requirements
 
@@ -38,13 +39,21 @@ is a build-time gate.
 
 ## I2P Packaging Input
 
-`scripts/fetch-i2p-runtime.ps1` stages the official PurpleI2P i2pd 2.61.0
-Windows x64 MinGW release under ignored `output/` storage. The script accepts
-only the pinned upstream asset and verifies SHA-256
-`A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F`
-before extracting `i2pd.exe` and its certificate bundle. End users do not need
-Java or a separate I2P installation. Source metadata and BSD-3-Clause terms are
-tracked under `third_party/i2pd/`.
+`scripts/fetch-i2p-runtime.ps1` stages i2pd 2.61.0 from the pinned PurpleI2P
+source archive under ignored `build/dependency-cache/` storage. It verifies
+source SHA-256
+`AFEA2C34A8FDBE36DF5AFAAACE79CEB0B45898B9EF9011946E3A692F8F318099`
+and builds commit `635b013a612ff47278ef02acf8580a28e10e26c5` as an x64 static
+MSVC runtime. The release profile pins vcpkg `2026.07.29`, Boost 1.91.0,
+OpenSSL 3.6.3, zlib 1.3.2, and `/Brepro`; two independent build roots produce
+`i2pd.exe` SHA-256
+`96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591`.
+The custom release-only triplet applies MSVC deterministic path mapping to
+i2pd and every static dependency so local build-machine paths cannot enter the
+packaged executable.
+The reseed certificates come from the same pinned source tree. End users do
+not need Java, Visual Studio, or a separate I2P installation. Source metadata
+and BSD-3-Clause terms are tracked under `third_party/i2pd/`.
 
 ## Canonical local release
 

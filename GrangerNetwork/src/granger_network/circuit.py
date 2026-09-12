@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import secrets
 from dataclasses import dataclass
 
@@ -12,7 +14,7 @@ from .cells import (
 )
 from .errors import OverlayRoutingError, ProtocolError
 from .identity import ServiceIdentity
-from .peer import CIRCUIT_CAPABILITIES, NodeDescriptor
+from .peer import CIRCUIT_CAPABILITIES, NodeDescriptor, node_supports_route_role
 from .peer_rpc import (
     AuthenticatedPeer,
     PeerRole,
@@ -95,7 +97,7 @@ def decode_extend_circuit(content: bytes) -> CircuitExtendRequest:
     except UnicodeDecodeError as error:
         raise ProtocolError("circuit node descriptor is not ASCII") from error
     reader.finish()
-    if next_role not in descriptor.capabilities or descriptor.reachability != "reachable":
+    if not node_supports_route_role(descriptor, next_role):
         raise OverlayRoutingError("next circuit node did not advertise the requested role")
     if incoming == outgoing:
         raise OverlayRoutingError("adjacent circuit identifiers must be independent")
@@ -124,6 +126,7 @@ class BuiltCircuit:
     def all_cells_fixed_size(self) -> bool:
         return bool(self.multiplexers)
 
+    @traced("circuit-teardown")
     def close(self) -> None:
         if self._closed:
             return
@@ -175,6 +178,7 @@ class CircuitBuilder:
             raise OverlayRoutingError("circuit identity factory returned an invalid identity")
         return identity
 
+    @traced("circuit-construction")
     def open(
         self,
         route: list[tuple[NodeDescriptor, str]] | tuple[tuple[NodeDescriptor, str], ...],
@@ -183,11 +187,23 @@ class CircuitBuilder:
         if len(normalized) < 2:
             raise OverlayRoutingError("private WAN circuit requires at least two relay nodes")
         node_ids: set[str] = set()
-        for descriptor, role in normalized:
+        for index, (descriptor, role) in enumerate(normalized):
             descriptor.verify()
             _validate_role(role)
-            if role not in descriptor.capabilities or descriptor.reachability != "reachable":
+            previous_node_id = normalized[index - 1][0].node_id if index else None
+            if not node_supports_route_role(
+                descriptor,
+                role,
+                previous_node_id=previous_node_id,
+            ):
                 raise OverlayRoutingError("route node does not advertise its selected role")
+            if index == 0 and descriptor.reachability != "reachable":
+                raise OverlayRoutingError("first circuit node must be directly reachable")
+            if (
+                descriptor.reachability == "adjacent"
+                and descriptor.endpoint != normalized[index - 1][0].endpoint
+            ):
+                raise OverlayRoutingError("adjacent route node is bound to a different ingress")
             if descriptor.node_id in node_ids:
                 raise OverlayRoutingError("route repeats a relay identity")
             node_ids.add(descriptor.node_id)

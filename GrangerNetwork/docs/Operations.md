@@ -20,13 +20,22 @@ relay policy. Generate state with `granger_network.node init` or the wrappers in
 distributed to bootstrap provisioners and peer operators.
 
 Descriptors expire. Current scripts default physical-test descriptors to 24
-hours and bootstrap bundles to 6 hours. Rotation is an operator task; the
-runtime fails closed after expiry.
+hours and bootstrap bundles to 6 hours. The running operator renews its own
+descriptor using its persistent identity. A trusted authority must still sign
+new bootstrap generations before expiry; no relay possesses that authority
+merely by carrying a bundle. The runtime fails closed after expiry when no
+valid recovery material is available.
 
 Bootstrap sets carry a monotonic generation. Clients reject a lower generation
 after accepting a newer one and reject different content at the same generation.
 Use `tools/reseed_tool.py` for explicit signed bundle import, inspection, and
 export. The tool never accepts a raw endpoint as a trust substitute.
+
+Peers also exchange newer signed bundles over authenticated reseed RPCs. The
+store retains a bounded overlap without allowing high-water rollback. See
+`Bootstrap.md` for the separate signed browser configuration expiry boundary.
+Do not deploy this local experimental milestone to a physical fleet based
+only on synthetic or loopback test results.
 
 ## Starting nodes
 

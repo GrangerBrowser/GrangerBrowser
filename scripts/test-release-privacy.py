@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,18 @@ PRIVATE_STATE_NAMES = frozenset(
         "service.key",
     }
 )
+
+# Public known-answer vectors in GnuTLS 3.7.3 lib/crypto-selftests-pk.c.
+# Match exact PEM bytes, never exempt a library or a caller-supplied marker.
+# https://github.com/gnutls/gnutls/blob/3.7.3/lib/crypto-selftests-pk.c
+GNUTLS_PUBLIC_SELF_TEST_SHA256 = frozenset({
+    "a4d138d7ef9748464117b44fb9c0a4b5b85a1599a127d02690abaa96d03c16e6",
+    "fa0b06a72461ec0a963dcfccb8d5b61bd88a6074fc7271573bff68ab86b8c1af",
+    "ef237ea8db4f2ae9ee100e8ced96d29b5dceb0e6a948443e6b8a00b1791f9ec9",
+    "91ea1699ff6b1a34b4a1d500a9c75a808441e47b9ea68da6fb0195e01ce1dc61",
+    "7c4c63ee462e0e700cd9e29c8e0f730b3f1b484c4abdd83f1e69fcd477c061fa",
+    "d039c8119a029ab9f9c83c04d67002d887b6bc6026c4264402ab27cdf24cf138",
+})
 
 
 @dataclass(frozen=True)
@@ -107,6 +120,11 @@ def _scan_file(
     seen: set[tuple[str, int | None]] = set()
     carry = b""
     with path.open("rb") as source:
+        gnutls_elf = (
+            re.fullmatch(r"libgnutls\.so\.30(?:\.[0-9]+)*", path.name) is not None
+            and source.read(4) == b"\x7fELF"
+        )
+        source.seek(0)
         while True:
             content = source.read(CHUNK_SIZE)
             if not content:
@@ -119,6 +137,18 @@ def _scan_file(
                     seen.add(key)
             for name, pattern, blocking in ASCII_RULES:
                 key = (name, None)
+                if name == "pem-private-key" and gnutls_elf:
+                    matches = tuple(pattern.finditer(sample))
+                    public = tuple(
+                        hashlib.sha256(match.group()).hexdigest() in GNUTLS_PUBLIC_SELF_TEST_SHA256
+                        for match in matches
+                    )
+                    public_key = ("upstream-public-self-test", None)
+                    if any(public) and public_key not in seen:
+                        findings.append(Finding(public_key[0], relative, blocking=False))
+                        seen.add(public_key)
+                    if all(public):
+                        continue
                 if key not in seen and pattern.search(sample):
                     findings.append(Finding(name, relative, blocking=blocking))
                     seen.add(key)

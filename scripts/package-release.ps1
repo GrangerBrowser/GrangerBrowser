@@ -2,12 +2,14 @@
 param(
     [string]$QtRoot = $env:QTDIR,
     [string]$BuildDirectory = "build/desktop",
-    [string]$Destination = "release/.staging",
+    [Parameter(Mandatory)][string]$Destination,
     [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'PackageWorkspace.ps1')
+$resolvedPackage = Resolve-PackageCandidate -ProjectRoot $projectRoot -Path $Destination
 if ([string]::IsNullOrWhiteSpace($QtRoot)) { $QtRoot = $env:CMAKE_PREFIX_PATH }
 if ([string]::IsNullOrWhiteSpace($QtRoot) -or -not (Test-Path -LiteralPath $QtRoot)) {
     throw "QtRoot was not found. Pass -QtRoot or set QTDIR/CMAKE_PREFIX_PATH."
@@ -53,25 +55,8 @@ if (-not $SkipBuild) {
 
 $buildPath = Join-Path $projectRoot $BuildDirectory
 $sourceExecutable = Join-Path $buildPath "Release/GrangerBrowser.exe"
-$packageRoot = Join-Path $projectRoot $Destination
-$resolvedProject = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
-$resolvedPackage = [IO.Path]::GetFullPath($packageRoot)
-if (-not $resolvedPackage.StartsWith($resolvedProject + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Destination must remain inside the project workspace."
-}
-$allowedStagingDirectories = @(
-    [IO.Path]::GetFullPath((Join-Path $projectRoot "release/.staging")),
-    [IO.Path]::GetFullPath((Join-Path $projectRoot "release/.ui-stage")),
-    [IO.Path]::GetFullPath((Join-Path $projectRoot "release/.local-staging"))
-)
-$isAllowedStagingDirectory = @($allowedStagingDirectories | Where-Object {
-    $_.Equals($resolvedPackage, [StringComparison]::OrdinalIgnoreCase)
-}).Count -ne 0
-if (-not $isAllowedStagingDirectory) {
-    throw "Destination must be an approved release staging directory. Use a release orchestrator to promote the canonical release."
-}
 if (Test-Path -LiteralPath $resolvedPackage) {
-    Remove-Item -LiteralPath $resolvedPackage -Recurse -Force
+    throw 'Candidate already exists. Use a fresh package workspace; do not overwrite a tested package.'
 }
 New-Item -ItemType Directory -Path $resolvedPackage | Out-Null
 Copy-Item -LiteralPath $sourceExecutable -Destination (Join-Path $resolvedPackage "GrangerBrowser.exe")
@@ -237,7 +222,7 @@ $deploymentRuntimeFiles = @(
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/pluggable_transports/pt_config.json" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion)"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/data/geoip" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion) GeoIP database"
     Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/tor/data/geoip6" -Source "Tor Expert Bundle $($torRuntimeInfo.BundleVersion) GeoIP database"
-    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/i2p/i2pd.exe" -Source "PurpleI2P i2pd $($i2pRuntimeInfo.Version) official Windows x64 MinGW release"
+    Get-DeploymentFileRecord -Root $resolvedPackage -RelativePath "runtime/i2p/i2pd.exe" -Source "PurpleI2P i2pd $($i2pRuntimeInfo.Version) pinned MSVC x64 source build"
 )
 $sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
@@ -279,7 +264,20 @@ $grangerRuntimeReleaseId = "granger-runtime-v{0}-p{1}-{2}-{3}" -f `
     GeoIpBundleVersion = $torRuntimeInfo.BundleVersion
     I2pVersion = $i2pRuntimeInfo.Version
     I2pSource = $i2pRuntimeInfo.Source
-    I2pArchiveSHA256 = $i2pRuntimeInfo.ArchiveSHA256
+    I2pSourceTag = $i2pRuntimeInfo.SourceTag
+    I2pSourceCommit = $i2pRuntimeInfo.SourceCommit
+    I2pArchiveSHA256 = $i2pRuntimeInfo.SourceArchiveSHA256
+    I2pExecutableSHA256 = $i2pRuntimeInfo.ExecutableSHA256
+    I2pReproducibleBuild = [bool]$i2pRuntimeInfo.ReproducibleBuild
+    I2pBuildPathMapped = [bool]$i2pRuntimeInfo.BuildPathMapped
+    I2pBuildToolchain = $i2pRuntimeInfo.BuildToolchain
+    I2pBuildFlags = $i2pRuntimeInfo.BuildFlags
+    I2pVcpkgTag = $i2pRuntimeInfo.VcpkgTag
+    I2pVcpkgCommit = $i2pRuntimeInfo.VcpkgCommit
+    I2pVcpkgTriplet = $i2pRuntimeInfo.VcpkgTriplet
+    I2pBoostVersion = $i2pRuntimeInfo.BoostVersion
+    I2pOpenSslVersion = $i2pRuntimeInfo.OpenSslVersion
+    I2pZlibVersion = $i2pRuntimeInfo.ZlibVersion
     I2pLicense = $i2pRuntimeInfo.License
     I2pCertificateCount = $packagedI2pCertificates.Count
     GrangerProtocolVersion = $grangerProtocolVersion

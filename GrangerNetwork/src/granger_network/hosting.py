@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import argparse
 import hashlib
 import json
@@ -10,21 +12,23 @@ import shutil
 import socket
 import stat
 import sys
+import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote_to_bytes, urlsplit
 
 from ._codec import atomic_write_text, parse_json_object
+from .bootstrap import PeerCache
 from .descriptor import ServiceDescriptor
-from .errors import GrangerNetworkError, NetworkUnavailableError, OverlayRoutingError, UpstreamPolicyError
+from .errors import DiscoveryError, GrangerNetworkError, NetworkUnavailableError, OverlayRoutingError, UpstreamPolicyError
 from .http_bridge import HttpResult, LoopbackHttpBridge, LoopbackHttpTarget
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
 from .wan_config import (
-    ensure_browser_wan_config,
     load_browser_wan_config,
     load_discovery_runtime,
+    load_or_create_identity,
 )
 from .wan_routing import WanRouteSelector, select_service_route_set
 from .wan_service import WanServiceHost
@@ -161,6 +165,7 @@ class HostedServiceConfig:
     auto_start: bool
     max_file_bytes: int
     created_at: int
+    visibility: str = "unlisted"
 
     def to_document(self) -> dict[str, object]:
         return {
@@ -174,6 +179,7 @@ class HostedServiceConfig:
             "type": self.kind,
             "upstream": self.upstream,
             "version": HOSTING_VERSION,
+            "visibility": self.visibility,
         }
 
 
@@ -188,6 +194,34 @@ def _validate_title(value: str) -> str:
     if not _TITLE.fullmatch(normalized):
         raise ValueError("hosted service title is invalid")
     return normalized
+
+
+def _validate_visibility(value: str) -> str:
+    if value not in {"public", "unlisted"}:
+        raise ValueError("hosted service visibility is invalid")
+    return value
+
+
+class HostingTraffic:
+    """Per-runtime aggregate payload counters. No addresses, paths or identities."""
+
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self._lock = threading.Lock()
+        self._counts = {"requests": 0, "receivedBytes": 0, "sentBytes": 0}
+
+    def fetch(self, method, path, headers=None, body=b"", **kwargs):
+        with self._lock:
+            self._counts["requests"] += 1
+            self._counts["receivedBytes"] += len(body)
+        response = self.bridge.fetch(method, path, headers, body, **kwargs)
+        with self._lock:
+            self._counts["sentBytes"] += len(response.body)
+        return response
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self._counts)
 
 
 def _validate_max_file_bytes(value: int) -> int:
@@ -809,6 +843,7 @@ class StaticSiteBridge:
             raise UpstreamPolicyError("static response exceeds the configured file limit")
         return resolved
 
+    @traced("static-http-fetch")
     def fetch(
         self,
         method: str,
@@ -889,7 +924,7 @@ def load_hosted_service(service_dir: Path) -> tuple[HostedServiceConfig, Service
     expected_v2 = expected_v1 | {"entryPage"}
     if (version == 1 and set(document) == expected_v1):
         entry_page = "index.html" if document.get("type") == "static" else ""
-    elif version == HOSTING_VERSION and set(document) == expected_v2:
+    elif version == HOSTING_VERSION and set(document) in (expected_v2, expected_v2 | {"visibility"}):
         entry_page = document["entryPage"]
     else:
         raise ValueError("hosted service configuration schema is unsupported")
@@ -915,6 +950,7 @@ def load_hosted_service(service_dir: Path) -> tuple[HostedServiceConfig, Service
         document["autoStart"],
         _validate_max_file_bytes(document["maxFileBytes"]),
         created_at,
+        _validate_visibility(document.get("visibility", "unlisted")),
     )
     identity = ServiceIdentity.load(root / IDENTITY_FILE)
     descriptor = ServiceDescriptor.from_json_for_owner_refresh(
@@ -922,6 +958,14 @@ def load_hosted_service(service_dir: Path) -> tuple[HostedServiceConfig, Service
         identity,
     )
     return config, identity, descriptor
+
+
+def set_hosted_visibility(service_dir: Path, visibility: str) -> HostedServiceConfig:
+    config, _identity, _descriptor = load_hosted_service(service_dir)
+    updated = replace(config, visibility=_validate_visibility(visibility))
+    atomic_write_text(Path(service_dir) / CONFIG_FILE,
+                      json.dumps(updated.to_document(), sort_keys=True) + "\n")
+    return updated
 
 
 def initialize_hosted_service(
@@ -1082,11 +1126,14 @@ def update_hosted_service(
         previous.auto_start,
         limit,
         previous.created_at,
+        previous.visibility,
     )
     descriptor = ServiceDescriptor.create_remote(
         identity,
         "distributed-overlay",
-        metadata={"contentType": "text/html", "title": display_title},
+        metadata={"contentType": "text/html", "title": display_title,
+                  **({"visibility": "public"} if previous.visibility == "public" else {})},
+        issued_at=max(int(time.time()), (_descriptor.issued_at or 0) + 1),
         lifetime=24 * 60 * 60,
     )
     atomic_write_text(root / SERVICE_DESCRIPTOR_FILE, descriptor.to_json(), mode=0o644)
@@ -1141,11 +1188,17 @@ def _write_status(root: Path, state: str, descriptor: ServiceDescriptor, **detai
         "version": HOSTING_VERSION,
     }
     document.update(details)
-    atomic_write_text(
-        root / STATUS_FILE,
-        json.dumps(document, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-        mode=0o600,
-    )
+    content = json.dumps(document, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    for attempt in range(6):
+        try:
+            atomic_write_text(root / STATUS_FILE, content, mode=0o600)
+            return
+        except PermissionError as error:
+            # Windows rename can collide with a short-lived dashboard reader.
+            # Keep status publication atomic and propagate persistent failures.
+            if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32) or attempt == 5:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def _hosting_health_state(
@@ -1174,15 +1227,34 @@ def _hosting_health_state(
     return "online", ""
 
 
+def _recover_hosting_config(root: Path, service: ServiceDescriptor, recovery) -> Path:
+    identity = load_or_create_identity(root / "identity/network-identity.json")
+    cache = PeerCache(root / "metadata/peer-cache.json")
+    while True:
+        try:
+            return recovery.current()
+        except DiscoveryError:
+            _write_status(root, "recovering", service, stage="updating-network-config",
+                          healthReason="CONFIG_RECOVERY", configRecovery=recovery.snapshot())
+            path = recovery.refresh(identity, cache=cache)
+            if path is not None:
+                return path
+            time.sleep(max(1, min(30, recovery.snapshot()["retryInSeconds"])))
+
+
+@traced("hosting-runtime")
 def serve_hosted_service(
     service_dir: Path,
-    wan_config_path: Path,
+    wan_config_path: Path | None,
     *,
     wan_trust_anchor: Path | None = None,
     wan_rollback_state: Path | None = None,
+    wan_recovery=None,
 ) -> int:
     root = Path(service_dir).resolve()
     config, identity, service = load_hosted_service(root)
+    if wan_recovery is not None:
+        wan_config_path = _recover_hosting_config(root, service, wan_recovery)
     browser_config = load_browser_wan_config(
         wan_config_path,
         trust_anchor_path=wan_trust_anchor,
@@ -1198,6 +1270,7 @@ def serve_hosted_service(
         )
     else:
         bridge = LoopbackHttpBridge(probe_loopback_application(config.upstream))
+    bridge = HostingTraffic(bridge)
     runtime = load_discovery_runtime(
         browser_config.bootstrap_path,
         browser_config.authority_pin_path,
@@ -1222,12 +1295,34 @@ def serve_hosted_service(
     )
     while True:
         now = int(time.time())
+        if wan_recovery is not None:
+            current_path = _recover_hosting_config(root, service, wan_recovery)
+            current_config = load_browser_wan_config(
+                current_path, trust_anchor_path=wan_trust_anchor,
+                rollback_state_path=wan_rollback_state, allow_legacy=False,
+            )
+            if current_config.generation != browser_config.generation:
+                browser_config = current_config
+                runtime = load_discovery_runtime(
+                    browser_config.bootstrap_path, browser_config.authority_pin_path,
+                    root / "metadata/peer-cache.json", root / "identity/network-identity.json",
+                    timeout=browser_config.timeout, replication_factor=browser_config.replication_factor,
+                    minimum_replicas=browser_config.minimum_replicas,
+                )
+                selector = WanRouteSelector(runtime.discovery, guard_seed=runtime.identity.public_key_bytes)
+        elif browser_config.version == 2 and browser_config.expires_at <= now:
+            raise DiscoveryError("signed browser WAN config is not currently valid")
         assert service.expires_at is not None
-        if service.expires_at - now <= 60 * 60:
+        desired_metadata = dict(service.metadata)
+        desired_metadata.pop("visibility", None)
+        if config.visibility == "public":
+            desired_metadata["visibility"] = "public"
+        if service.expires_at - now <= 60 * 60 or service.metadata != desired_metadata:
             service = ServiceDescriptor.create_remote(
                 identity,
                 "distributed-overlay",
-                metadata=service.metadata,
+                metadata=desired_metadata,
+                issued_at=max(now, (service.issued_at or 0) + 1),
                 lifetime=24 * 60 * 60,
             )
             atomic_write_text(root / SERVICE_DESCRIPTOR_FILE, service.to_json(), mode=0o644)
@@ -1360,8 +1455,22 @@ def serve_hosted_service(
             refresh_at = introduction.expires_at - 2 * 60
             next_status = 0.0
             next_dht_check = time.monotonic() + HOSTING_DHT_CHECK_INTERVAL
+            next_config_check = time.monotonic() + 30
             dht_check_failed = False
             while not host.wait(0.25):
+                if browser_config.version == 2 and browser_config.expires_at <= int(time.time()):
+                    break
+                if wan_recovery is not None and time.monotonic() >= next_config_check:
+                    if browser_config.expires_at - int(time.time()) <= wan_recovery.renewal_margin:
+                        replacement = wan_recovery.refresh(runtime.identity, discovery=runtime.discovery)
+                        if replacement is not None:
+                            candidate = load_browser_wan_config(
+                                replacement, trust_anchor_path=wan_trust_anchor,
+                                rollback_state_path=wan_rollback_state, allow_legacy=False,
+                            )
+                            if candidate.generation > browser_config.generation:
+                                break
+                    next_config_check = time.monotonic() + 60
                 if int(time.time()) >= refresh_at:
                     break
                 if time.monotonic() >= next_dht_check:
@@ -1392,6 +1501,8 @@ def serve_hosted_service(
                         healthReason=reason,
                         healthLeaseSeconds=HOSTING_STATUS_LEASE_SECONDS,
                         hostHealth=host_health,
+                        traffic=bridge.snapshot(),
+                        visibility=config.visibility,
                         networkHealth=network_health,
                         introductionNodeIds=[node.node_id for node in selected_introductions],
                         rendezvousNodeId=rendezvous_node.node_id,
@@ -1502,6 +1613,9 @@ def _build_parser() -> argparse.ArgumentParser:
     update.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES)
     inspect_service = commands.add_parser("inspect-service")
     inspect_service.add_argument("--service-dir", type=Path, required=True)
+    visibility = commands.add_parser("set-visibility")
+    visibility.add_argument("--service-dir", type=Path, required=True)
+    visibility.add_argument("--visibility", choices=("public", "unlisted"), required=True)
     probe = commands.add_parser("probe-application")
     probe.add_argument("--upstream", required=True)
     serve = commands.add_parser("serve")
@@ -1555,6 +1669,10 @@ def main(argv: list[str] | None = None) -> int:
             config, _identity, descriptor = load_hosted_service(options.service_dir)
             _print(_service_document(config, descriptor))
             return 0
+        if options.command == "set-visibility":
+            config = set_hosted_visibility(options.service_dir, options.visibility)
+            _print({"ok": True, "visibility": config.visibility})
+            return 0
         if options.command == "probe-application":
             target = probe_loopback_application(options.upstream)
             _print({"host": target.host, "ok": True, "port": target.port, "version": HOSTING_VERSION})
@@ -1575,8 +1693,10 @@ def main(argv: list[str] | None = None) -> int:
         wan_config = options.wan_config
         wan_trust_anchor = None
         wan_rollback_state = None
+        wan_recovery = None
         if provision_requested:
-            wan_config = ensure_browser_wan_config(
+            from .wan_config_recovery import WanConfigRecovery
+            wan_recovery = WanConfigRecovery(
                 options.wan_bundle,
                 options.wan_trust_anchor,
                 options.wan_install_root,
@@ -1589,6 +1709,7 @@ def main(argv: list[str] | None = None) -> int:
             wan_config,
             wan_trust_anchor=wan_trust_anchor,
             wan_rollback_state=wan_rollback_state,
+            wan_recovery=wan_recovery,
         )
     except KeyboardInterrupt:
         return 130

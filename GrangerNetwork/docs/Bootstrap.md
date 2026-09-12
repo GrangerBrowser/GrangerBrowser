@@ -75,10 +75,37 @@ verified before installation, written atomically, and tracked by generation
 and canonical digest. Rollback and same-generation equivocation are rejected
 per authority. Up to four recent files per authority are retained.
 
-The current runtime supports bundled and manually imported signed bundles. It
-does not fetch remote URLs itself, so there is no hidden DNS or clearnet path.
-Future download transports may provide bytes from independent sources, but the
-bytes remain untrusted until the pinned Ed25519 signature verifies.
+Two valid generations per authority may overlap. The persisted high-water
+generation remains authoritative: expiry of that generation does not reactivate
+an older generation. Atomic state replacement follows durable bundle storage;
+an interrupted state write leaves the preceding complete generation accepted.
+Reimporting the exact accepted signed bundle can repair a missing bundle file
+without changing the high-water mark. It cannot repair a lost or corrupt
+high-water state by inventing trust.
+
+In addition to bundled and manual imports, authenticated peers can transport
+signed public bundles with `RESEED_QUERY` and `RESEED_CHUNK`. Transporting a
+bundle does not confer authority. The receiver checks the existing pins,
+network, protocol, signatures, generation, expiry, and advertisement metadata
+before changing accepted state. There is no HTTP, DNS, or alternate transport.
+Queries cover at most 16 peers, four concurrently, and eight transfers per
+refresh. A bundle is at most 4 MiB with at most 64 full-size 64 KiB chunks
+(except the final chunk); short intermediate chunks are rejected.
+
+Refresh starts within 15 minutes of the earliest bundle or embedded descriptor
+expiry and is rate-limited to one attempt per minute. After all local bundles
+expire, still-valid cached discovery descriptors may be used only as
+authenticated carriers for a newer pinned bundle. They do not independently
+authorize an expired generation. Recovery keeps the persistent identity.
+Without a valid carrier and newer signed bundle, startup fails closed.
+
+This is distribution, not signing: an existing trusted authority must still
+issue the next generation. The separately signed browser WAN configuration
+also has an expiry check before discovery startup. Reseed transfer does not
+renew that configuration. The local candidate adds a separate restricted
+[signed config recovery channel](WanConfigRecovery.md), using the existing
+authority pins. Production authority issuance and carrier deployment are still
+required; reseed tests alone do not prove browser startup recovery.
 
 Manual import and inspection:
 
@@ -130,8 +157,7 @@ contain public authority pins and a signed bundle only.
 
 ## Evidence boundary
 
-The automated local topology proves multiple seed handling, authenticated peer
-exchange, DHT join, warm-cache operation after all initial seeds stop, and
-fresh-profile fail-closed behavior. It does not prove public reachability,
-operator independence, or cross-ISP portability. No public Granger seed/relay
-fleet exists in this local stage.
+Automated local topologies cover multiple seeds, authenticated peer exchange,
+DHT join, new circuits and HTTP operations after the initial seeds stop, and
+fail-closed recovery boundaries. These are controlled local tests, not evidence
+of physical public reachability, operator independence, or cross-ISP portability.

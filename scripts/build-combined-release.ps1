@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.4',
+    [string]$Version = '0.4.5',
     [string]$Installer = 'output/distribution/GrangerSetup.exe',
     [string]$AppImage,
     [string]$OutputDirectory = 'output/distribution'

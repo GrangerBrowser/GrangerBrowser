@@ -109,6 +109,7 @@
         <file alias="pamp-lite-attribution.md">../pamp_lite/ATTRIBUTION.md</file>
     </qresource>
     <qresource prefix="/i2p">
+        <file alias="addresses.csv">i2p/addresses.csv</file>
         <file alias="hosts.txt">i2p/hosts.txt</file>
     </qresource>
     <qresource prefix="/privacy">

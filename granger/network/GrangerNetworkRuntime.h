@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QMap>
 #include <QObject>
@@ -52,6 +53,7 @@ private:
     };
 
     bool startWorker(QString *error = nullptr);
+    void scheduleWorkerRestart();
     void flushPendingRequests();
     void processStdout();
     void processDocument(const QJsonObject &document);
@@ -62,6 +64,11 @@ private:
     QString configuredPython() const;
 
     QPointer<QProcess> m_process;
+    QTimer *m_restartTimer = nullptr;
+    QElapsedTimer m_crashWindow;
+    int m_recentCrashes = 0;
+    bool m_restartEnabled = false;
+    bool m_crashLoop = false;
     QByteArray m_stdoutBuffer;
     QHash<QString, PendingRequest> m_pending;
     QHash<QWebEngineProfile *, QPointer<QWebEngineUrlSchemeHandler>> m_handlers;

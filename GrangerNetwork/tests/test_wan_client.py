@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from granger_network.descriptor import ServiceDescriptor
-from granger_network.errors import OverlayRoutingError, ReplayError, ResolutionError
+from granger_network.errors import (
+    IntroductionOfflineError, OverlayRoutingError, ReplayError, ResolutionError,
+)
 from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
 from granger_network.peer import NodeDescriptor, RelayPolicy
@@ -32,6 +35,9 @@ class IntroductionRefreshTests(unittest.TestCase):
         self.resolver = Mock()
         self.resolver.resolve.return_value = self.service
         self.resolver.resolve_introduction.side_effect = [self.old, self.new]
+        self.resolver.resolve_connection.side_effect = lambda name: (
+            self.resolver.resolve(name), self.resolver.resolve_introduction(self.service),
+        )
         by_id = {node.node_id: node for node in self.nodes}
         self.resolver.resolve_node.side_effect = by_id.__getitem__
         self.route = SimpleNamespace(route=tuple(zip(self.nodes[:3], ("access", "entry", "middle"))))
@@ -54,7 +60,7 @@ class IntroductionRefreshTests(unittest.TestCase):
                 self.assertIn(node.node_id, {point.node_id for point in introduction.points})
                 if introduction == self.new:
                     return self.session
-                raise OverlayRoutingError(failure)
+                raise failure if isinstance(failure, Exception) else OverlayRoutingError(failure)
 
             return SimpleNamespace(connect=open_session)
 
@@ -72,6 +78,107 @@ class IntroductionRefreshTests(unittest.TestCase):
         self.assertIs(connected.session, self.session)
         self.assertEqual(connected.introduction_node, self.nodes[4])
         self.assertEqual(self.resolver.resolve_introduction.call_count, 2)
+
+    def test_authenticated_offline_does_not_retry_same_endpoint(self):
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
+        with self.assertRaises(IntroductionOfflineError):
+            self.connect(failure=IntroductionOfflineError("endpoint offline"))
+        self.assertEqual(self.used_sequences, [2])
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 2)
+
+    def test_authenticated_offline_refresh_accepts_new_signed_sequence(self):
+        connected = self.connect(failure=IntroductionOfflineError("endpoint offline"))
+        self.assertEqual(self.used_sequences, [2, 3])
+        self.assertIs(connected.session, self.session)
+        self.assertEqual(connected.attempts, 2)
+
+    def test_authenticated_offline_does_not_expand_single_attempt_budget(self):
+        with self.assertRaises(OverlayRoutingError):
+            self.connect(failure=IntroductionOfflineError("endpoint offline"), attempts=1)
+        self.assertEqual(self.used_sequences, [2])
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 1)
+
+    def test_unqueried_endpoint_is_not_declared_offline(self):
+        self.old = IntroductionDescriptor.create(
+            self.identity, self.service, [self.nodes[3].node_id, self.nodes[4].node_id],
+            sequence=2, lifetime=900,
+        )
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
+        with self.assertRaises(OverlayRoutingError) as caught:
+            self.connect(failure=IntroductionOfflineError("endpoint offline"), attempts=1)
+        self.assertNotIsInstance(caught.exception, IntroductionOfflineError)
+
+    def test_offline_refresh_rejects_rollback_equivocation_and_missing_quorum(self):
+        for replacement in (
+            self.introduction(1, self.nodes[4]), self.introduction(2, self.nodes[4]),
+            ResolutionError("quorum unavailable"),
+        ):
+            with self.subTest(replacement=type(replacement).__name__):
+                self.used_sequences.clear()
+                self.resolver.resolve_introduction.side_effect = [self.old, replacement]
+                expected = ResolutionError if isinstance(replacement, Exception) else ReplayError
+                with self.assertRaises(expected):
+                    self.connect(failure=IntroductionOfflineError("endpoint offline"))
+                self.assertEqual(self.used_sequences, [2])
+
+    def test_offline_is_scoped_to_one_endpoint_and_one_request(self):
+        self.old = IntroductionDescriptor.create(
+            self.identity, self.service, [self.nodes[3].node_id, self.nodes[4].node_id],
+            sequence=2, lifetime=900,
+        )
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
+        ordered = [point.node_id for point in self.old.points]
+        for live in (None, ordered[1], ordered[0]):
+            used = []
+
+            def client(*_args, **_kwargs):
+                def connect(node):
+                    used.append(node.node_id)
+                    if node.node_id == live:
+                        return self.session
+                    raise IntroductionOfflineError("endpoint offline")
+                return SimpleNamespace(connect=connect)
+
+            with (
+                patch("granger_network.wan_client.WanRouteSelector", return_value=self.selector),
+                patch("granger_network.wan_client.WanServiceClient", side_effect=client),
+            ):
+                if live is None:
+                    with self.assertRaises(OverlayRoutingError):
+                        connect_service(self.runtime, self.resolver, self.service.canonical_name,
+                                        route_attempts=6)
+                    self.assertEqual(used, ordered)
+                else:
+                    connected = connect_service(
+                        self.runtime, self.resolver, self.service.canonical_name, route_attempts=6,
+                    )
+                    self.assertIs(connected.session, self.session)
+                    self.assertEqual(used, ordered[:ordered.index(live) + 1])
+
+    def test_independent_node_lookups_overlap_and_leave_no_workers(self):
+        self.old = IntroductionDescriptor.create(
+            self.identity, self.service, [self.nodes[3].node_id, self.nodes[4].node_id],
+            sequence=2, lifetime=900,
+        )
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
+        rendezvous = threading.Barrier(2, timeout=1)
+        workers = []
+        by_id = {node.node_id: node for node in self.nodes}
+
+        def resolve(node_id):
+            workers.append(threading.current_thread())
+            rendezvous.wait()
+            return by_id[node_id]
+
+        self.resolver.resolve_node.side_effect = resolve
+        with self.assertRaises(OverlayRoutingError):
+            self.connect(failure=IntroductionOfflineError("endpoint offline"))
+        self.assertEqual(len(workers), 2)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
 
     def test_retries_signed_resolution_until_new_sequence_propagates(self):
         self.resolver.resolve_introduction.side_effect = [self.old, self.old, self.new]
@@ -195,6 +302,9 @@ class RouteRetryCoverageTests(unittest.TestCase):
         resolver = Mock()
         resolver.resolve.return_value = service
         resolver.resolve_introduction.return_value = introduction
+        resolver.resolve_connection.side_effect = lambda name: (
+            resolver.resolve(name), resolver.resolve_introduction(service),
+        )
         resolver.resolve_node.side_effect = {node.node_id: node for node in points}.__getitem__
         runtime = SimpleNamespace(identity=ServiceIdentity.generate(), discovery=Mock())
         selector = Mock()

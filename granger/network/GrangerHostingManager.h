@@ -54,6 +54,10 @@ struct HostedServiceRecord {
     QString error;
     QString createdAt;
     QString startedAt;
+    QString visibility = QStringLiteral("unlisted");
+    qint64 requests = 0;
+    qint64 receivedBytes = 0;
+    qint64 sentBytes = 0;
     qint64 uptimeSeconds = 0;
     qint64 pid = 0;
     bool autoStart = false;
@@ -114,6 +118,7 @@ public:
                        QString *error = nullptr,
                        const QString &entryPage = QString());
     bool startService(const QString &id, QString *error = nullptr);
+    bool setVisibility(const QString &id, const QString &visibility, QString *error = nullptr);
     bool stopService(const QString &id, QString *error = nullptr);
     bool restartService(const QString &id, QString *error = nullptr);
     bool removeService(const QString &id, QString *error = nullptr);

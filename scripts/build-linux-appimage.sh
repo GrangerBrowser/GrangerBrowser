@@ -7,10 +7,11 @@ build_dir="$output_root/build"
 appdir="$output_root/AppDir"
 runtime_root="$project_root/output/linux-runtimes"
 tools_root="$project_root/output/linux-tools"
-version="0.4.4"
+version="0.4.5"
 artifact="$output_root/GrangerBrowser-${version}-x86_64.AppImage"
 qt_root="${QT_ROOT:-}"
 source_head="${GRANGER_SOURCE_HEAD:-$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)}"
+wan_bundle="${GRANGER_NETWORK_RELEASE_BUNDLE:-}"
 
 fail() {
     printf 'Linux AppImage build failed: %s\n' "$*" >&2
@@ -27,6 +28,12 @@ done
 [[ "$(uname -s)" == "Linux" ]] || fail "this script must run natively on Linux"
 [[ "$(uname -m)" == "x86_64" ]] || fail "only Linux x86_64 is supported"
 [[ "$source_head" =~ ^[0-9a-f]{40}$ ]] || fail "GRANGER_SOURCE_HEAD must identify the committed source"
+[[ -n "$wan_bundle" ]] \
+    || fail "GRANGER_NETWORK_RELEASE_BUNDLE must identify a signed production WAN bundle"
+wan_bundle="$(realpath -e "$wan_bundle")" \
+    || fail "signed production WAN bundle is unavailable"
+[[ -d "$wan_bundle" ]] || fail "signed production WAN bundle is not a directory"
+export GRANGER_NETWORK_RELEASE_BUNDLE="$wan_bundle"
 [[ -n "$qt_root" ]] || fail "QT_ROOT must point to Qt 6.11.2 linux_gcc_64"
 qt_root="$(realpath -m "$qt_root")"
 [[ -x "$qt_root/bin/qmake" ]] || fail "qmake is missing below QT_ROOT"
@@ -176,12 +183,10 @@ required_files=(
     "usr/share/licenses/granger-browser/linuxdeploy-SOURCES.md"
     "usr/share/licenses/granger-browser/nss3-copyright.txt"
 )
-if [[ -n "${GRANGER_NETWORK_RELEASE_BUNDLE:-}" ]]; then
-    required_files+=(
-        "usr/bin/runtime/granger-network/bundle/browser-wan.json"
-        "usr/bin/runtime/granger-network/trust/config-authority.pin"
-    )
-fi
+required_files+=(
+    "usr/bin/runtime/granger-network/bundle/browser-wan.json"
+    "usr/bin/runtime/granger-network/trust/config-authority.pin"
+)
 for relative_path in "${required_files[@]}"; do
     [[ -e "$appdir/$relative_path" ]] || fail "AppDir is missing $relative_path"
 done
@@ -192,6 +197,18 @@ for relative_path in \
     [[ -f "$appdir/usr/bin/$relative_path" ]] \
         || fail "AppDir is missing $relative_path"
 done
+minimum_wan_headroom=21600
+wan_generation="$(jq -r '.wanConfigGeneration' "$appdir/usr/bin/local-runtime-metadata.json")"
+wan_expires_at="$(jq -r '.wanConfigExpiresAt' "$appdir/usr/bin/local-runtime-metadata.json")"
+jq -e '.signedWanBundle == true
+       and (.wanConfigGeneration | type == "number" and . >= 1)
+       and (.wanConfigExpiresAt | type == "number" and . > 0)
+       and (.wanNetworkId | type == "string" and length > 0)
+       and (.wanProtocolVersion | type == "number" and . >= 1)' \
+    "$appdir/usr/bin/local-runtime-metadata.json" >/dev/null \
+    || fail "app-local runtime metadata does not bind a signed WAN bundle"
+(( wan_expires_at - $(date +%s) >= minimum_wan_headroom )) \
+    || fail "signed WAN bundle has less than six hours of release headroom"
 chmod 0755 "$appdir/usr/libexec/QtWebEngineProcess"
 if [[ -e "$appdir/usr/bin/QtWebEngineProcess" \
       || -d "$appdir/usr/bin/resources" \
@@ -220,13 +237,16 @@ fi
 
 runtime_metadata="$runtime_root/runtime-metadata.json"
 jq --arg qt "$qt_version" \
+   --arg version "$version" \
    --arg sourceHead "$source_head" \
+   --argjson wanGeneration "$wan_generation" \
+   --argjson wanExpiresAt "$wan_expires_at" \
    --arg linuxdeploy "1-alpha-20251107-1" \
    --arg linuxdeploySha "${linuxdeploy_sha256^^}" \
    --arg qtPlugin "1-alpha-20250213-1" \
    --arg qtPluginSha "${qt_plugin_sha256^^}" \
    '. + {
-      grangerVersion: "0.4.4",
+      grangerVersion: $version,
       architecture: "x86_64",
       qtVersion: $qt,
       qtWebEngineVersion: $qt,
@@ -236,8 +256,11 @@ jq --arg qt "$qt_version" \
       linuxdeploySha256: $linuxdeploySha,
       linuxdeployQtPluginVersion: $qtPlugin,
       linuxdeployQtPluginSha256: $qtPluginSha,
-      chromiumSandboxDisabled: false
-   }' "$runtime_metadata" >"$appdir/usr/bin/deployment-metadata.json"
+      chromiumSandboxDisabled: false,
+      signedWanBundle: true,
+      wanConfigGeneration: $wanGeneration,
+      wanConfigExpiresAt: $wanExpiresAt
+    }' "$runtime_metadata" >"$appdir/usr/bin/deployment-metadata.json"
 
 manifest_tmp="$output_root/release-manifest.json.tmp"
 (

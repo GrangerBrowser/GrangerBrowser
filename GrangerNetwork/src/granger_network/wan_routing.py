@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import hashlib
 import ipaddress
 import secrets
@@ -7,7 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .errors import OverlayRoutingError
-from .peer import NodeDescriptor, validate_node_id
+from .peer import NodeDescriptor, node_supports_route_role, validate_node_id
 
 
 ROUTE_SELECTION_DOMAIN = b"granger-network-v0.4/route-selection\x00"
@@ -44,6 +46,14 @@ def _adjacent_network_group_conflicts(nodes: tuple[NodeDescriptor, ...]) -> int:
     )
 
 
+def _middle_follows_anchor(middle: NodeDescriptor, anchor: NodeDescriptor) -> bool:
+    return node_supports_route_role(
+        middle,
+        "middle",
+        previous_node_id=anchor.node_id,
+    ) and (middle.reachability != "adjacent" or middle.endpoint == anchor.endpoint)
+
+
 @dataclass(frozen=True)
 class WanRouteSelection:
     route: tuple[tuple[NodeDescriptor, str], ...]
@@ -66,34 +76,28 @@ def order_diverse_relay_combinations(
     limit: int,
 ) -> tuple[RelayCombination, ...]:
     combinations.sort(key=lambda item: item[:3])
-    remaining = list(enumerate(combinations))
+    # Identities and ordered pairs are invariant across greedy selection rounds.
+    remaining = []
+    for index, combination in enumerate(combinations):
+        a, b, c = (node.node_id for node in combination[3:])
+        remaining.append((index, combination, (a, b, c), ((a, b), (a, c), (b, c))))
     node_use: dict[str, int] = {}
     pair_use: dict[tuple[str, str], int] = {}
     ordered: list[RelayCombination] = []
 
-    def pair_keys(combination: RelayCombination) -> tuple[tuple[str, str], ...]:
-        nodes = combination[3:]
-        return tuple(
-            (nodes[left].node_id, nodes[right].node_id)
-            for left in range(len(nodes))
-            for right in range(left + 1, len(nodes))
-        )
+    def score(item):
+        a, b, c = item[2]
+        ab, ac, bc = item[3]
+        x, y, z = pair_use.get(ab, 0), pair_use.get(ac, 0), pair_use.get(bc, 0)
+        na, nb, nc = node_use.get(a, 0), node_use.get(b, 0), node_use.get(c, 0)
+        return max(x, y, z), x + y + z, max(na, nb, nc), na + nb + nc, item[0]
 
     while remaining and len(ordered) < limit:
-        selected_index, selected = min(
-            remaining,
-            key=lambda item: (
-                max(pair_use.get(pair, 0) for pair in pair_keys(item[1])),
-                sum(pair_use.get(pair, 0) for pair in pair_keys(item[1])),
-                max(node_use.get(node.node_id, 0) for node in item[1][3:]),
-                sum(node_use.get(node.node_id, 0) for node in item[1][3:]),
-                item[0],
-            ),
-        )
+        selected_index, selected, selected_ids, selected_pairs = min(remaining, key=score)
         ordered.append(selected)
-        for node in selected[3:]:
-            node_use[node.node_id] = node_use.get(node.node_id, 0) + 1
-        for pair in pair_keys(selected):
+        for node_id in selected_ids:
+            node_use[node_id] = node_use.get(node_id, 0) + 1
+        for pair in selected_pairs:
             pair_use[pair] = pair_use.get(pair, 0) + 1
         remaining = [item for item in remaining if item[0] != selected_index]
     return tuple(ordered)
@@ -135,6 +139,7 @@ class WanRouteSelector:
             limit=1,
         )[0]
 
+    @traced("client-route-selection")
     def client_candidates(
         self,
         service_id: str,
@@ -152,7 +157,7 @@ class WanRouteSelector:
                 _selection_target(context, "access"),
                 "access",
             )
-            if node.node_id not in used
+            if node.node_id not in used and node_supports_route_role(node, "access")
         ]
         entries = self._guard_order([
             node
@@ -160,7 +165,7 @@ class WanRouteSelector:
                 _selection_target(context, "entry"),
                 "entry",
             )
-            if node.node_id not in used
+            if node.node_id not in used and node_supports_route_role(node, "entry")
         ])
         middles = [
             node
@@ -168,7 +173,7 @@ class WanRouteSelector:
                 _selection_target(context, "middle"),
                 "middle",
             )
-            if node.node_id not in used
+            if node.node_id not in used and node_supports_route_role(node, "middle")
         ]
         if not accesses or not entries or not middles:
             raise OverlayRoutingError("no complete client relay route is available")
@@ -180,6 +185,8 @@ class WanRouteSelector:
         for guard_index, entry in enumerate(entries):
             for access_index, access in enumerate(accesses):
                 for middle_index, middle in enumerate(middles):
+                    if not _middle_follows_anchor(middle, entry):
+                        continue
                     identities = {access.node_id, entry.node_id, middle.node_id}
                     if len(identities) != 3:
                         continue
@@ -223,6 +230,7 @@ class WanRouteSelector:
             raise OverlayRoutingError("no complete client relay route is available")
         return tuple(result)
 
+    @traced("host-route-selection")
     def service_route(
         self,
         service_id: str,
@@ -239,6 +247,8 @@ class WanRouteSelector:
         final_node.verify()
         if final_role not in final_node.capabilities:
             raise OverlayRoutingError("service route final node lacks its role")
+        if not node_supports_route_role(final_node, final_role):
+            raise OverlayRoutingError("service route final node is not directly reachable")
         context = service_id.encode("ascii") + final_node.node_id.encode("ascii")
         used = {
             validate_node_id(node_id) for node_id in (excluded_ids or ())
@@ -259,6 +269,7 @@ class WanRouteSelector:
                 _selection_target(context, "access"), "access"
             )
             if node.node_id not in blocked_accesses
+            and node_supports_route_role(node, "access")
         ]
         guards = self._guard_order([
             node
@@ -266,6 +277,7 @@ class WanRouteSelector:
                 _selection_target(context, "service-relay"), "service-relay"
             )
             if node.node_id not in blocked_service_relays
+            and node_supports_route_role(node, "service-relay")
         ])
         middles = [
             node
@@ -273,6 +285,7 @@ class WanRouteSelector:
                 _selection_target(context, "middle"), "middle"
             )
             if node.node_id not in blocked_middles
+            and node_supports_route_role(node, "middle")
         ]
         choices: list[
             tuple[int, int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
@@ -280,6 +293,8 @@ class WanRouteSelector:
         for guard_index, guard in enumerate(guards):
             for access_index, access in enumerate(accesses):
                 for middle_index, middle in enumerate(middles):
+                    if not _middle_follows_anchor(middle, guard):
+                        continue
                     nodes = (access, guard, middle, final_node)
                     if len({node.node_id for node in nodes}) != len(nodes):
                         continue
@@ -310,6 +325,7 @@ class WanRouteSelector:
         )
 
 
+@traced("host-route-set")
 def select_service_route_set(
     selector: WanRouteSelector,
     service_id: str,

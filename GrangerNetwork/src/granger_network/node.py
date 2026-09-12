@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -11,6 +12,7 @@ import socket
 import sys
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,7 @@ from .cells import (
     CellMultiplexer,
     CoverTrafficProfile,
     MuxStream,
+    ReceiveMemoryBudget,
     cover_profile_from_environment,
 )
 from .circuit import decode_extend_circuit, decode_open_circuit, encode_open_circuit
@@ -36,8 +39,9 @@ from .errors import (
 )
 from .identity import ServiceIdentity
 from .introduction import IntroductionRegistry
-from .peer import GrangerNode, NodeDescriptor, RelayPolicy
+from .peer import GrangerNode, NodeDescriptor, RelayPolicy, node_supports_route_role
 from .peer_rpc import (
+    AuthenticatedPeer,
     PeerRole,
     RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcFrame,
@@ -46,9 +50,17 @@ from .peer_rpc import (
     connect_authenticated_peer,
     encode_error,
 )
+from .reverse_adjacency import ReverseAdjacencyPool
+from .reseed import (
+    ReseedStore,
+    decode_reseed_chunk_request,
+    encode_reseed_advertisements,
+    encode_reseed_chunk_response,
+)
 from .transport import RendezvousEndpoint
 from .wan_discovery import (
     MAX_FIND_NODE_RESULTS,
+    encode_public_service_sample,
     PersistentRecordStore,
     decode_find_node,
     decode_find_record,
@@ -72,6 +84,24 @@ NODE_IDENTITY_FILE = "node-identity.json"
 NODE_DESCRIPTOR_FILE = "node-descriptor.json"
 NODE_CACHE_FILE = "peer-cache.json"
 NODE_RECORDS_FILE = "records.json"
+_TRANSFER_PEER = object()
+DEFAULT_MAX_RPC_REQUESTS_PER_CONNECTION = 1024
+MAX_RENDEZVOUS_REPLAY_ENTRIES = 16384
+MAX_CONCURRENT_REACHABILITY_PROBES = 8
+MAX_CONNECTIONS_PER_SOURCE = 32
+MAX_RPC_REQUESTS_PER_SOURCE_WINDOW = 4096
+MAX_RPC_SOURCE_WINDOWS = 4096
+RPC_SOURCE_WINDOW_SECONDS = 60.0
+
+
+def _safe_forwarding_failure_category(error: BaseException) -> str:
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    if isinstance(error, ResourceLimitError):
+        return "resource-limit"
+    if isinstance(error, ProtocolError):
+        return "protocol"
+    return "transport"
 
 
 @dataclass(frozen=True)
@@ -209,29 +239,58 @@ class WanNodeServer:
         capture_path: Path | None = None,
         diagnostics_path: Path | None = None,
         cover_profile: CoverTrafficProfile | str | None = None,
+        enable_listener: bool = True,
+        max_rpc_requests_per_connection: int = DEFAULT_MAX_RPC_REQUESTS_PER_CONNECTION,
+        reseed_store: ReseedStore | None = None,
     ) -> None:
         descriptor.verify()
         if descriptor.identity_public_key != identity.public_key_bytes:
             raise DescriptorError("WAN node identity does not match its descriptor")
-        if descriptor.reachability != "reachable":
+        if not isinstance(enable_listener, bool):
+            raise DescriptorError("WAN listener mode must be boolean")
+        if (
+            isinstance(max_rpc_requests_per_connection, bool)
+            or not isinstance(max_rpc_requests_per_connection, int)
+            or not 1 <= max_rpc_requests_per_connection <= 65536
+        ):
+            raise ValueError("WAN RPC request limit is invalid")
+        if enable_listener and descriptor.reachability != "reachable":
             raise DescriptorError("WAN listener requires reachable node status")
+        if not enable_listener and descriptor.reachability != "adjacent":
+            raise DescriptorError("listener-free WAN node requires adjacent reachability")
         self.identity = identity
         self.descriptor = descriptor
         self.policy = descriptor.relay_policy
+        self.enable_listener = enable_listener
+        self.max_rpc_requests_per_connection = max_rpc_requests_per_connection
+        if reseed_store is not None and (
+            reseed_store.network_id != descriptor.network_id
+            or reseed_store.protocol_version != descriptor.protocol_version
+        ):
+            raise DescriptorError("WAN node reseed store belongs to a different network")
+        self.reseed_store = reseed_store
+        # Only an explicitly validated public snapshot publisher is attached by
+        # the operator/browser lifecycle. No private authority lives on a relay.
+        self.wan_config_publisher = None
         self.cover_profile = (
             cover_profile_from_environment()
             if cover_profile is None
             else CoverTrafficProfile(cover_profile)
         )
-        self.listener_endpoint = listener_endpoint or NodeListenerEndpoint(
-            descriptor.endpoint.host,
-            descriptor.endpoint.port,
-        )
-        if self.listener_endpoint.family != descriptor.endpoint.family:
-            raise DescriptorError("node listener and advertised endpoint families differ")
+        self.listener_endpoint = None
+        if enable_listener:
+            self.listener_endpoint = listener_endpoint or NodeListenerEndpoint(
+                descriptor.endpoint.host,
+                descriptor.endpoint.port,
+            )
+            if self.listener_endpoint.family != descriptor.endpoint.family:
+                raise DescriptorError("node listener and advertised endpoint families differ")
+        elif listener_endpoint is not None:
+            raise DescriptorError("listener-free WAN node cannot bind a listener endpoint")
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.capture_path = Path(capture_path) if capture_path is not None else None
+        self._retain_connection_metadata = self.capture_path is not None
         self._capture_bytes = 0
         self._capture_limit = 8 * 1024 * 1024
         if self.capture_path is not None:
@@ -252,36 +311,66 @@ class WanNodeServer:
             protocol_version=descriptor.protocol_version,
         )
         self.runtime = GrangerNode(identity, descriptor, self.policy)
-        self._known: dict[str, NodeDescriptor] = {descriptor.node_id: descriptor}
-        for peer in self.peer_cache.load():
-            self._known[peer.node_id] = peer
+        self.receive_memory_budget = ReceiveMemoryBudget(
+            self.policy.memory_budget_kib * 1024
+        )
         for peer in known_peers:
             peer.verify(
                 expected_network_id=descriptor.network_id,
                 expected_protocol_version=descriptor.protocol_version,
             )
-            self._known[peer.node_id] = peer
         if known_peers:
             self.peer_cache.ingest(known_peers, source="configured-peer")
+        self._known: dict[str, NodeDescriptor] = {
+            peer.node_id: peer for peer in self.peer_cache.load()
+        }
+        self._known[descriptor.node_id] = descriptor
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
         self._accept_thread: threading.Thread | None = None
         self._threads: set[threading.Thread] = set()
         self._connections: set[socket.socket] = set()
+        self._source_hash_key = secrets.token_bytes(32)
+        self._active_sources: dict[bytes, int] = {}
+        self._connection_sources: dict[socket.socket, bytes] = {}
+        self._rpc_source_windows: OrderedDict[bytes, tuple[float, int]] = OrderedDict()
+        self._max_connections_per_source = min(
+            MAX_CONNECTIONS_PER_SOURCE,
+            self.policy.max_connections,
+        )
+        self._max_rpc_requests_per_source_window = MAX_RPC_REQUESTS_PER_SOURCE_WINDOW
         self._lock = threading.Lock()
         self._descriptor_lock = threading.Lock()
+        self._reverse_adjacencies = (
+            ReverseAdjacencyPool(
+                descriptor,
+                max_peers=min(self.policy.max_connections, 4096),
+                max_slots_per_peer=min(4, self.policy.max_connections),
+                max_total_slots=min(self.policy.max_connections, 16384),
+                on_discard=self._discard_reverse_peer,
+            )
+            if enable_listener
+            else None
+        )
         self.errors: list[str] = []
         self.accepted_connections = 0
         self.rejected_connections = 0
         self.rpc_requests = 0
+        self.reachability_probes = 0
+        self.reachability_probe_failures = 0
+        self._reachability_probe_slots = threading.BoundedSemaphore(
+            min(MAX_CONCURRENT_REACHABILITY_PROBES, self.policy.max_connections)
+        )
         self.peer_addresses: list[tuple[str, int]] = []
         self.circuit_observations: list[WanCircuitObservation] = []
         self._introduction_registry = IntroductionRegistry()
         self._introduction_lock = threading.Lock()
         self._introduction_sessions: dict[str, _IntroductionSession] = {}
         self._rendezvous_slots: dict[bytes, _RendezvousSlot] = {}
-        self._used_rendezvous_joins: set[tuple[bytes, bytes]] = set()
-        self.records.store(self._record_for_descriptor(descriptor))
+        self._used_rendezvous_joins: dict[tuple[bytes, bytes], int] = {}
+        self._max_rendezvous_replay_entries = MAX_RENDEZVOUS_REPLAY_ENTRIES
+        if enable_listener:
+            self.records.store(self._record_for_descriptor(descriptor))
 
     def _capture_relay_payload(self, payload: bytes) -> None:
         if self.capture_path is None:
@@ -296,17 +385,17 @@ class WanNodeServer:
             self._capture_bytes += len(content)
 
     def _record_runtime_error(self, error: BaseException) -> None:
-        entry = f"{type(error).__name__}:{error}"
+        category = type(error).__name__
         with self._lock:
             if len(self.errors) < 1024:
-                self.errors.append(entry)
+                self.errors.append(category)
             if (
                 self.diagnostics_path is not None
                 and self._diagnostics_bytes < self._diagnostics_limit
             ):
                 document = {
-                    "error": str(error),
-                    "errorType": type(error).__name__,
+                    "error": category,
+                    "errorType": category,
                     "nodeId": self.descriptor.node_id,
                     "timeNs": time.time_ns(),
                     "version": 1,
@@ -360,6 +449,7 @@ class WanNodeServer:
                 or descriptor.network_id != current.network_id
                 or descriptor.protocol_version != current.protocol_version
                 or descriptor.version != current.version
+                or descriptor.via_node_id != current.via_node_id
             ):
                 raise DescriptorError("renewed WAN descriptor changes the listener policy")
             if (
@@ -368,14 +458,17 @@ class WanNodeServer:
             ):
                 raise DescriptorError("renewed WAN descriptor does not advance its validity")
 
-            record = self._record_for_descriptor(descriptor, now=now)
-            self.records.store(record, now=now)
+            if self.enable_listener:
+                record = self._record_for_descriptor(descriptor, now=now)
+                self.records.store(record, now=now)
             self.runtime.replace_descriptor(descriptor, now=now)
             with self._lock:
                 self.descriptor = descriptor
                 self._known[descriptor.node_id] = descriptor
 
     def start_background(self) -> None:
+        if not self.enable_listener or self.listener_endpoint is None:
+            raise RuntimeError("listener-free WAN node cannot start an inbound listener")
         if self._listener is not None:
             raise RuntimeError("WAN node is already running")
         listener = socket.socket(self.listener_endpoint.family, socket.SOCK_STREAM)
@@ -412,14 +505,21 @@ class WanNodeServer:
                 if self._stop.is_set():
                     return
                 raise
+            source_key = self._source_key(str(address[0]))
             with self._lock:
-                if len(self._connections) >= self.policy.max_connections:
+                if (
+                    len(self._connections) >= self.policy.max_connections
+                    or self._active_sources.get(source_key, 0)
+                    >= self._max_connections_per_source
+                ):
                     self.rejected_connections += 1
                     connection.close()
                     continue
                 self._connections.add(connection)
+                self._connection_sources[connection] = source_key
+                self._active_sources[source_key] = self._active_sources.get(source_key, 0) + 1
                 self.accepted_connections += 1
-                if len(self.peer_addresses) < 4096:
+                if self._retain_connection_metadata and len(self.peer_addresses) < 4096:
                     self.peer_addresses.append((str(address[0]), int(address[1])))
             thread = threading.Thread(
                 target=self._handle_connection,
@@ -431,9 +531,98 @@ class WanNodeServer:
                 self._threads.add(thread)
             thread.start()
 
+    def _source_key(self, host: str) -> bytes:
+        packed = ipaddress.ip_address(host).packed
+        return hashlib.blake2s(
+            packed,
+            key=self._source_hash_key,
+            digest_size=16,
+        ).digest()
+
+    def _consume_rpc_source_budget(self, host: str) -> None:
+        source_key = self._source_key(host)
+        current = time.monotonic()
+        with self._lock:
+            expired = tuple(
+                key
+                for key, (started, _count) in self._rpc_source_windows.items()
+                if current - started >= RPC_SOURCE_WINDOW_SECONDS
+            )
+            for key in expired:
+                self._rpc_source_windows.pop(key, None)
+            state = self._rpc_source_windows.get(source_key)
+            if state is None:
+                if len(self._rpc_source_windows) >= MAX_RPC_SOURCE_WINDOWS:
+                    raise ResourceLimitError("RPC source tracking capacity is exhausted")
+                state = (current, 0)
+            started, count = state
+            if count >= self._max_rpc_requests_per_source_window:
+                raise ResourceLimitError("RPC source request limit is exhausted")
+            self._rpc_source_windows[source_key] = (started, count + 1)
+            self._rpc_source_windows.move_to_end(source_key)
+
+    def _discard_reverse_peer(self, peer: AuthenticatedPeer) -> None:
+        connection = peer.channel.connection
+        with self._lock:
+            self._release_connection_unlocked(connection)
+        peer.close()
+
+    def _forget_reverse_peer(self, peer: AuthenticatedPeer) -> None:
+        with self._lock:
+            self._release_connection_unlocked(peer.channel.connection)
+
+    def _release_connection_unlocked(self, connection: socket.socket) -> None:
+        self._connections.discard(connection)
+        source_key = self._connection_sources.pop(connection, None)
+        if source_key is None:
+            return
+        remaining = self._active_sources.get(source_key, 0) - 1
+        if remaining > 0:
+            self._active_sources[source_key] = remaining
+        else:
+            self._active_sources.pop(source_key, None)
+
     def _known_peers(self) -> tuple[NodeDescriptor, ...]:
         with self._lock:
-            return tuple(self._known.values())
+            known = tuple(self._known.values())
+        adjacent = (
+            self._reverse_adjacencies.descriptors()
+            if self._reverse_adjacencies is not None
+            else ()
+        )
+        return known + adjacent
+
+    def _route_candidate_available(self, descriptor: NodeDescriptor, capability: str) -> bool:
+        if not node_supports_route_role(descriptor, capability):
+            return False
+        return (
+            descriptor.reachability != "adjacent"
+            or (
+                self._reverse_adjacencies is not None
+                and self._reverse_adjacencies.available(descriptor)
+            )
+        )
+
+    def _discovery_candidates(
+        self,
+        capability: str,
+        *,
+        include_adjacent: bool,
+    ) -> list[NodeDescriptor]:
+        candidates: list[NodeDescriptor] = []
+        for candidate in self._known_peers():
+            try:
+                candidate.verify(
+                    expected_network_id=self.descriptor.network_id,
+                    expected_protocol_version=self.descriptor.protocol_version,
+                )
+            except DescriptorError:
+                continue
+            if candidate.reachability == "adjacent" and not include_adjacent:
+                continue
+            if self._route_candidate_available(candidate, capability):
+                candidates.append(candidate)
+        return candidates
 
     def add_known_peer(
         self,
@@ -445,11 +634,13 @@ class WanNodeServer:
             expected_network_id=self.descriptor.network_id,
             expected_protocol_version=self.descriptor.protocol_version,
         )
+        if descriptor.reachability == "adjacent":
+            return
         self.peer_cache.add(descriptor, source=source)
+        cached = self.peer_cache.load()
         with self._lock:
-            previous = self._known.get(descriptor.node_id)
-            if previous is None or descriptor.issued_at >= previous.issued_at:
-                self._known[descriptor.node_id] = descriptor
+            self._known = {peer.node_id: peer for peer in cached}
+            self._known[self.descriptor.node_id] = self.descriptor
 
     def _send_error(self, peer, request: RpcFrame, code: str) -> None:
         peer.rpc.send(
@@ -505,12 +696,8 @@ class WanNodeServer:
             for thread in threads:
                 thread.join(timeout=2.0)
         if failures and not self._stop.is_set():
-            failure = failures[0]
-            detail = str(failure).strip()
-            raise ProtocolError(
-                f"relay forwarding failed: {type(failure).__name__}"
-                + (f": {detail}" if detail else "")
-            )
+            category = _safe_forwarding_failure_category(failures[0])
+            raise ProtocolError(f"relay forwarding failed ({category})")
 
     def _handle_open_circuit(self, peer, request: RpcFrame, upstream: str) -> None:
         opened = decode_open_circuit(request.payload)
@@ -533,6 +720,7 @@ class WanNodeServer:
                 opened.circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                receive_budget=self.receive_memory_budget,
                 cover_profile=self.cover_profile,
             )
             stream = multiplexer.accept_stream(self.policy.connection_timeout_seconds)
@@ -567,16 +755,27 @@ class WanNodeServer:
         outbound = None
         incoming_mux: CellMultiplexer | None = None
         outgoing_mux: CellMultiplexer | None = None
+        reverse_outbound = False
         try:
             try:
-                outbound = connect_authenticated_peer(
-                    extension.next_node,
-                    self.identity,
-                    PeerRole.RELAY,
-                    local_descriptor=self.descriptor,
-                    timeout=self.policy.connection_timeout_seconds,
-                    attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
-                )
+                if extension.next_node.reachability == "adjacent":
+                    if (
+                        extension.next_role != "middle"
+                        or extension.next_node.via_node_id != self.descriptor.node_id
+                        or self._reverse_adjacencies is None
+                    ):
+                        raise ProtocolError("adjacent circuit hop is not registered at this node")
+                    outbound = self._reverse_adjacencies.acquire(extension.next_node)
+                    reverse_outbound = True
+                else:
+                    outbound = connect_authenticated_peer(
+                        extension.next_node,
+                        self.identity,
+                        PeerRole.RELAY,
+                        local_descriptor=self.descriptor,
+                        timeout=self.policy.connection_timeout_seconds,
+                        attempts=RESILIENT_PEER_CONNECT_ATTEMPTS,
+                    )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 raise ProtocolError(
                     "circuit extension next-hop authentication failed: "
@@ -608,12 +807,14 @@ class WanNodeServer:
                 initiator=False,
                 max_streams=self.policy.max_streams,
                 cover_profile=self.cover_profile,
+                receive_budget=self.receive_memory_budget,
             )
             outgoing_mux = CellMultiplexer(
                 outbound.channel,
                 extension.outgoing_circuit_id,
                 initiator=True,
                 max_streams=self.policy.max_streams,
+                receive_budget=self.receive_memory_budget,
                 cover_profile=self.cover_profile,
             )
             outgoing = outgoing_mux.open_stream(self.policy.connection_timeout_seconds)
@@ -628,7 +829,10 @@ class WanNodeServer:
                 capture=self._capture_relay_payload,
             )
             with self._lock:
-                if len(self.circuit_observations) < 4096:
+                if (
+                    self._retain_connection_metadata
+                    and len(self.circuit_observations) < 4096
+                ):
                     self.circuit_observations.append(observation)
             self._bridge_streams(
                 incoming,
@@ -655,6 +859,8 @@ class WanNodeServer:
                 outgoing_mux.close()
             elif outbound is not None:
                 outbound.close()
+            if reverse_outbound and outbound is not None:
+                self._forget_reverse_peer(outbound)
             self.runtime.end_circuit(extension.incoming_circuit_id)
 
     def _handle_intro_register(self, peer, request: RpcFrame, upstream: str) -> None:
@@ -798,7 +1004,10 @@ class WanNodeServer:
             capture=self._capture_relay_payload,
         )
         with self._lock:
-            if len(self.circuit_observations) < 4096:
+            if (
+                self._retain_connection_metadata
+                and len(self.circuit_observations) < 4096
+            ):
                 self.circuit_observations.append(observation)
 
         def pump(
@@ -849,12 +1058,8 @@ class WanNodeServer:
             for thread in threads:
                 thread.join(timeout=2.0)
         if failures and not self._stop.is_set():
-            failure = failures[0]
-            detail = str(failure).strip()
-            raise ProtocolError(
-                f"rendezvous forwarding failed: {type(failure).__name__}"
-                + (f": {detail}" if detail else "")
-            )
+            category = _safe_forwarding_failure_category(failures[0])
+            raise ProtocolError(f"rendezvous forwarding failed ({category})")
 
     def _handle_rendezvous_register(
         self,
@@ -889,6 +1094,7 @@ class WanNodeServer:
                 registration.cell_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                receive_budget=self.receive_memory_budget,
                 cover_profile=self.cover_profile,
             )
             slot.host_stream = slot.host_mux.accept_stream(self.policy.connection_timeout_seconds)
@@ -912,6 +1118,33 @@ class WanNodeServer:
                 if self._rendezvous_slots.get(key) is slot:
                     del self._rendezvous_slots[key]
 
+    def _reserve_rendezvous_join(
+        self,
+        joined: RendezvousJoin,
+        now: int,
+    ) -> _RendezvousSlot | None:
+        replay_key = (joined.cookie_tag, joined.nonce)
+        with self._lock:
+            expired = tuple(
+                key
+                for key, expires_at in self._used_rendezvous_joins.items()
+                if expires_at <= now
+            )
+            for key in expired:
+                del self._used_rendezvous_joins[key]
+            slot = self._rendezvous_slots.get(joined.cookie_tag)
+            if slot is None or slot.registration.expires_at <= now:
+                return None
+            if replay_key in self._used_rendezvous_joins:
+                raise ProtocolError("rendezvous join nonce was replayed")
+            if (
+                len(self._used_rendezvous_joins)
+                >= self._max_rendezvous_replay_entries
+            ):
+                raise ResourceLimitError("rendezvous replay state limit is exhausted")
+            self._used_rendezvous_joins[replay_key] = slot.registration.expires_at
+            return slot
+
     def _handle_rendezvous_join(
         self,
         peer,
@@ -922,17 +1155,8 @@ class WanNodeServer:
         if "rendezvous" not in self.descriptor.capabilities:
             raise ResourceLimitError("node did not advertise rendezvous capability")
         joined = RendezvousJoin.decode(request.payload)
-        replay_key = (joined.cookie_tag, joined.nonce)
-        with self._lock:
-            if replay_key in self._used_rendezvous_joins:
-                raise ProtocolError("rendezvous join nonce was replayed")
-            self._used_rendezvous_joins.add(replay_key)
-            if len(self._used_rendezvous_joins) > 16384:
-                self._used_rendezvous_joins = set(
-                    list(self._used_rendezvous_joins)[-8192:]
-                )
-            slot = self._rendezvous_slots.get(joined.cookie_tag)
-        if slot is None or slot.registration.expires_at <= int(time.time()):
+        slot = self._reserve_rendezvous_join(joined, int(time.time()))
+        if slot is None:
             self._send_error(peer, request, "RENDEZVOUS_UNAVAILABLE")
             return
         if not slot.host_ready.wait(self.policy.connection_timeout_seconds):
@@ -950,6 +1174,7 @@ class WanNodeServer:
                 joined.cell_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                receive_budget=self.receive_memory_budget,
                 cover_profile=self.cover_profile,
             )
             slot.client_stream = slot.client_mux.accept_stream(self.policy.connection_timeout_seconds)
@@ -966,13 +1191,46 @@ class WanNodeServer:
             slot.client_ready.set()
             raise
 
+    def _handle_reverse_register(
+        self,
+        peer: AuthenticatedPeer,
+        request: RpcFrame,
+        accounting_circuit_id: bytes | None,
+    ) -> bool:
+        if request.payload:
+            raise ProtocolError("reverse adjacency registration payload must be empty")
+        if accounting_circuit_id is not None:
+            raise ProtocolError("reverse adjacency registration requires a direct transport")
+        if self._reverse_adjacencies is None:
+            raise ResourceLimitError("node does not accept reverse adjacencies")
+        try:
+            descriptor = self._reverse_adjacencies.register(peer)
+        except ResourceLimitError:
+            self._send_error(peer, request, "REVERSE_CAPACITY")
+            return False
+        except DescriptorError:
+            self._send_error(peer, request, "REVERSE_DESCRIPTOR_REJECTED")
+            return False
+        try:
+            peer.rpc.send(
+                RpcType.REVERSE_REGISTER,
+                b"",
+                request_id=request.request_id,
+                response=True,
+            )
+        except Exception:
+            self._reverse_adjacencies.discard(peer)
+            raise
+        return True
+
     def _dispatch(
         self,
         peer,
         request: RpcFrame,
         upstream: str,
         accounting_circuit_id: bytes | None,
-    ) -> bool:
+        direct_host: str | None = None,
+    ) -> bool | object:
         if request.is_response or request.is_error:
             raise ProtocolError("WAN node received an unsolicited RPC response")
         self.rpc_requests += 1
@@ -999,17 +1257,10 @@ class WanNodeServer:
                 self._send_error(peer, request, "CAPABILITY_DISABLED")
                 return True
             capability, limit = decode_peer_sample(request.payload)
-            candidates = []
-            for candidate in self._known_peers():
-                try:
-                    candidate.verify(
-                        expected_network_id=self.descriptor.network_id,
-                        expected_protocol_version=self.descriptor.protocol_version,
-                    )
-                except DescriptorError:
-                    continue
-                if capability in candidate.capabilities and candidate.reachability == "reachable":
-                    candidates.append(candidate)
+            candidates = self._discovery_candidates(
+                capability,
+                include_adjacent=accounting_circuit_id is not None,
+            )
             candidates.sort(key=lambda candidate: candidate.node_id)
             peer.rpc.send(
                 RpcType.PEER_SAMPLE,
@@ -1023,23 +1274,28 @@ class WanNodeServer:
                 self._send_error(peer, request, "CAPABILITY_DISABLED")
                 return True
             target, capability = decode_find_node(request.payload)
-            candidates = []
-            for candidate in self._known_peers():
-                try:
-                    candidate.verify(
-                        expected_network_id=self.descriptor.network_id,
-                        expected_protocol_version=self.descriptor.protocol_version,
-                    )
-                except DescriptorError:
-                    continue
-                if capability in candidate.capabilities and candidate.reachability == "reachable":
-                    candidates.append(candidate)
+            candidates = self._discovery_candidates(
+                capability,
+                include_adjacent=accounting_circuit_id is not None,
+            )
             candidates.sort(key=lambda candidate: _node_distance(candidate.node_id, target))
             peer.rpc.send(
                 RpcType.FIND_NODE,
                 encode_node_list(candidates[:MAX_FIND_NODE_RESULTS]),
                 request_id=request.request_id,
                 response=True,
+            )
+            return True
+        if request.message_type is RpcType.PUBLIC_SERVICE_SAMPLE:
+            if "discovery" not in self.descriptor.capabilities or accounting_circuit_id is None:
+                self._send_error(peer, request, "PRIVATE_DISCOVERY_REQUIRED")
+                return True
+            if request.payload:
+                raise ProtocolError("public service sample request must be empty")
+            peer.rpc.send(
+                RpcType.PUBLIC_SERVICE_SAMPLE,
+                encode_public_service_sample(self.records.public_service_sample()),
+                request_id=request.request_id, response=True,
             )
             return True
         if request.message_type is RpcType.FIND_RECORD:
@@ -1067,6 +1323,128 @@ class WanNodeServer:
                 response=True,
             )
             return True
+        if request.message_type is RpcType.WAN_CONFIG_QUERY:
+            if request.payload:
+                raise ProtocolError("WAN config query payload must be empty")
+            publisher = self.wan_config_publisher
+            peer.rpc.send(
+                RpcType.WAN_CONFIG_QUERY,
+                encode_reseed_advertisements(publisher.advertisements() if publisher else ()),
+                request_id=request.request_id, response=True,
+            )
+            return True
+        if request.message_type is RpcType.WAN_CONFIG_CHUNK:
+            digest, offset = decode_reseed_chunk_request(request.payload)
+            try:
+                if self.wan_config_publisher is None:
+                    raise DiscoveryError("WAN config is unavailable")
+                size, content = self.wan_config_publisher.transport_chunk(digest, offset)
+            except DiscoveryError:
+                self._send_error(peer, request, "WAN_CONFIG_UNAVAILABLE")
+                return True
+            peer.rpc.send(
+                RpcType.WAN_CONFIG_CHUNK, encode_reseed_chunk_response(digest, offset, size, content),
+                request_id=request.request_id, response=True,
+            )
+            return True
+        if request.message_type is RpcType.RESEED_QUERY:
+            if request.payload:
+                raise ProtocolError("reseed query payload must be empty")
+            if self.reseed_store is None or "discovery" not in self.descriptor.capabilities:
+                self._send_error(peer, request, "RESEED_UNAVAILABLE")
+                return True
+            peer.rpc.send(
+                RpcType.RESEED_QUERY,
+                encode_reseed_advertisements(self.reseed_store.advertisements()),
+                request_id=request.request_id,
+                response=True,
+            )
+            return True
+        if request.message_type is RpcType.RESEED_CHUNK:
+            if self.reseed_store is None or "discovery" not in self.descriptor.capabilities:
+                self._send_error(peer, request, "RESEED_UNAVAILABLE")
+                return True
+            digest, offset = decode_reseed_chunk_request(request.payload)
+            try:
+                total_size, content = self.reseed_store.transport_chunk(digest, offset)
+            except DiscoveryError:
+                self._send_error(peer, request, "RESEED_UNAVAILABLE")
+                return True
+            peer.rpc.send(
+                RpcType.RESEED_CHUNK,
+                encode_reseed_chunk_response(digest, offset, total_size, content),
+                request_id=request.request_id,
+                response=True,
+            )
+            return True
+        if request.message_type is RpcType.OBSERVED_ADDRESS:
+            if request.payload or accounting_circuit_id is not None or direct_host is None:
+                raise ProtocolError("observed-address query requires a direct empty request")
+            peer.rpc.send(
+                RpcType.OBSERVED_ADDRESS,
+                ipaddress.ip_address(direct_host).compressed.encode("ascii"),
+                request_id=request.request_id,
+                response=True,
+            )
+            return True
+        if request.message_type is RpcType.REACHABILITY_PROBE:
+            if request.payload or accounting_circuit_id is not None or direct_host is None:
+                raise ProtocolError("reachability probe requires a direct empty request")
+            descriptor = peer.remote.descriptor
+            if (
+                peer.remote.role is not PeerRole.RELAY
+                or descriptor is None
+                or descriptor.reachability != "reachable"
+                or descriptor.endpoint.host != ipaddress.ip_address(direct_host).compressed
+                or "discovery" not in descriptor.capabilities
+                or "entry" not in descriptor.capabilities
+            ):
+                self._send_error(peer, request, "REACHABILITY_POLICY_REJECTED")
+                return True
+            if not self._reachability_probe_slots.acquire(blocking=False):
+                self._send_error(peer, request, "REACHABILITY_CAPACITY")
+                return True
+            callback = None
+            try:
+                callback = connect_authenticated_peer(
+                    descriptor,
+                    self.identity,
+                    PeerRole.RELAY,
+                    local_descriptor=self.descriptor,
+                    timeout=min(3.0, float(self.policy.connection_timeout_seconds)),
+                )
+                challenge = secrets.token_bytes(32)
+                response = callback.rpc.request(
+                    RpcType.PING,
+                    challenge,
+                    expected=RpcType.PONG,
+                )
+                if response.payload != challenge:
+                    raise ProtocolError("reachability callback challenge did not match")
+                self.add_known_peer(descriptor, source="reachability-proof")
+                with self._lock:
+                    self.reachability_probes += 1
+                peer.rpc.send(
+                    RpcType.REACHABILITY_PROBE,
+                    b"",
+                    request_id=request.request_id,
+                    response=True,
+                )
+            except (GrangerNetworkError, OSError, ValueError):
+                with self._lock:
+                    self.reachability_probe_failures += 1
+                self._send_error(peer, request, "REACHABILITY_CALLBACK_FAILED")
+            finally:
+                if callback is not None:
+                    callback.close()
+                self._reachability_probe_slots.release()
+            return True
+        if request.message_type is RpcType.REVERSE_REGISTER:
+            return (
+                _TRANSFER_PEER
+                if self._handle_reverse_register(peer, request, accounting_circuit_id)
+                else False
+            )
         if request.message_type is RpcType.OPEN_CIRCUIT:
             self._handle_open_circuit(peer, request, upstream)
             return False
@@ -1103,14 +1481,71 @@ class WanNodeServer:
         peer,
         upstream: str,
         accounting_circuit_id: bytes | None = None,
-    ) -> None:
+        direct_host: str | None = None,
+    ) -> bool:
+        requests_served = 0
         while not self._stop.is_set():
+            if requests_served >= self.max_rpc_requests_per_connection:
+                raise ResourceLimitError("peer RPC request limit is exhausted")
             request = peer.rpc.receive()
-            if not self._dispatch(peer, request, upstream, accounting_circuit_id):
-                return
+            if peer.remote.role is PeerRole.CONFIG_RECOVERY and (
+                request.message_type not in {RpcType.WAN_CONFIG_QUERY, RpcType.WAN_CONFIG_CHUNK}
+                or requests_served >= 65
+            ):
+                self._send_error(peer, request, "CONFIG_RECOVERY_ONLY")
+                return False
+            if direct_host is not None:
+                self._consume_rpc_source_budget(direct_host)
+            requests_served += 1
+            disposition = self._dispatch(
+                peer,
+                request,
+                upstream,
+                accounting_circuit_id,
+                direct_host,
+            )
+            if disposition is _TRANSFER_PEER:
+                return True
+            if not disposition:
+                return False
+        return False
+
+    def serve_reverse_adjacency(
+        self,
+        peer: AuthenticatedPeer,
+        anchor: NodeDescriptor,
+    ) -> None:
+        if self.enable_listener or self.descriptor.reachability != "adjacent":
+            raise ProtocolError("reverse adjacency server requires listener-free node mode")
+        anchor.verify(
+            expected_network_id=self.descriptor.network_id,
+            expected_protocol_version=self.descriptor.protocol_version,
+        )
+        if (
+            self.descriptor.via_node_id != anchor.node_id
+            or self.descriptor.endpoint != anchor.endpoint
+            or peer.remote.descriptor is None
+            or peer.remote.descriptor.node_id != anchor.node_id
+        ):
+            raise ProtocolError("reverse adjacency server is connected to the wrong anchor")
+        connection = peer.channel.connection
+        with self._lock:
+            if len(self._connections) >= self.policy.max_connections:
+                raise ResourceLimitError("listener-free node connection limit is exhausted")
+            self._connections.add(connection)
+        try:
+            transferred = self._serve_peer(peer, f"anchor:{anchor.node_id}")
+            if transferred:
+                raise ProtocolError("nested reverse adjacency transfer is forbidden")
+        finally:
+            peer.close()
+            with self._lock:
+                self._connections.discard(connection)
 
     def _handle_connection(self, connection: socket.socket, address: tuple[str, int]) -> None:
         peer = None
+        transferred = False
+        recovery_deadline = None
         try:
             connection.settimeout(self.policy.connection_timeout_seconds)
             role = PeerRole.BOOTSTRAP if "bootstrap" in self.descriptor.capabilities else PeerRole.RELAY
@@ -1121,26 +1556,69 @@ class WanNodeServer:
                 role=role,
             )
             connection.settimeout(self.policy.idle_timeout_seconds)
-            if peer.remote.descriptor is not None:
+            if peer.remote.role is PeerRole.CONFIG_RECOVERY:
+                def expire_recovery():
+                    try:
+                        connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    connection.close()
+                recovery_deadline = threading.Timer(10.0, expire_recovery)
+                recovery_deadline.daemon = True
+                recovery_deadline.start()
+            if (
+                peer.remote.descriptor is not None
+                and peer.remote.descriptor.reachability != "adjacent"
+                and peer.remote.role is PeerRole.BOOTSTRAP
+            ):
                 self.add_known_peer(peer.remote.descriptor)
-            self._serve_peer(peer, f"{address[0]}:{address[1]}")
+            transferred = self._serve_peer(
+                peer,
+                f"{address[0]}:{address[1]}",
+                direct_host=str(address[0]),
+            )
         except ConnectionClosedError:
             pass
         except (GrangerNetworkError, OSError, ValueError) as error:
             if not self._stop.is_set():
                 self._record_runtime_error(error)
         finally:
-            if peer is not None:
+            if recovery_deadline is not None:
+                recovery_deadline.cancel()
+            if peer is not None and not transferred:
                 peer.close()
-            else:
+            elif peer is None:
                 connection.close()
             current = threading.current_thread()
             with self._lock:
-                self._connections.discard(connection)
+                if not transferred:
+                    self._release_connection_unlocked(connection)
                 self._threads.discard(current)
+
+    def contribution_snapshot(self) -> dict[str, object]:
+        result: dict[str, object] = self.runtime.contribution_snapshot()
+        with self._lock:
+            listener_metrics = {
+                "acceptedConnections": self.accepted_connections,
+                "rejectedConnections": self.rejected_connections,
+                "relayEligible": self.policy.enabled,
+                "reachability": self.descriptor.reachability,
+                "rpcRequests": self.rpc_requests,
+                "reachabilityProbeFailures": self.reachability_probe_failures,
+                "reachabilityProbes": self.reachability_probes,
+                "receiveMemoryBudgetBytes": self.receive_memory_budget.maximum_bytes,
+                "receiveMemoryUsedBytes": self.receive_memory_budget.used_bytes,
+                "rpcSourceWindows": len(self._rpc_source_windows),
+            }
+        result.update(listener_metrics)
+        if self._reverse_adjacencies is not None:
+            result["reverseAdjacency"] = self._reverse_adjacencies.snapshot().to_document()
+        return result
 
     def stop(self) -> None:
         self._stop.set()
+        if self._reverse_adjacencies is not None:
+            self._reverse_adjacencies.close()
         if self._listener is not None:
             self._listener.close()
             self._listener = None
@@ -1226,6 +1704,7 @@ def load_node(
     listener_endpoint: NodeListenerEndpoint | None = None,
     capture_path: Path | None = None,
     diagnostics_path: Path | None = None,
+    reseed_store: ReseedStore | None = None,
 ) -> WanNodeServer:
     root = Path(state_dir)
     identity = ServiceIdentity.load(root / NODE_IDENTITY_FILE)
@@ -1238,6 +1717,7 @@ def load_node(
         listener_endpoint=listener_endpoint,
         capture_path=capture_path,
         diagnostics_path=diagnostics_path,
+        reseed_store=reseed_store,
     )
 
 
@@ -1261,6 +1741,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--listen-port", type=int)
     run.add_argument("--capture", type=Path)
     run.add_argument("--diagnostics", type=Path)
+    run.add_argument("--wan-config-publication", type=Path)
+    run.add_argument("--wan-config-trust-anchor", type=Path)
     return parser
 
 
@@ -1305,6 +1787,13 @@ def main(argv: list[str] | None = None) -> int:
             capture_path=options.capture,
             diagnostics_path=options.diagnostics,
         )
+        if bool(options.wan_config_publication) != bool(options.wan_config_trust_anchor):
+            raise ValueError("config publication requires an existing trust anchor")
+        if options.wan_config_publication is not None:
+            from .wan_config_recovery import WanConfigPublisher
+            node.wan_config_publisher = WanConfigPublisher(
+                options.wan_config_publication, options.wan_config_trust_anchor,
+            )
         node.start_background()
         if options.ready_file is not None:
             atomic_write_text(

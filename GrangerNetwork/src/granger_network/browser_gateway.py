@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import argparse
 import base64
 import binascii
@@ -12,19 +14,26 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ._codec import parse_json_object
 from .address import normalize_name
+from .browser_peer import BrowserPeerPolicy, BrowserPeerRuntime
 from .client import GrangerClient, GrangerResponse
 from .cells import CoverTrafficProfile, cover_profile_from_environment
 from .descriptor import ServiceDescriptor
 from .errors import (
     DescriptorError,
+    DiscoveryError,
     GrangerNetworkError,
     IdentityVerificationError,
+    IntroductionOfflineError,
+    NetworkUnavailableError,
+    OverlayRoutingError,
     ProtocolError,
+    RecordQuorumError,
     RendezvousError,
     ReplayError,
     ResolutionError,
@@ -36,9 +45,9 @@ from .service import GrangerServiceHost
 from .transport import LoopbackEndpoint
 from .wan_client import WanClientConnection, connect_service
 from .wan_config import (
-    ensure_browser_wan_config,
     load_browser_wan_config,
     load_discovery_runtime,
+    load_or_create_identity,
 )
 from .wan_discovery import WanDistributedResolver
 
@@ -58,6 +67,17 @@ _ALLOWED_REQUEST_HEADERS = {
 }
 _dns_request_count = 0
 _write_lock = threading.Lock()
+
+
+def _browser_peer_policy_from_environment() -> BrowserPeerPolicy:
+    raw_port = os.environ.get("GRANGER_BROWSER_RELAY_PORT", "").strip()
+    if not raw_port:
+        return BrowserPeerPolicy()
+    try:
+        port = int(raw_port, 10)
+    except ValueError as error:
+        raise ValueError("browser relay port is invalid") from error
+    return BrowserPeerPolicy(public_listener_port=port)
 
 
 class _LocalDemoBridge:
@@ -154,6 +174,7 @@ class CircuitRotationPolicy:
     max_age_seconds: float = 10 * 60
     max_requests: int = 128
     max_transferred_bytes: int = 64 * 1024 * 1024
+    max_cached_services: int = 16
 
     def __post_init__(self) -> None:
         if (
@@ -166,8 +187,17 @@ class CircuitRotationPolicy:
             or isinstance(self.max_transferred_bytes, bool)
             or not isinstance(self.max_transferred_bytes, int)
             or not 64 * 1024 <= self.max_transferred_bytes <= 1024 * 1024 * 1024
+            or isinstance(self.max_cached_services, bool)
+            or not isinstance(self.max_cached_services, int)
+            or not 1 <= self.max_cached_services <= 256
         ):
             raise ValueError("circuit rotation policy is invalid")
+
+
+def _load_browser_peer_identity(state_dir: Path) -> ServiceIdentity:
+    return load_or_create_identity(
+        Path(state_dir) / "browser-peer" / "relay-identity.json"
+    )
 
 
 @dataclass
@@ -189,6 +219,7 @@ class _WanGateway:
         trust_anchor_path: Path | None = None,
         rollback_state_path: Path | None = None,
         rotation_policy: CircuitRotationPolicy | None = None,
+        on_health_changed: Callable[[], None] | None = None,
     ) -> None:
         config = load_browser_wan_config(
             config_path,
@@ -196,6 +227,7 @@ class _WanGateway:
             rollback_state_path=rollback_state_path,
             allow_legacy=trust_anchor_path is None,
         )
+        self._config = config
         self._runtime = load_discovery_runtime(
             config.bootstrap_path,
             config.authority_pin_path,
@@ -215,6 +247,26 @@ class _WanGateway:
         self._rotation_count = 0
         self._closed = False
         self._lock = threading.Lock()
+        browser_peer_root = Path(state_dir) / "browser-peer"
+        publisher = None
+        if trust_anchor_path is not None:
+            from .wan_config_recovery import WanConfigPublisher
+            try:
+                publisher = WanConfigPublisher(config_path, trust_anchor_path)
+            except DiscoveryError:
+                # A still-valid config may already rely on a newer cached
+                # reseed. Never relay its expired embedded bootstrap snapshot.
+                pass
+        self._browser_peer = BrowserPeerRuntime(
+            _load_browser_peer_identity(state_dir),
+            self._runtime.discovery,
+            browser_peer_root,
+            lifecycle_policy=_browser_peer_policy_from_environment(),
+            reseed_store=self._runtime.reseed,
+            wan_config_publisher=publisher,
+            on_state_changed=on_health_changed,
+        )
+        self._browser_peer.start()
 
     def network_health(self) -> dict[str, object]:
         result = self._runtime.discovery.health().to_document()
@@ -225,6 +277,9 @@ class _WanGateway:
                 self._cover_profile is not CoverTrafficProfile.OFF
             )
             result["coverProfile"] = self._cover_profile.value
+        browser_peer = getattr(self, "_browser_peer", None)
+        if browser_peer is not None:
+            result["browserPeer"] = browser_peer.contribution_snapshot()
         return result
 
     def _service_lock(self, name: str) -> threading.Lock:
@@ -239,6 +294,7 @@ class _WanGateway:
             or slot.connected.session.application_mux.failed
         )
 
+    @traced("client-session")
     def _acquire_session(
         self,
         name: str,
@@ -260,18 +316,46 @@ class _WanGateway:
                     timeout=self._timeout,
                 )
                 replacement = _GatewaySessionSlot(connected, time.monotonic())
+                capacity_error = False
                 with self._lock:
                     if self._closed:
-                        connected.session.close()
+                        capacity_error = True
+                    else:
+                        previous = self._sessions.get(name)
+                        if (
+                            previous is None
+                            and len(self._sessions)
+                            >= self._rotation_policy.max_cached_services
+                        ):
+                            inactive = tuple(
+                                (cached_name, cached_slot)
+                                for cached_name, cached_slot in self._sessions.items()
+                                if cached_slot.active_requests == 0
+                            )
+                            if not inactive:
+                                capacity_error = True
+                            else:
+                                evicted_name, evicted = min(
+                                    inactive,
+                                    key=lambda item: item[1].created_at,
+                                )
+                                del self._sessions[evicted_name]
+                                evicted.retired = True
+                                retired = evicted
+                                self._rotation_count += 1
+                        if not capacity_error:
+                            self._sessions[name] = replacement
+                            slot = replacement
+                            if previous is not None:
+                                previous.retired = True
+                                self._rotation_count += 1
+                                if previous.active_requests == 0:
+                                    retired = previous
+                if capacity_error:
+                    connected.session.close()
+                    if self._closed:
                         raise RendezvousError("Granger WAN gateway is closed")
-                    previous = self._sessions.get(name)
-                    self._sessions[name] = replacement
-                    slot = replacement
-                    if previous is not None:
-                        previous.retired = True
-                        self._rotation_count += 1
-                        if previous.active_requests == 0:
-                            retired = previous
+                    raise RendezvousError("service circuit cache limit is exhausted")
             assert slot is not None
             with self._lock:
                 slot.active_requests += 1
@@ -304,6 +388,11 @@ class _WanGateway:
         headers: dict[str, str],
         body: bytes,
     ) -> GrangerResponse:
+        config = getattr(self, "_config", None)
+        if config is not None and config.version == 2 and (
+            config.issued_at > int(time.time()) + 120 or config.expires_at <= int(time.time())
+        ):
+            raise DiscoveryError("signed browser WAN config is not currently valid")
         maximum_attempts = 2 if method.upper() in {"GET", "HEAD"} else 1
         for attempt in range(maximum_attempts):
             slot, retired = self._acquire_session(name)
@@ -357,12 +446,167 @@ class _WanGateway:
         raise RendezvousError("idempotent service request retry was exhausted")
 
     def close(self) -> None:
+        browser_peer = getattr(self, "_browser_peer", None)
+        if browser_peer is not None:
+            browser_peer.stop()
         with self._lock:
             self._closed = True
             sessions = tuple(slot.connected for slot in self._sessions.values())
             self._sessions.clear()
         for connected in sessions:
             connected.session.close()
+
+
+class _ManagedWanGateway:
+    """One gateway owner; installs control snapshots and swaps only when idle."""
+
+    def __init__(self, recovery, state_dir: Path) -> None:
+        self.recovery = recovery
+        self.state_dir = Path(state_dir)
+        self.identity = load_or_create_identity(self.state_dir / "client-identity.json")
+        self._active = None
+        self._users = 0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._available = threading.Event()
+        self._retry_at = 0.0
+        self._failures = 0
+        self._generation = 0
+        self._last_health = None
+        self._thread = threading.Thread(target=self._supervise, name="granger-config-lifecycle", daemon=True)
+        self._thread.start()
+
+    def _supervise(self) -> None:
+        from .bootstrap import PeerCache
+        try:
+            cache = PeerCache(self.state_dir / "peer-cache.json")
+        except GrangerNetworkError:
+            cache = None
+        while not self._stop.is_set():
+            if time.monotonic() < self._retry_at:
+                self._wake.wait(max(0, self._retry_at - time.monotonic()))
+                self._wake.clear()
+                if self._stop.is_set():
+                    break
+                # Peer notifications publish state without triggering config IO/RPC retries.
+                self._publish_health()
+                if time.monotonic() < self._retry_at:
+                    continue
+            try:
+                path = None
+                try:
+                    path = self.recovery.current()
+                except DiscoveryError:
+                    pass
+                with self._lock:
+                    active = self._active
+                    expired = active is not None and (
+                        active._config.expires_at <= int(time.time())
+                        or active._config.issued_at > int(time.time()) + 120
+                    )
+                    if expired:
+                        self._active = None
+                        self._generation = 0
+                        self._available.clear()
+                if expired:
+                    active.close()
+                    active = None
+                if path is None or self.recovery.expires_at - int(time.time()) <= self.recovery.renewal_margin:
+                    replacement = self.recovery.refresh(
+                        self.identity, cache=cache,
+                        discovery=active._runtime.discovery if active is not None else None,
+                        stop=self._stop,
+                    )
+                    path = replacement or path
+                if path is not None and not self._stop.is_set():
+                    config = load_browser_wan_config(
+                        path, trust_anchor_path=self.recovery.trust_anchor,
+                        rollback_state_path=self.recovery.rollback, allow_legacy=False,
+                    )
+                    with self._lock:
+                        replace = self._users == 0 and self._generation != config.generation
+                        old = self._active if replace else None
+                        if replace:
+                            self._active = None
+                            self._generation = 0
+                            self._available.clear()
+                    if replace:
+                        if old is not None:
+                            old.close()
+                        candidate = _WanGateway(
+                            path, self.state_dir, trust_anchor_path=self.recovery.trust_anchor,
+                            rollback_state_path=self.recovery.rollback,
+                            on_health_changed=self._wake.set,
+                        )
+                        with self._lock:
+                            if self._stop.is_set():
+                                candidate.close()
+                            else:
+                                self._active = candidate
+                                self._generation = config.generation
+                                self._failures = 0
+                                self.recovery.state = "CONFIG_VALID"
+                                self._available.set()
+                elif path is None:
+                    self.recovery.state = "RECOVERING"
+            except (GrangerNetworkError, OSError, ValueError):
+                self.recovery.state = "RECOVERING"
+                self._failures = min(6, self._failures + 1)
+            self._publish_health()
+            delay = max(5, min(300, 10 * 2 ** self._failures))
+            if self.recovery.expires_at - int(time.time()) > self.recovery.renewal_margin:
+                delay = min(300, max(10, self.recovery.expires_at - int(time.time()) - self.recovery.renewal_margin))
+            until_expiry = self.recovery.expires_at - int(time.time())
+            if until_expiry > 0:
+                delay = min(delay, until_expiry)
+            self._retry_at = time.monotonic() + delay
+
+    def _publish_health(self) -> None:
+        health = self.network_health()
+        if health != self._last_health and not self._stop.is_set():
+            _write({"type": "health", "version": PROTOCOL_VERSION, "networkHealth": health})
+            self._last_health = health
+
+    @traced("gateway-fetch")
+    def fetch_gateway(self, *args, **kwargs):
+        if not self._available.is_set() and not self._stop.is_set():
+            self._available.wait(30)
+        with self._lock:
+            active = self._active
+            if self._stop.is_set() or active is None or active._config.expires_at <= int(time.time()):
+                self._wake.set()
+                raise DiscoveryError("Granger Network configuration is recovering")
+            self._users += 1
+        try:
+            return active.fetch_gateway(*args, **kwargs)
+        finally:
+            with self._lock:
+                self._users -= 1
+
+    def network_health(self) -> dict[str, object]:
+        with self._lock:
+            active = self._active
+            result = active.network_health() if active is not None else {}
+            valid = active is not None and (
+                active._config.issued_at <= int(time.time()) + 120
+                and active._config.expires_at > int(time.time())
+            )
+        if not valid:
+            result.update(state="RECOVERING", dhtReady=False, failureReason="CONFIG_RECOVERY")
+        result["configRecovery"] = self.recovery.snapshot()
+        return result
+
+    def close(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        self._available.set()
+        self._thread.join(timeout=5)
+        with self._lock:
+            active = self._active
+            self._active = None
+        if active is not None:
+            active.close()
 
 
 class _UnavailableGateway:
@@ -486,6 +730,14 @@ def parse_request(content: bytes) -> dict[str, object]:
 
 
 def _error_code(error: BaseException) -> str:
+    if isinstance(error, RecordQuorumError):
+        return "QUORUM_UNAVAILABLE"
+    if isinstance(error, NetworkUnavailableError):
+        return "NETWORK_UNAVAILABLE"
+    if isinstance(error, IntroductionOfflineError):
+        return "INTRO_UNAVAILABLE"
+    if isinstance(error, OverlayRoutingError):
+        return "NO_ROUTE"
     if isinstance(error, ResolutionError):
         return "SERVICE_NOT_FOUND"
     if isinstance(error, (DescriptorError, IdentityVerificationError)):
@@ -501,6 +753,7 @@ def _error_code(error: BaseException) -> str:
     return "REQUEST_REJECTED"
 
 
+@traced("gateway-ipc-request")
 def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str, object]:
     request_id = ""
     try:
@@ -578,10 +831,16 @@ def serve(
     state_dir: Path | None = None,
     wan_trust_anchor: Path | None = None,
     wan_rollback_state: Path | None = None,
+    wan_recovery=None,
 ) -> int:
     install_dns_guard()
     demo = _LocalDemo(registry) if local_demo and registry is not None else None
-    if wan_config is not None:
+    if wan_recovery is not None:
+        if state_dir is None:
+            raise ValueError("WAN browser gateway requires a state directory")
+        resolver = _ManagedWanGateway(wan_recovery, state_dir)
+        mode = "wan"
+    elif wan_config is not None:
         if state_dir is None:
             raise ValueError("WAN browser gateway requires a state directory")
         resolver: object = _WanGateway(
@@ -711,8 +970,10 @@ def main(argv: list[str] | None = None) -> int:
         wan_config = options.wan_config
         wan_trust_anchor = None
         wan_rollback_state = None
+        wan_recovery = None
         if provision_requested:
-            wan_config = ensure_browser_wan_config(
+            from .wan_config_recovery import WanConfigRecovery
+            wan_recovery = WanConfigRecovery(
                 options.wan_bundle,
                 options.wan_trust_anchor,
                 options.wan_install_root,
@@ -728,6 +989,7 @@ def main(argv: list[str] | None = None) -> int:
             state_dir=options.state_dir,
             wan_trust_anchor=wan_trust_anchor,
             wan_rollback_state=wan_rollback_state,
+            wan_recovery=wan_recovery,
         )
     except (GrangerNetworkError, OSError, ValueError) as error:
         print(f"granger-browser-gateway: {type(error).__name__}", file=sys.stderr)

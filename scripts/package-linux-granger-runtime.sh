@@ -100,6 +100,7 @@ for key in cryptography cryptographyDist cffi cffiDist pycparser pycparserDist b
     cp -aL -- "$source_path" "$site_packages/"
 done
 cp -a -- "$project_root/GrangerNetwork/src/granger_network" "$site_packages/"
+cp -- "$project_root/scripts/release_update.py" "$project_root/scripts/windows_artifact_trust.py" "$site_packages/"
 
 libpython="$(ldd "$python_source" | awk '/libpython[0-9].*\.so/{print $3; exit}')"
 if [[ -n "$libpython" && -f "$libpython" ]]; then
@@ -159,8 +160,12 @@ PY
 
 wan_metadata='{"bundled":false,"configSha256":"","expiresAt":0,"generation":0,"networkId":"","protocolVersion":0}'
 wan_source_root="${GRANGER_NETWORK_RELEASE_BUNDLE:-}"
+[[ -n "$wan_source_root" ]] \
+    || fail "GRANGER_NETWORK_RELEASE_BUNDLE must identify a signed production WAN bundle"
+wan_source_root="$(realpath -e "$wan_source_root")" \
+    || fail "signed production WAN bundle is unavailable"
+[[ -d "$wan_source_root" ]] || fail "signed production WAN bundle is not a directory"
 if [[ -n "$wan_source_root" ]]; then
-    wan_source_root="$(realpath -m "$wan_source_root")"
     wan_source_config="$wan_source_root/browser-wan.json"
     wan_source_trust="$wan_source_root/config-authority.pin"
     [[ -f "$wan_source_config" && -f "$wan_source_trust" ]] \

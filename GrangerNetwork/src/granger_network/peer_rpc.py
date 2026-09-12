@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import secrets
 import socket
 import struct
@@ -14,7 +16,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .binary import BinaryReader, BinaryWriter
-from .errors import IdentityVerificationError, ProtocolError, TransportPolicyError
+from .errors import IdentityVerificationError, PeerRpcError, ProtocolError, TransportPolicyError
 from .identity import ServiceIdentity
 from .peer import NodeDescriptor, node_id_from_public_key
 from .protocol import VERSION_3, SecureChannel, client_handshake, server_handshake
@@ -60,6 +62,14 @@ class RpcType(IntEnum):
     WINDOW_UPDATE = 23
     ERROR = 24
     PEER_SAMPLE = 25
+    REVERSE_REGISTER = 26
+    RESEED_QUERY = 27
+    RESEED_CHUNK = 28
+    OBSERVED_ADDRESS = 29
+    REACHABILITY_PROBE = 30
+    WAN_CONFIG_QUERY = 31
+    WAN_CONFIG_CHUNK = 32
+    PUBLIC_SERVICE_SAMPLE = 33
 
 
 class PeerRole(IntEnum):
@@ -67,6 +77,7 @@ class PeerRole(IntEnum):
     SERVICE = 2
     RELAY = 3
     BOOTSTRAP = 4
+    CONFIG_RECOVERY = 5
 
 
 class DuplexConnection(Protocol):
@@ -191,6 +202,7 @@ class PeerRpcSession:
             self._rx_sequence += 1
             return frame
 
+    @traced("peer-rpc")
     def request(
         self,
         message_type: RpcType,
@@ -209,7 +221,7 @@ class PeerRpcSession:
                 reader.finish()
             except ProtocolError:
                 code = "REMOTE_ERROR"
-            raise ProtocolError(f"peer RPC request failed: {code}")
+            raise PeerRpcError(code)
         if response.message_type is not expected:
             raise ProtocolError(
                 "peer RPC response type mismatch: "
@@ -293,7 +305,7 @@ def _decode_hello(payload: bytes) -> _Hello:
             raise IdentityVerificationError("peer descriptor identity was substituted")
     if role in {PeerRole.RELAY, PeerRole.BOOTSTRAP} and descriptor is None:
         raise IdentityVerificationError("infrastructure peer omitted its signed descriptor")
-    if role in {PeerRole.CLIENT, PeerRole.SERVICE} and descriptor is not None:
+    if role in {PeerRole.CLIENT, PeerRole.SERVICE, PeerRole.CONFIG_RECOVERY} and descriptor is not None:
         raise IdentityVerificationError("endpoint peer disclosed an unexpected relay descriptor")
     return _Hello(role, public_key, nonce, descriptor, payload)
 
@@ -335,6 +347,8 @@ def _verify_pinned_server_descriptor(
         or connected.reachability != expected.reachability
         or connected.network_id != expected.network_id
         or connected.protocol_version != expected.protocol_version
+        or connected.version != expected.version
+        or connected.via_node_id != expected.via_node_id
     ):
         raise IdentityVerificationError("connected peer changed its pinned listener policy")
     if connected.issued_at < expected.issued_at:
@@ -347,6 +361,14 @@ def _verify_pinned_server_descriptor(
         raise IdentityVerificationError("connected peer descriptor did not advance its validity")
 
 
+def _configure_peer_tcp(connection: DuplexConnection) -> None:
+    # Multiplexed DATA and WINDOW_UPDATE records must not wait for Nagle's
+    # small-packet coalescing plus delayed ACK at every authenticated hop.
+    # Virtual circuit streams retain their own flow control and padding.
+    if isinstance(connection, socket.socket) and connection.family in (socket.AF_INET, socket.AF_INET6):
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+
 def authenticate_client_stream(
     connection: DuplexConnection,
     expected_server: NodeDescriptor,
@@ -356,10 +378,28 @@ def authenticate_client_stream(
     local_descriptor: NodeDescriptor | None = None,
 ) -> AuthenticatedPeer:
     expected_server.verify()
+    return _authenticate_pinned_stream(
+        connection, expected_server.identity_public_key, identity, role,
+        lambda connected: _verify_pinned_server_descriptor(expected_server, connected),
+        local_descriptor=local_descriptor,
+    )
+
+
+@traced("peer-auth")
+def _authenticate_pinned_stream(
+    connection: DuplexConnection,
+    public_key: bytes,
+    identity: ServiceIdentity,
+    role: PeerRole,
+    verify_descriptor: Callable[[NodeDescriptor], None],
+    *,
+    local_descriptor: NodeDescriptor | None = None,
+) -> AuthenticatedPeer:
+    _configure_peer_tcp(connection)
     session_id = secrets.token_bytes(16)
     channel = client_handshake(
         connection,
-        expected_server.identity_public_key,
+        public_key,
         session_id=session_id,
         protocol_version=VERSION_3,
     )
@@ -376,13 +416,13 @@ def authenticate_client_stream(
             raise ProtocolError("peer authentication HELLO state is invalid")
         remote_hello = _decode_hello(response.payload)
         if (
-            remote_hello.public_key != expected_server.identity_public_key
+            remote_hello.public_key != public_key
             or remote_hello.role not in {PeerRole.RELAY, PeerRole.BOOTSTRAP}
         ):
             raise IdentityVerificationError("connected peer does not match its pinned descriptor")
         if remote_hello.descriptor is None:
             raise IdentityVerificationError("connected peer omitted its signed descriptor")
-        _verify_pinned_server_descriptor(expected_server, remote_hello.descriptor)
+        verify_descriptor(remote_hello.descriptor)
         transcript = _auth_payload(channel.channel_binding, local_hello, remote_hello.encoded)
         rpc.send(
             RpcType.AUTH,
@@ -412,6 +452,64 @@ def authenticate_client_stream(
         raise
 
 
+@dataclass(frozen=True)
+class ConfigRecoveryContact:
+    """Historical signed contact, never a routing descriptor or capability grant."""
+
+    public_key: bytes
+    endpoint: RendezvousEndpoint
+    network_id: str
+    protocol_version: int
+    minimum_issued_at: int
+
+
+def connect_config_recovery(
+    contact: ConfigRecoveryContact,
+    identity: ServiceIdentity,
+    *,
+    timeout: float = 3.0,
+) -> AuthenticatedPeer:
+    if not 0 < timeout <= 10 or contact.protocol_version != VERSION_3:
+        raise TransportPolicyError("config recovery transport policy is invalid")
+
+    def verify(connected: NodeDescriptor) -> None:
+        connected.verify(
+            expected_network_id=contact.network_id,
+            expected_protocol_version=contact.protocol_version,
+        )
+        if (
+            connected.identity_public_key != contact.public_key
+            or connected.endpoint != contact.endpoint
+            or connected.reachability != "reachable"
+            or connected.issued_at < contact.minimum_issued_at
+        ):
+            raise IdentityVerificationError("config recovery peer does not match its signed contact")
+
+    connection = socket.socket(contact.endpoint.family, socket.SOCK_STREAM)
+    # An absolute deadline also bounds slow/trickled handshake bytes, unlike a
+    # per-recv timeout. Closing this socket cannot affect a normal data session.
+    def expire():
+        try:
+            connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        connection.close()
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        connection.settimeout(timeout)
+        connection.connect(contact.endpoint.socket_address)
+        return _authenticate_pinned_stream(
+            connection, contact.public_key, identity, PeerRole.CONFIG_RECOVERY, verify,
+        )
+    except Exception:
+        connection.close()
+        raise
+    finally:
+        timer.cancel()
+
+
 def authenticate_server_stream(
     connection: DuplexConnection,
     identity: ServiceIdentity,
@@ -419,6 +517,7 @@ def authenticate_server_stream(
     *,
     role: PeerRole = PeerRole.RELAY,
 ) -> AuthenticatedPeer:
+    _configure_peer_tcp(connection)
     descriptor.verify()
     if descriptor.identity_public_key != identity.public_key_bytes:
         raise IdentityVerificationError("server descriptor does not match its identity")
@@ -482,6 +581,8 @@ def connect_authenticated_peer(
     on_stage: Callable[[str, int], None] | None = None,
 ) -> AuthenticatedPeer:
     descriptor.verify()
+    if descriptor.reachability != "reachable":
+        raise TransportPolicyError("direct peer connection requires a reachable descriptor")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
         raise TransportPolicyError("peer connection timeout must be positive")
     if (

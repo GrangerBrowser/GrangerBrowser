@@ -19,6 +19,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QThread>
 #include <QTimer>
 #include <QUuid>
 #include <QUrl>
@@ -1255,14 +1256,32 @@ bool ContainerManager::save(QString *error) const
                      {QStringLiteral("siteRules"), rulesJson}};
     if (!m_legacyArchive.isEmpty()) root.insert(QStringLiteral("legacyArchive"), m_legacyArchive);
     QDir().mkpath(QFileInfo(storePath()).absolutePath());
-    QSaveFile file(storePath());
-    if (!file.open(QIODevice::WriteOnly)
-        || file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0
-        || !file.commit()) {
-        if (error) *error = QStringLiteral("could not save container configuration");
-        return false;
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    for (int attempt = 0; ; ++attempt) {
+        QSaveFile file(storePath());
+        const auto failed = [&file, error](const QString &stage) {
+            if (error) {
+                *error = QStringLiteral("could not save container configuration (%1, error %2): %3")
+                             .arg(stage).arg(file.error()).arg(file.errorString());
+            }
+            return false;
+        };
+        if (!file.open(QIODevice::WriteOnly)) {
+            return failed(QStringLiteral("open"));
+        }
+        if (file.write(data) != data.size()) {
+            return failed(QStringLiteral("write"));
+        }
+        if (file.commit()) return true;
+#ifdef Q_OS_WIN
+        // A short-lived reader can deny replacement. Keep atomic writes and a 150 ms delay budget.
+        if (file.error() == QFileDevice::RenameError && attempt < 5) {
+            QThread::msleep(10 * (attempt + 1));
+            continue;
+        }
+#endif
+        return failed(QStringLiteral("commit"));
     }
-    return true;
 }
 
 bool ContainerManager::load(QString *error)

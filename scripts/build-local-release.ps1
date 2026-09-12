@@ -2,11 +2,16 @@
 param(
     [string]$QtRoot = $env:QTDIR,
     [string]$BuildDirectory = "build/desktop",
-    [string]$PythonExecutable = ""
+    [string]$PythonExecutable = "",
+    [string]$WanBundleDirectory = $env:GRANGER_NETWORK_RELEASE_BUNDLE
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'PackageWorkspace.ps1')
+if ([string]::IsNullOrWhiteSpace($WanBundleDirectory)) {
+    throw 'WAN_BUNDLE_REQUIRED: provide the existing signed production bundle before building.'
+}
 if ([string]::IsNullOrWhiteSpace($QtRoot)) { $QtRoot = $env:CMAKE_PREFIX_PATH }
 if ([string]::IsNullOrWhiteSpace($QtRoot) -or -not (Test-Path -LiteralPath $QtRoot)) {
     throw "QtRoot was not found. Pass -QtRoot or set QTDIR/CMAKE_PREFIX_PATH."
@@ -22,8 +27,9 @@ if ([string]::IsNullOrWhiteSpace($PythonExecutable) -or
 $workspaceRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "release")).TrimEnd('\')
 $canonical = Join-Path $releaseRoot "Granger Browser"
-$staging = Join-Path $releaseRoot ".local-staging"
-$previous = Join-Path $releaseRoot ".local-previous"
+$workRoot = Join-Path $projectRoot 'build/package-work/local-release'
+$staging = Resolve-PackageCandidate -ProjectRoot $projectRoot -Path (Join-Path $workRoot 'candidate')
+$previous = Join-Path $workRoot 'rollback'
 foreach ($path in @($releaseRoot, $canonical, $staging, $previous)) {
     if (-not $path.StartsWith($workspaceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw "Local release path escaped the project workspace: $path"
@@ -114,6 +120,12 @@ function Invoke-IsolatedBrowser {
     )) {
         $startInfo.EnvironmentVariables.Remove($name)
     }
+    foreach ($name in @($startInfo.EnvironmentVariables.Keys)) {
+        if ($name -like 'GRANGER_NETWORK_*' -or $name -like 'GRANGER_WAN_*' -or
+            $name -like 'GRANGER_BROWSER_PEER_*') {
+            $startInfo.EnvironmentVariables.Remove($name)
+        }
+    }
     $startInfo.Arguments = (@($Arguments) | ForEach-Object {
         '"' + $_.Replace('"', '\"') + '"'
     }) -join ' '
@@ -187,16 +199,19 @@ function Invoke-SourceIndependentDemo {
     return $result
 }
 
-$trackedStatus = @(git -C $projectRoot status --porcelain --untracked-files=no)
-if ($LASTEXITCODE -ne 0 -or $trackedStatus.Count -ne 0) {
-    throw "Commit tracked source changes before producing the canonical local release."
-}
+$sourceFingerprint = Get-PackageSourceFingerprint -ProjectRoot $projectRoot
 $sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
     throw "Could not determine the source HEAD."
 }
 $expectedNetworkIdentity = & (Join-Path $PSScriptRoot "Get-GrangerNetworkRuntimeIdentity.ps1") -SourceDirectory (Join-Path $projectRoot "GrangerNetwork/src/granger_network")
 
+New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
+$lease = [IO.File]::Open((Join-Path $workRoot 'build.lock'), [IO.FileMode]::OpenOrCreate,
+    [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+$resultRoot = Join-Path $workRoot 'acceptance'
+$promoted = $false
+try {
 if ((Test-Path -LiteralPath $canonical) -and (Test-Path -LiteralPath $previous)) {
     throw "Interrupted local release swap detected. Resolve $previous before rebuilding."
 }
@@ -204,30 +219,25 @@ if ((Test-Path -LiteralPath $previous) -and -not (Test-Path -LiteralPath $canoni
     Move-DirectoryAtomically -Source $previous -Destination $canonical
 }
 Remove-TemporaryDirectory -Path $staging
-
-$resultRoot = Join-Path $projectRoot "output/local-release-acceptance"
-if (Test-Path -LiteralPath $resultRoot) { Remove-Item -LiteralPath $resultRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
 $sourcePrivacyScan = & (Join-Path $PSScriptRoot "test-release-privacy.ps1") `
     -TrackedRoot $projectRoot -RequireMarkerFile `
     -Report (Join-Path $resultRoot "tracked-source-privacy.json")
 if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
-$promoted = $false
-try {
     & (Join-Path $PSScriptRoot "compile-release.ps1") -QtRoot $QtRoot `
         -BuildDirectory $BuildDirectory -Clean
     if ($LASTEXITCODE -ne 0) { throw "Release compilation failed." }
 
     & (Join-Path $PSScriptRoot "package-release.ps1") -QtRoot $QtRoot `
-        -BuildDirectory $BuildDirectory -Destination "release/.local-staging" -SkipBuild
+        -BuildDirectory $BuildDirectory -Destination $staging -SkipBuild
     if ($LASTEXITCODE -ne 0) { throw "Base local deployment failed." }
 
     $runtime = & (Join-Path $PSScriptRoot "package-local-granger-runtime.ps1") `
-        -PackageDirectory "release/.local-staging" -PythonExecutable $PythonExecutable
+        -PackageDirectory $staging -PythonExecutable $PythonExecutable -WanBundleDirectory $WanBundleDirectory
     $expectedRuntimeReleaseId = "granger-runtime-v1-p3-{0}-{1}" -f `
         $sourceHead.Substring(0, 12), `
         ([string]$expectedNetworkIdentity.SHA256).Substring(0, 16).ToLowerInvariant()
-    if (-not $runtime.OK -or $runtime.SourceHead -ne $sourceHead -or
+    if (-not $runtime.OK -or -not $runtime.SignedWanBundle -or $runtime.SourceHead -ne $sourceHead -or
         [string]$runtime.GrangerNetworkVersion -ne [string]$expectedNetworkIdentity.Version -or
         [string]$runtime.GrangerNetworkSourceSHA256 -ne [string]$expectedNetworkIdentity.SHA256 -or
         [int]$runtime.GrangerNetworkSourceFiles -ne [int]$expectedNetworkIdentity.FileCount -or
@@ -237,8 +247,13 @@ try {
     Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
 
     $portability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `
-        -PackageDirectory "release/.local-staging"
+        -PackageDirectory $staging
     if (-not $portability.OK) { throw "Staged Windows portability validation failed." }
+
+    $productionStartup = Join-Path $resultRoot 'staging-production-startup.json'
+    Invoke-IsolatedBrowser -Executable (Join-Path $staging 'GrangerBrowser.exe') `
+        -Arguments @('--smoke-granger-network-startup', "--smoke-output=$productionStartup") `
+        -RunRoot (Join-Path $resultRoot 'staging-production-startup') -TimeoutSeconds 120
 
     $stagingNetworkOutput = Join-Path $resultRoot "staging-granger-network.json"
     $stagingNetwork = Invoke-GrangerNetworkAcceptance `
@@ -258,7 +273,7 @@ try {
     $sourceIndependentDemo = Invoke-SourceIndependentDemo -Browser (Join-Path $staging "GrangerBrowser.exe") -OutputPath $sourceIndependentOutput -RunRoot (Join-Path $resultRoot "staging-source-independent")
 
     & (Join-Path $PSScriptRoot "test-release.ps1") `
-        -PackageDirectory "release/.local-staging" -AllowLocalGrangerRuntime
+        -PackageDirectory $staging -AllowLocalGrangerRuntime
     if ($LASTEXITCODE -ne 0) { throw "Complete staged release acceptance failed." }
     Assert-NoGeneratedPythonBytecode -PackageDirectory $staging
 
@@ -267,6 +282,9 @@ try {
         -Report (Join-Path $resultRoot "staging-release-privacy.json")
     if (-not $privacyScan.ok) { throw "Staged release privacy gate failed." }
 
+    if ((Get-PackageSourceFingerprint -ProjectRoot $projectRoot) -ne $sourceFingerprint) {
+        throw 'Source changed during compilation/acceptance. The candidate will not be promoted.'
+    }
     $runningCanonical = @(Get-PackageProcesses -PackageDirectory $canonical)
     if ($runningCanonical.Count -ne 0) {
         throw "Canonical local release is running: $($runningCanonical.ProcessId -join ', ')"
@@ -298,6 +316,11 @@ try {
     $canonicalPortability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `
         -PackageDirectory "release/Granger Browser"
     if (-not $canonicalPortability.OK) { throw "Canonical Windows portability validation failed." }
+
+    $canonicalStartup = Join-Path $resultRoot 'canonical-production-startup.json'
+    Invoke-IsolatedBrowser -Executable $canonicalExecutable `
+        -Arguments @('--smoke-granger-network-startup', "--smoke-output=$canonicalStartup") `
+        -RunRoot (Join-Path $resultRoot 'canonical-production-startup') -TimeoutSeconds 120
 
     $profileOutput = Join-Path $resultRoot "canonical-profile.json"
     Invoke-IsolatedBrowser -Executable $canonicalExecutable `
@@ -365,6 +388,7 @@ try {
         CanonicalLocalRelease = $canonical
         Executable = $canonicalExecutable
         SourceHead = $sourceHead
+        DirtySourceFingerprint = $sourceFingerprint
         LocalReleaseHead = [string]$canonicalMetadata.SourceHead
         ExecutableSHA256 = (Get-FileHash -LiteralPath $canonicalExecutable -Algorithm SHA256).Hash
         GrangerNetworkIncluded = $true
@@ -386,8 +410,7 @@ try {
         NormalUser = -not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
             [Security.Principal.WindowsBuiltInRole]::Administrator)
         PublicReleaseChanged = $false
-        Results = $resultRoot
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $releaseRoot "local-build-report.json") -Encoding UTF8
+    } | ConvertTo-Json -Depth 6 | Write-Output
 } catch {
     if ($promoted) {
         $runningPromoted = @(Get-PackageProcesses -PackageDirectory $canonical)
@@ -405,6 +428,17 @@ try {
     }
     Remove-TemporaryDirectory -Path $staging
     throw
+} finally {
+    $lease.Dispose()
+    # Never discard a rollback copy after a failed restoration.
+    if (-not (Test-Path -LiteralPath $previous) -and
+        @(Get-PackageProcesses -PackageDirectory $workRoot).Count -eq 0) {
+        if (-not ([IO.Path]::GetFullPath($workRoot)).StartsWith(
+            $workspaceRoot + '\build\package-work\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Release workspace cleanup escaped its build root.'
+        }
+        Remove-Item -LiteralPath $workRoot -Recurse -Force
+    }
 }
 
 Write-Host "Canonical local release ready: $canonical"

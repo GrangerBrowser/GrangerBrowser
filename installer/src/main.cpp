@@ -759,7 +759,11 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         || std::wstring(deployment.GetNamedString(L"GeoIpBundleVersion").c_str()) != L"15.0.20"
         || std::wstring(deployment.GetNamedString(L"I2pVersion").c_str()) != L"2.61.0"
         || std::wstring(deployment.GetNamedString(L"I2pArchiveSHA256").c_str())
-               != L"A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F"
+               != L"AFEA2C34A8FDBE36DF5AFAAACE79CEB0B45898B9EF9011946E3A692F8F318099"
+        || std::wstring(deployment.GetNamedString(L"I2pExecutableSHA256").c_str())
+               != L"96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591"
+        || !deployment.GetNamedBoolean(L"I2pReproducibleBuild")
+        || !deployment.GetNamedBoolean(L"I2pBuildPathMapped")
         || std::wstring(deployment.GetNamedString(L"I2pLicense").c_str()) != L"BSD-3-Clause"
         || deployment.GetNamedNumber(L"I2pCertificateCount") < 1) {
         throw InstallerError("Package metadata does not match the release manifest");
@@ -816,7 +820,7 @@ fs::path ExtractAndValidateArchive(const fs::path &archive, const fs::path &stag
         {L"runtime/tor/pluggable_transports/pt_config.json", L"3f11d303c30191b3b1d382b9badd882d87fd87550d061f7d25a1b31226fc9b75"},
         {L"runtime/tor/data/geoip", L"af9ccd060a712d090ee07d5678b5d45b0038ec1573116fae724a6695a8485703"},
         {L"runtime/tor/data/geoip6", L"2393124667ba2ccb4c806f226a33b2ef7a8188d1ba55831c1a5d3dca2b062514"},
-        {L"runtime/i2p/i2pd.exe", L"3bfac576443ea76586c2ab3d688cba98edaaacaaaabd72308c058249f10c493e"}
+        {L"runtime/i2p/i2pd.exe", L"96c6df64f8003384eb5abc2f7210bf04e5d75f91a3d822f2e7a62d41d8ae2591"}
     }};
     for (const auto &[relative, expected] : pinnedPrivateNetworkHashes) {
         if (Sha256File(ExtendedLengthPath(runtimeRoot / relative)) != expected) {

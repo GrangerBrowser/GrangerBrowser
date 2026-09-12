@@ -22,7 +22,7 @@ V2_DESCRIPTOR_SIGNATURE_DOMAIN = b"granger-network-v0.2/descriptor\x00"
 MAX_DESCRIPTOR_LIFETIME = 7 * 24 * 60 * 60
 MAX_CLOCK_SKEW = 120
 _CONTENT_TYPE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
-_SAFE_METADATA_LIMITS = {"title": 256, "contentType": 128}
+_SAFE_METADATA_LIMITS = {"title": 256, "contentType": 128, "visibility": 16}
 
 
 def _validated_metadata(metadata: object) -> dict[str, str]:
@@ -40,6 +40,8 @@ def _validated_metadata(metadata: object) -> dict[str, str]:
             raise DescriptorError(f"descriptor metadata contains control characters: {name}")
         if name == "contentType" and not _CONTENT_TYPE.fullmatch(value.lower()):
             raise DescriptorError("descriptor content type is invalid")
+        if name == "visibility" and value not in {"public", "unlisted"}:
+            raise DescriptorError("descriptor visibility is invalid")
         result[name] = value
     return result
 
@@ -65,6 +67,10 @@ class ServiceDescriptor:
     @property
     def is_remote(self) -> bool:
         return self.version == 2
+
+    @property
+    def publicly_listed(self) -> bool:
+        return self.is_remote and self.metadata.get("visibility") == "public"
 
     def unsigned_document(self) -> dict:
         if self.version == 1:

@@ -6,7 +6,12 @@ param(
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
-$packageRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $PackageDirectory)).TrimEnd('\')
+$packageInput = if ([IO.Path]::IsPathRooted($PackageDirectory)) {
+    $PackageDirectory
+} else {
+    Join-Path $projectRoot $PackageDirectory
+}
+$packageRoot = [IO.Path]::GetFullPath($packageInput).TrimEnd('\')
 if (-not $packageRoot.StartsWith($workspaceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "PackageDirectory must remain inside the project workspace."
 }
@@ -337,9 +342,22 @@ if ([int]$deploymentMetadata.SchemaVersion -ne 2 -or
     [string]$deploymentMetadata.ConjureVersion -ne "devel" -or
     [string]$deploymentMetadata.GeoIpBundleVersion -ne "15.0.20" -or
     [string]$deploymentMetadata.I2pVersion -ne "2.61.0" -or
-    [string]$deploymentMetadata.I2pArchiveSHA256 -ne "A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F" -or
+    [string]$deploymentMetadata.I2pSourceTag -ne "2.61.0" -or
+    [string]$deploymentMetadata.I2pSourceCommit -ne "635b013a612ff47278ef02acf8580a28e10e26c5" -or
+    [string]$deploymentMetadata.I2pArchiveSHA256 -ne "AFEA2C34A8FDBE36DF5AFAAACE79CEB0B45898B9EF9011946E3A692F8F318099" -or
+    [string]$deploymentMetadata.I2pExecutableSHA256 -ne "96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591" -or
+    -not [bool]$deploymentMetadata.I2pReproducibleBuild -or
+    -not [bool]$deploymentMetadata.I2pBuildPathMapped -or
+    [string]$deploymentMetadata.I2pBuildToolchain -ne "MSVC 19.44.35228.0 (VS 2022 toolset 14.44.35207)" -or
+    [string]$deploymentMetadata.I2pBuildFlags -ne "/experimental:deterministic; /Brepro; /pathmap; static CRT/dependencies; UPnP off; Git version off" -or
+    [string]$deploymentMetadata.I2pVcpkgTag -ne "2026.07.29" -or
+    [string]$deploymentMetadata.I2pVcpkgCommit -ne "9e593bb18ea69cc5095e012465dcd675a822ed0d" -or
+    [string]$deploymentMetadata.I2pVcpkgTriplet -ne "granger-x64-windows-static" -or
+    [string]$deploymentMetadata.I2pBoostVersion -ne "1.91.0" -or
+    [string]$deploymentMetadata.I2pOpenSslVersion -ne "3.6.3" -or
+    [string]$deploymentMetadata.I2pZlibVersion -ne "1.3.2#1" -or
     [string]$deploymentMetadata.I2pLicense -ne "BSD-3-Clause" -or
-    [int]$deploymentMetadata.I2pCertificateCount -lt 1 -or
+    [int]$deploymentMetadata.I2pCertificateCount -ne 22 -or
     [int]$deploymentMetadata.GrangerProtocolVersion -ne 3 -or
     [int]$deploymentMetadata.GrangerRuntimeManifestVersion -ne 1 -or
     [string]$deploymentMetadata.GrangerRuntimeReleaseId -notmatch '^granger-runtime-v1-p3-[0-9a-f]{12}-[0-9a-f]{16}$') {
@@ -352,7 +370,7 @@ $pinnedPrivateNetworkFiles = [ordered]@{
     "runtime/tor/pluggable_transports/pt_config.json" = "3F11D303C30191B3B1D382B9BADD882D87FD87550D061F7D25A1B31226FC9B75"
     "runtime/tor/data/geoip" = "AF9CCD060A712D090EE07D5678B5D45B0038EC1573116FAE724A6695A8485703"
     "runtime/tor/data/geoip6" = "2393124667BA2CCB4C806F226A33B2EF7A8188D1BA55831C1A5D3DCA2B062514"
-    "runtime/i2p/i2pd.exe" = "3BFAC576443EA76586C2AB3D688CBA98EDAAACAAAABD72308C058249F10C493E"
+    "runtime/i2p/i2pd.exe" = "96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591"
 }
 foreach ($entry in $pinnedPrivateNetworkFiles.GetEnumerator()) {
     $actual = (Get-FileHash -LiteralPath (Join-Path $packageRoot $entry.Key) -Algorithm SHA256).Hash

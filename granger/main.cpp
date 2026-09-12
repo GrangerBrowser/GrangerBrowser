@@ -6125,7 +6125,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(granger::Brand::organizationName());
     QCoreApplication::setOrganizationDomain(granger::Brand::organizationDomain());
     QCoreApplication::setApplicationName(granger::Brand::applicationName());
-    QCoreApplication::setApplicationVersion("0.4.4");
+    QCoreApplication::setApplicationVersion("0.4.5");
     configureSettingsStorageOverride();
     const granger::BrandMigrationResult brandMigration =
         granger::BrandMigration::migrateAtStartup();
@@ -6318,6 +6318,10 @@ int main(int argc, char *argv[])
             smokeOutput.isEmpty()
                 ? QStringLiteral("output/granger-network-local-demo-smoke.json") : smokeOutput);
     }
+    if (arguments.contains(QStringLiteral("--smoke-granger-network-startup"))) {
+        return granger::runGrangerNetworkStartupSmoke(
+            app, argumentValue(arguments, QStringLiteral("--smoke-output=")));
+    }
     if (arguments.contains(QStringLiteral("--smoke-granger-network-wan"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
         return granger::runGrangerNetworkWanSmoke(
@@ -6325,6 +6329,16 @@ int main(int argc, char *argv[])
             smokeOutput.isEmpty()
                 ? QStringLiteral("output/granger-network-wan-smoke.json") : smokeOutput,
             argumentValue(arguments, QStringLiteral("--granger-network-canonical=")));
+    }
+    if (arguments.contains(QStringLiteral("--smoke-granger-hosting-dashboard"))) {
+        const QString output = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runGrangerHostingDashboardSmoke(app,
+            output.isEmpty() ? QStringLiteral("output/hosting-dashboard-smoke.json") : output,
+            argumentValue(arguments, QStringLiteral("--granger-hosting-source=")));
+    }
+    if (arguments.contains(QStringLiteral("--smoke-updater"))) {
+        const QString output = argumentValue(arguments, QStringLiteral("--smoke-output="));
+        return granger::runGrangerUpdaterSmoke(app, output.isEmpty() ? QStringLiteral("output/updater-smoke.json") : output);
     }
     if (arguments.contains(QStringLiteral("--smoke-granger-hosting"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));
@@ -6334,7 +6348,8 @@ int main(int argc, char *argv[])
                 ? QStringLiteral("output/granger-hosting-smoke.json") : smokeOutput,
             argumentValue(arguments, QStringLiteral("--granger-hosting-source=")),
             argumentValue(arguments, QStringLiteral("--granger-hosting-backend-port=")).toInt(),
-            argumentValue(arguments, QStringLiteral("--granger-hosting-entry-page=")));
+            argumentValue(arguments, QStringLiteral("--granger-hosting-entry-page=")),
+            argumentValue(arguments, QStringLiteral("--granger-hosting-segment=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-i2p-runtime"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

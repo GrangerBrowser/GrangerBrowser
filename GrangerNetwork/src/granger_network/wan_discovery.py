@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+from .stage_trace import stage
+
 import base64
 import hashlib
 import ipaddress
@@ -8,11 +11,12 @@ import secrets
 import threading
 import time
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ._codec import atomic_write_text, decode_base64url, encode_base64url, parse_json_object
 from .binary import BinaryReader, BinaryWriter
-from .bootstrap import BootstrapPool, PeerCache
+from .bootstrap import BootstrapPool, BootstrapSet, PeerCache
 from .distributed import (
     ALIAS_RECORD,
     INTRODUCTION_RECORD,
@@ -25,14 +29,24 @@ from .distributed import (
     decode_record,
     encode_record,
 )
-from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, IdentityVerificationError, NetworkUnavailableError, ProtocolError, ReplayError, ResolutionError
+from .errors import DescriptorError, DiscoveryError, GrangerNetworkError, IdentityVerificationError, NetworkUnavailableError, ProtocolError, RecordQuorumError, ReplayError, ResolutionError, ResourceLimitError
 from .identity import ServiceIdentity
-from .peer import NodeDescriptor, validate_node_id
+from .peer import NodeDescriptor, node_supports_route_role, validate_node_id
 from .peer_rpc import (
     PeerRole,
     RESILIENT_PEER_CONNECT_ATTEMPTS,
     RpcType,
+    _verify_pinned_server_descriptor,
     connect_authenticated_peer,
+)
+from .reseed import (
+    MAX_RESEED_BUNDLE_BYTES,
+    MAX_RESEED_TRANSPORT_CHUNK_BYTES,
+    ReseedAdvertisement,
+    ReseedStore,
+    decode_reseed_advertisements,
+    decode_reseed_chunk_response,
+    encode_reseed_chunk_request,
 )
 from .address import is_canonical_name, normalize_name, service_id_from_name
 from .descriptor import ServiceDescriptor
@@ -47,14 +61,27 @@ WAN_DISCOVERY_VERSION = 1
 MAX_WAN_RECORDS = 4096
 MAX_FIND_NODE_RESULTS = 32
 MAX_PEER_SAMPLE_RESULTS = 32
+MAX_PUBLIC_SERVICE_SAMPLE = 16
 MAX_DISCOVERY_QUERIES = 32
 MAX_PARALLEL_DISCOVERY_REQUESTS = 4
 MAX_RECORD_REQUEST_ROUNDS = 2
 MAX_ROUTE_CANDIDATE_CACHE_ENTRIES = 128
+MAX_DISCOVERY_PEER_TRACKING_ENTRIES = 2048
+MAX_ROLLBACK_TRACKING_ENTRIES = 4096
 ROUTE_CANDIDATE_CACHE_TTL_SECONDS = 5 * 60.0
 PRIVATE_ROUTE_HINT_TTL_SECONDS = 60.0
+RESEED_REFRESH_MARGIN_SECONDS = 15 * 60
+MAX_RESEED_FETCH_ATTEMPTS = 8
+MAX_RESEED_QUERY_PEERS = 16
+RESEED_REFRESH_RETRY_SECONDS = 60.0
+MAX_PRIVATE_ROUTE_ATTEMPTS = 12
+MAX_PRIVATE_ROUTE_ROLE_CANDIDATES = 32
 _ROUTING_KEY_DOMAIN = b"granger-network-v0.4/wan-routing-key\x00"
 _PRIVATE_DISCOVERY_ROUTE_DOMAIN = b"granger-network-v0.5/private-discovery-route\x00"
+
+
+def _route_edge_key(left, left_role, right, right_role):
+    return (left.node_id, left.issued_at, left_role, right.node_id, right.issued_at, right_role)
 
 
 def _node_id_bytes(node_id: str) -> bytes:
@@ -223,6 +250,38 @@ def decode_node_list(
     return tuple(peers)
 
 
+def encode_public_service_sample(records: tuple[RecordEnvelope, ...]) -> bytes:
+    if len(records) > MAX_PUBLIC_SERVICE_SAMPLE:
+        raise ProtocolError("public service sample exceeds its limit")
+    writer = BinaryWriter(MAX_PUBLIC_SERVICE_SAMPLE * (MAX_DISTRIBUTED_RECORD_SIZE + 512))
+    writer.u8(len(records))
+    for record in records:
+        service = decode_record(record.kind, record.key, record.payload)
+        if not isinstance(service, ServiceDescriptor) or not service.publicly_listed:
+            raise ProtocolError("public service sample contains an unlisted record")
+        writer.bytes_u32(encode_record_envelope(record), MAX_DISTRIBUTED_RECORD_SIZE + 512)
+    return writer.build()
+
+
+def decode_public_service_sample(payload: bytes) -> tuple[ServiceDescriptor, ...]:
+    reader = BinaryReader(payload, MAX_PUBLIC_SERVICE_SAMPLE * (MAX_DISTRIBUTED_RECORD_SIZE + 512))
+    count = reader.u8()
+    if count > MAX_PUBLIC_SERVICE_SAMPLE:
+        raise ProtocolError("public service sample exceeds its limit")
+    result = []
+    seen = set()
+    for _ in range(count):
+        envelope = decode_record_envelope(reader.bytes_u32(MAX_DISTRIBUTED_RECORD_SIZE + 512))
+        service = decode_record(envelope.kind, envelope.key, envelope.payload)
+        if (not isinstance(service, ServiceDescriptor) or not service.publicly_listed
+                or service.service_id in seen):
+            raise ProtocolError("public service sample is invalid")
+        seen.add(service.service_id)
+        result.append(service)
+    reader.finish()
+    return tuple(result)
+
+
 class PersistentRecordStore:
     def __init__(self, path: Path, *, maximum: int = MAX_WAN_RECORDS) -> None:
         if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= MAX_WAN_RECORDS:
@@ -281,10 +340,21 @@ class PersistentRecordStore:
             mode=0o600,
         )
 
+    def _purge_expired_unlocked(self, now: int) -> bool:
+        expired = tuple(
+            key for key, envelope in self._records.items()
+            if envelope.expires_at <= now
+        )
+        for key in expired:
+            del self._records[key]
+        return bool(expired)
+
     def store(self, envelope: RecordEnvelope, now: int | None = None) -> None:
         canonical = decode_record_envelope(encode_record_envelope(envelope), now=now)
         key = (canonical.kind, canonical.key)
+        current = int(time.time()) if now is None else now
         with self._lock:
+            self._purge_expired_unlocked(current)
             previous = self._records.get(key)
             if previous is not None:
                 if canonical.sequence < previous.sequence:
@@ -301,12 +371,97 @@ class PersistentRecordStore:
     def fetch(self, kind: str, key: str, now: int | None = None) -> RecordEnvelope | None:
         current = int(time.time()) if now is None else now
         with self._lock:
-            envelope = self._records.get((kind, key))
-            if envelope is not None and envelope.expires_at <= current:
-                del self._records[(kind, key)]
+            if self._purge_expired_unlocked(current):
                 self._persist_unlocked()
-                return None
-            return envelope
+            return self._records.get((kind, key))
+
+    def public_service_sample(self, now: int | None = None) -> tuple[RecordEnvelope, ...]:
+        current = int(time.time()) if now is None else now
+        with self._lock:
+            self._purge_expired_unlocked(current)
+            records = tuple(self._records.values())
+        result = []
+        for record in sorted(records, key=lambda item: item.key):
+            if record.kind != SERVICE_RECORD:
+                continue
+            service = decode_record(record.kind, record.key, record.payload, now=current)
+            if isinstance(service, ServiceDescriptor) and service.publicly_listed:
+                result.append(record)
+                if len(result) == MAX_PUBLIC_SERVICE_SAMPLE:
+                    break
+        return tuple(result)
+
+
+class _RecordCircuits:
+    """Bounded circuits for one record transaction, never shared across records."""
+
+    def __init__(self, target: bytes, message: RpcType, payload: bytes, timeout: float):
+        self.allowed = {RpcType.FIND_NODE: encode_find_node(target, "discovery"), message: payload}
+        self.timeout = min(timeout, 30.0)
+        self.lock = threading.Lock()
+        self.circuits = {}
+        self.route_failures = {}
+        self.closed = False
+
+    def failed_routes(self, peer):
+        with self.lock:
+            routes, edges = self.route_failures.get(peer.node_id, (set(), set()))
+            return set(routes), set(edges)
+
+    def remember_route_failure(self, peer, route_ids, edges):
+        with self.lock:
+            if self.closed:
+                return
+            if peer.node_id not in self.route_failures and len(self.route_failures) >= MAX_FIND_NODE_RESULTS:
+                return
+            routes, previous_edges = self.route_failures.setdefault(peer.node_id, (set(), set()))
+            if len(routes) < MAX_PRIVATE_ROUTE_ATTEMPTS:
+                routes.add(route_ids)
+                previous_edges.update(edges)
+
+    def validate_request(self, message: RpcType, payload: bytes) -> None:
+        if self.closed or self.allowed.get(message) != payload:
+            raise DiscoveryError("record circuit scope does not authorize this request")
+
+    def take(self, peer: NodeDescriptor):
+        with self.lock:
+            entry = self.circuits.pop(peer.node_id, None)
+        if entry is None:
+            return None
+        circuit, retained_at = entry
+        try:
+            if time.monotonic() - retained_at > self.timeout or circuit._closed:
+                raise DiscoveryError("record circuit reuse window expired")
+            for descriptor, _role in circuit.route:
+                descriptor.verify(expected_network_id=peer.network_id,
+                                  expected_protocol_version=peer.protocol_version)
+            _verify_pinned_server_descriptor(peer, circuit.endpoint.remote.descriptor)
+            if any(mux.failed for mux in circuit.multiplexers):
+                raise DiscoveryError("record circuit transport failed")
+            return circuit
+        except (GrangerNetworkError, OSError):
+            circuit.close()
+            return None
+
+    def keep(self, peer: NodeDescriptor, circuit) -> None:
+        with self.lock:
+            if (not self.closed and peer.node_id not in self.circuits
+                    and len(self.circuits) < MAX_PARALLEL_DISCOVERY_REQUESTS):
+                self.circuits[peer.node_id] = (circuit, time.monotonic())
+                return
+        circuit.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        with self.lock:
+            self.closed = True
+            circuits = tuple(self.circuits.values())
+            self.circuits.clear()
+            self.route_failures.clear()
+        for circuit, _retained_at in circuits:
+            circuit.close()
 
 
 class WanDiscoveryClient:
@@ -319,6 +474,7 @@ class WanDiscoveryClient:
         replication_factor: int = 3,
         minimum_replicas: int = 2,
         timeout: float = 5.0,
+        reseed_store: ReseedStore | None = None,
     ) -> None:
         if not 2 <= minimum_replicas <= replication_factor <= 8:
             raise DiscoveryError("WAN discovery replication policy is invalid")
@@ -328,8 +484,20 @@ class WanDiscoveryClient:
         self.replication_factor = replication_factor
         self.minimum_replicas = minimum_replicas
         self.timeout = timeout
-        self._highest_seen: dict[tuple[str, str], int] = {}
-        self._failed_until: dict[str, float] = {}
+        if reseed_store is not None and (
+            reseed_store.network_id != pool.network_id
+            or reseed_store.protocol_version != pool.protocol_version
+        ):
+            raise DiscoveryError("WAN discovery reseed store belongs to a different network")
+        self.reseed_store = reseed_store
+        self._reseed_refresh_lock = threading.Lock()
+        self.reseed_refreshes = 0
+        self._reseed_next_attempt = 0.0
+        self._highest_seen: dict[tuple[str, str], tuple[int, int]] = {}
+        self._max_rollback_tracking_entries = MAX_ROLLBACK_TRACKING_ENTRIES
+        self._failed_until: OrderedDict[str, float] = OrderedDict()
+        self._failed_route_edges: OrderedDict[tuple[str, int, str, str, int, str], float] = OrderedDict()
+        self._exhausted_discovery_searches: OrderedDict[tuple[str, int], float] = OrderedDict()
         self._lock = threading.Lock()
         self._join_lock = threading.Lock()
         self._joined = False
@@ -345,16 +513,112 @@ class WanDiscoveryClient:
         self.private_discovery_requests = 0
         self.last_private_route: tuple[str, ...] = ()
         self._health = NetworkHealth()
-        self._authenticated_nodes: set[str] = set()
+        self._authenticated_nodes: OrderedDict[str, None] = OrderedDict()
         self._first_contact_operation = ""
         self._first_contact_trace: deque[dict[str, object]] = deque(maxlen=32)
 
     def health(self) -> NetworkHealthSnapshot:
         return self._health.snapshot()
 
+    def signed_bootstrap_node(
+        self,
+        node_id: str,
+        *,
+        now: int | None = None,
+    ) -> NodeDescriptor | None:
+        """Return a current node descriptor covered by a verified bootstrap set."""
+        validated = validate_node_id(node_id)
+        selected = None
+        for bootstrap_set in getattr(self.pool, "bootstrap_sets", ()):
+            for peer in bootstrap_set.peers:
+                if peer.node_id != validated or peer.reachability != "reachable":
+                    continue
+                try:
+                    peer.verify(
+                        now=now,
+                        expected_network_id=self.pool.network_id,
+                        expected_protocol_version=self.pool.protocol_version,
+                    )
+                except DescriptorError:
+                    continue
+                if selected is None or peer.issued_at > selected.issued_at:
+                    selected = peer
+                elif peer.issued_at == selected.issued_at and peer != selected:
+                    raise DiscoveryError("signed bootstrap node descriptor equivocation")
+        return selected
+
     def first_contact_diagnostics(self) -> tuple[dict[str, object], ...]:
         with self._lock:
             return tuple(dict(event) for event in self._first_contact_trace)
+
+    def _prune_peer_tracking_unlocked(self, now: float) -> None:
+        expired = tuple(
+            node_id
+            for node_id, retry_at in self._failed_until.items()
+            if retry_at <= now
+        )
+        for node_id in expired:
+            self._failed_until.pop(node_id, None)
+        while len(self._failed_until) > MAX_DISCOVERY_PEER_TRACKING_ENTRIES:
+            self._failed_until.popitem(last=False)
+        while len(self._authenticated_nodes) > MAX_DISCOVERY_PEER_TRACKING_ENTRIES:
+            self._authenticated_nodes.popitem(last=False)
+        for edge, retry_at in tuple(self._failed_route_edges.items()):
+            if retry_at <= now:
+                self._failed_route_edges.pop(edge, None)
+        while len(self._failed_route_edges) > MAX_DISCOVERY_PEER_TRACKING_ENTRIES:
+            self._failed_route_edges.popitem(last=False)
+        for key, retry_at in tuple(self._exhausted_discovery_searches.items()):
+            if retry_at <= now:
+                self._exhausted_discovery_searches.pop(key, None)
+        while len(self._exhausted_discovery_searches) > MAX_DISCOVERY_PEER_TRACKING_ENTRIES:
+            self._exhausted_discovery_searches.popitem(last=False)
+
+    def _record_peer_success(self, node_id: str) -> None:
+        with self._lock:
+            self._prune_peer_tracking_unlocked(time.monotonic())
+            self._failed_until.pop(node_id, None)
+            self._authenticated_nodes[node_id] = None
+            self._authenticated_nodes.move_to_end(node_id)
+            self._prune_peer_tracking_unlocked(time.monotonic())
+
+    def _record_peer_failure(self, node_id: str, retry_at: float) -> None:
+        with self._lock:
+            self._prune_peer_tracking_unlocked(time.monotonic())
+            self._failed_until[node_id] = retry_at
+            self._failed_until.move_to_end(node_id)
+            self._prune_peer_tracking_unlocked(time.monotonic())
+
+    def _purge_rollback_tracking_unlocked(self, now: int) -> None:
+        expired = tuple(
+            key
+            for key, (_sequence, expires_at) in self._highest_seen.items()
+            if expires_at <= now
+        )
+        for key in expired:
+            del self._highest_seen[key]
+
+    def _remember_record_sequence(
+        self,
+        kind: str,
+        key: str,
+        sequence: int,
+        expires_at: int,
+        *,
+        now: int,
+    ) -> None:
+        record_key = (kind, key)
+        with self._lock:
+            self._purge_rollback_tracking_unlocked(now)
+            previous = self._highest_seen.get(record_key)
+            if previous is not None and sequence < previous[0]:
+                raise ReplayError("WAN lookup detected a record rollback")
+            if (
+                previous is None
+                and len(self._highest_seen) >= self._max_rollback_tracking_entries
+            ):
+                raise ResourceLimitError("WAN rollback tracking limit is exhausted")
+            self._highest_seen[record_key] = (sequence, expires_at)
 
     def _record_first_contact(
         self, peer: NodeDescriptor, stage: str, reason: str,
@@ -419,17 +683,60 @@ class WanDiscoveryClient:
         peer: NodeDescriptor,
         *,
         limit: int = 4,
+        attempted_routes: set[tuple[str, ...]] | None = None,
+        failed_edges: set[tuple[str, str, str, str]] | None = None,
     ) -> tuple[tuple[tuple[NodeDescriptor, str], ...], ...]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
+            raise DiscoveryError("private route candidate limit is invalid")
         excluded = {peer.node_id}
+        wall_now = int(time.time())
+        guard_seed = hashlib.sha256(
+            _PRIVATE_DISCOVERY_ROUTE_DOMAIN + self.identity.public_key_bytes
+        ).digest()
+        with self._lock:
+            current = time.monotonic()
+            self._prune_peer_tracking_unlocked(current)
+            route_nodes = tuple(self._route_nodes.values())
+            authenticated = frozenset(self._authenticated_nodes)
+            unavailable_route_edges = frozenset(self._failed_route_edges)
+            failed = {
+                node_id
+                for node_id, retry_at in self._failed_until.items()
+                if retry_at > current
+            }
+
         def candidates(capability: str) -> list[NodeDescriptor]:
             selected = {
                 node.node_id: node
-                for node in (*self.pool.candidates(capability), *self._route_nodes.values())
-                if capability in node.capabilities
-                and node.reachability == "reachable"
+                for node in (*self.pool.candidates(capability), *route_nodes)
+                if node_supports_route_role(node, capability)
+                and node.expires_at > wall_now
                 and node.node_id not in excluded
+                and node.node_id not in failed
             }
-            return list(selected.values())
+            if capability == "middle":
+                selected = {
+                    node_id: node for node_id, node in selected.items()
+                    if node.reachability != "adjacent" or node.via_node_id in guard_ids
+                }
+            result = list(selected.values())
+            if len(result) <= MAX_PRIVATE_ROUTE_ROLE_CANDIDATES:
+                return result
+            # Bound the cubic search while sampling across advertised network groups.
+            groups: dict[tuple[int, int], deque[NodeDescriptor]] = {}
+            for node in sorted(result, key=lambda item: hashlib.sha256(
+                guard_seed + item.node_id.encode("ascii")
+            ).digest()):
+                groups.setdefault(self._network_group(node), deque()).append(node)
+            result = []
+            while groups and len(result) < MAX_PRIVATE_ROUTE_ROLE_CANDIDATES:
+                for group in tuple(groups):
+                    result.append(groups[group].popleft())
+                    if not groups[group]:
+                        del groups[group]
+                    if len(result) == MAX_PRIVATE_ROUTE_ROLE_CANDIDATES:
+                        break
+            return result
 
         accesses = [
             node for node in candidates("access")
@@ -437,12 +744,10 @@ class WanDiscoveryClient:
         guards = [
             node for node in candidates("entry")
         ]
+        guard_ids = {node.node_id for node in guards}
         middles = [
             node for node in candidates("middle")
         ]
-        guard_seed = hashlib.sha256(
-            _PRIVATE_DISCOVERY_ROUTE_DOMAIN + self.identity.public_key_bytes
-        ).digest()
         guards.sort(
             key=lambda node: hashlib.sha256(
                 guard_seed + node.node_id.encode("ascii")
@@ -451,18 +756,51 @@ class WanDiscoveryClient:
         choices: list[
             tuple[int, int, int, NodeDescriptor, NodeDescriptor, NodeDescriptor]
         ] = []
+        eligible_before_retry_filter = False
         random_offset = int.from_bytes(secrets.token_bytes(4), "big")
+        network_groups = {
+            node.node_id: self._network_group(node)
+            for node in (*accesses, *guards, *middles, peer)
+        }
         for guard_index, guard in enumerate(guards):
             for access_index, access in enumerate(accesses):
                 for middle_index, middle in enumerate(middles):
+                    if (
+                        not node_supports_route_role(
+                            middle,
+                            "middle",
+                            previous_node_id=guard.node_id,
+                        )
+                        or (
+                            middle.reachability == "adjacent"
+                            and middle.endpoint != guard.endpoint
+                        )
+                    ):
+                        continue
                     route_nodes = (access, guard, middle, peer)
                     if len({node.node_id for node in route_nodes}) != len(route_nodes):
                         continue
-                    groups = {self._network_group(node) for node in route_nodes}
+                    eligible_before_retry_filter = True
+                    if unavailable_route_edges and (
+                        _route_edge_key(access, "access", guard, "entry") in unavailable_route_edges
+                        or _route_edge_key(guard, "entry", middle, "middle") in unavailable_route_edges
+                        or _route_edge_key(middle, "middle", peer, "discovery") in unavailable_route_edges
+                    ):
+                        continue
+                    if attempted_routes and tuple(node.node_id for node in route_nodes) in attempted_routes:
+                        continue
+                    roles = ("access", "entry", "middle", "discovery")
+                    if failed_edges and any(
+                        (left.node_id, roles[index], right.node_id, roles[index + 1]) in failed_edges
+                        for index, (left, right) in enumerate(zip(route_nodes, route_nodes[1:]))
+                    ):
+                        continue
+                    groups = {network_groups[node.node_id] for node in route_nodes}
                     choices.append(
                         (
                             len(route_nodes) - len(groups),
-                            guard_index,
+                            sum(node.node_id not in authenticated for node in route_nodes[:-1])
+                                * (len(guards) + 1) + guard_index,
                             (access_index + middle_index + random_offset) % 65536,
                             access,
                             guard,
@@ -470,6 +808,8 @@ class WanDiscoveryClient:
                         )
                     )
         if not choices:
+            if eligible_before_retry_filter:
+                return ()
             raise DiscoveryError("private discovery ingress is unavailable")
         ordered_choices = order_diverse_relay_combinations(choices, limit=limit)
         with self._lock:
@@ -521,6 +861,7 @@ class WanDiscoveryClient:
     ) -> tuple[tuple[NodeDescriptor, str], ...]:
         return self._private_route_candidates(peer, limit=1)[0]
 
+    @traced("discovery-request")
     def _request(
         self,
         peer: NodeDescriptor,
@@ -529,17 +870,24 @@ class WanDiscoveryClient:
         expected: RpcType,
         *,
         direct_first_contact: bool = False,
+        penalize_failure: bool = True,
+        record_circuits: _RecordCircuits | None = None,
     ) -> bytes:
         connection = None
         started = time.monotonic()
         stage = "descriptor"
         attempt = 0
+        penalize_requested_peer = direct_first_contact
 
         def connection_stage(value: str, number: int) -> None:
             nonlocal stage, attempt
             stage, attempt = value, number
 
         try:
+            if record_circuits is not None:
+                if direct_first_contact:
+                    raise DiscoveryError("record operations require private ingress")
+                record_circuits.validate_request(message, payload)
             if direct_first_contact:
                 connection = connect_authenticated_peer(
                     peer,
@@ -560,18 +908,56 @@ class WanDiscoveryClient:
                     )
                 from .circuit import CircuitBuilder
 
+                search_key = (peer.node_id, peer.issued_at)
+                if message is RpcType.FIND_NODE:
+                    with self._lock:
+                        self._prune_peer_tracking_unlocked(time.monotonic())
+                        if search_key in self._exhausted_discovery_searches:
+                            raise DiscoveryError("private discovery search is cooling down")
                 response = None
                 last_error: BaseException | None = None
-                routes = self._private_route_candidates(peer)
-                for route in routes:
-                    circuit = None
+                tracked_failures = set()
+                attempted_routes, failed_edges = (record_circuits.failed_routes(peer)
+                    if record_circuits is not None else (set(), set()))
+                pending_routes = []
+
+                def eligible(candidate):
+                    if (tuple(node.node_id for node, _ in candidate) in attempted_routes
+                            or any((left.node_id, left_role, right.node_id, right_role) in failed_edges
+                                for (left, left_role), (right, right_role) in zip(candidate, candidate[1:]))):
+                        return False
+                    # Other record lookups can learn failures while this queue waits.
+                    with self._lock:
+                        current = time.monotonic()
+                        return (not any(self._failed_until.get(node.node_id, 0.0) > current
+                                    for node, _role in candidate[:-1])
+                            and not any(self._failed_route_edges.get(
+                                _route_edge_key(left, left_role, right, right_role), 0.0) > current
+                                for (left, left_role), (right, right_role) in zip(candidate, candidate[1:])))
+
+                for _route_attempt in range(MAX_PRIVATE_ROUTE_ATTEMPTS - len(attempted_routes)):
+                    circuit = (record_circuits.take(peer)
+                               if record_circuits is not None and _route_attempt == 0 else None)
+                    if circuit is not None:
+                        route = circuit.route
+                    else:
+                        pending_routes = [candidate for candidate in pending_routes if eligible(candidate)]
+                        if not pending_routes:
+                            pending_routes = [candidate for candidate in self._private_route_candidates(
+                                peer, attempted_routes=attempted_routes, failed_edges=failed_edges)
+                                if eligible(candidate)]
+                        route = pending_routes.pop(0) if pending_routes else None
+                    if route is None:
+                        break
                     route_ids = tuple(node.node_id for node, _role in route)
+                    attempted_routes.add(route_ids)
                     try:
-                        circuit = CircuitBuilder(
-                            self.identity,
-                            PeerRole.CLIENT,
-                            timeout=self.timeout,
-                        ).open(route)
+                        if circuit is None:
+                            circuit = CircuitBuilder(
+                                self.identity,
+                                PeerRole.CLIENT,
+                                timeout=self.timeout,
+                            ).open(route)
                         self.private_discovery_requests += 1
                         self.last_private_route = tuple(
                             descriptor.node_id for descriptor, _role in circuit.route
@@ -582,7 +968,13 @@ class WanDiscoveryClient:
                             payload,
                             expected=expected,
                         )
+                        for authenticated_peer, _role in circuit.route:
+                            self._record_peer_success(authenticated_peer.node_id)
                         with self._lock:
+                            if message is RpcType.FIND_NODE:
+                                self._exhausted_discovery_searches.pop(search_key, None)
+                            for (left, left_role), (right, right_role) in zip(circuit.route, circuit.route[1:]):
+                                self._failed_route_edges.pop(_route_edge_key(left, left_role, right, right_role), None)
                             self._private_route_hints[peer.node_id] = (
                                 time.monotonic() + PRIVATE_ROUTE_HINT_TTL_SECONDS,
                                 route_ids,
@@ -590,9 +982,51 @@ class WanDiscoveryClient:
                             self._private_route_hints.move_to_end(peer.node_id)
                             while len(self._private_route_hints) > MAX_ROUTE_CANDIDATE_CACHE_ENTRIES:
                                 self._private_route_hints.popitem(last=False)
+                        if record_circuits is not None:
+                            record_circuits.keep(peer, circuit)
+                            circuit = None
                         break
                     except (GrangerNetworkError, OSError) as error:
                         last_error = error
+                        failed_hop = getattr(error, "circuit_failure_hop_index", None)
+                        if (
+                            penalize_failure
+                            and isinstance(failed_hop, int)
+                            and not isinstance(failed_hop, bool)
+                            and 0 <= failed_hop < len(route)
+                        ):
+                            if failed_hop == 0:
+                                pending_routes.clear()
+                                failed_peer = route[0][0]
+                                retry_at = time.monotonic() + max(
+                                    60.0, min(300.0, self.timeout * 12.0),
+                                )
+                                if self.cache is not None:
+                                    self.cache.record_failure(failed_peer)
+                                self._record_peer_failure(failed_peer.node_id, retry_at)
+                            else:
+                                # A nested failure identifies a directed role edge,
+                                # not global node reachability. Retain bounded,
+                                # descriptor-versioned backoff across searches.
+                                left, left_role = route[failed_hop - 1]
+                                right, right_role = route[failed_hop]
+                                failed_edges.add((left.node_id, left_role, right.node_id, right_role))
+                                if (failed_hop == len(route) - 1
+                                        or getattr(error, "circuit_failure_stage", None) == "extension"):
+                                    tracked_failures.add(route_ids)
+                                    edge = _route_edge_key(left, left_role, right, right_role)
+                                    with self._lock:
+                                        self._failed_route_edges[edge] = time.monotonic() + max(
+                                            60.0, min(300.0, self.timeout * 12.0))
+                                        self._failed_route_edges.move_to_end(edge)
+                                        self._prune_peer_tracking_unlocked(time.monotonic())
+                        if record_circuits is not None:
+                            # FIND_NODE and the following record operation share a
+                            # route failure budget, not a service-offline assertion.
+                            record_circuits.remember_route_failure(peer, route_ids, failed_edges)
+                        # A lost end-to-end transport cannot prove that the final
+                        # discovery peer is down; any preceding hop may have failed.
+                        penalize_requested_peer = False
                         with self._lock:
                             hint = self._private_route_hints.get(peer.node_id)
                             if hint is not None and hint[1] == route_ids:
@@ -601,14 +1035,23 @@ class WanDiscoveryClient:
                         if circuit is not None:
                             circuit.close()
                 if response is None:
+                    if (message is RpcType.FIND_NODE
+                            and tracked_failures
+                            and (len(tracked_failures) == len(attempted_routes)
+                                 or len(attempted_routes) >= MAX_PRIVATE_ROUTE_ATTEMPTS)):
+                        # A completed search owns its retry window, including
+                        # intermediate extension failures. Other roles, record
+                        # RPCs and newer descriptors remain eligible.
+                        with self._lock:
+                            self._exhausted_discovery_searches[search_key] = time.monotonic() + 60.0
+                            self._exhausted_discovery_searches.move_to_end(search_key)
+                            self._prune_peer_tracking_unlocked(time.monotonic())
                     if last_error is None:
                         raise DiscoveryError("private discovery ingress is unavailable")
                     raise last_error
             if self.cache is not None:
                 self.cache.record_success(peer)
-            with self._lock:
-                self._failed_until.pop(peer.node_id, None)
-                self._authenticated_nodes.add(peer.node_id)
+            self._record_peer_success(peer.node_id)
             return response.payload
         except (GrangerNetworkError, OSError) as error:
             if direct_first_contact:
@@ -616,18 +1059,22 @@ class WanDiscoveryClient:
                     peer, stage, self._first_contact_reason(peer, stage, error),
                     started, attempt,
                 )
-            if self.cache is not None:
-                self.cache.record_failure(peer)
-            with self._lock:
-                self._failed_until[peer.node_id] = time.monotonic() + max(
-                    60.0,
-                    min(300.0, self.timeout * 12.0),
+            if penalize_failure and penalize_requested_peer:
+                if self.cache is not None:
+                    self.cache.record_failure(peer)
+                self._record_peer_failure(
+                    peer.node_id,
+                    time.monotonic() + max(
+                        60.0,
+                        min(300.0, self.timeout * 12.0),
+                    ),
                 )
             raise
         finally:
             if connection is not None:
                 connection.close()
 
+    @traced("route-candidates")
     def route_candidates(
         self,
         target: bytes,
@@ -640,10 +1087,12 @@ class WanDiscoveryClient:
         joined = self.join_network()
         if joined.state is NetworkState.OFFLINE:
             raise NetworkUnavailableError(f"Granger Network first contact failed: {joined.failure_reason}")
+        self.maybe_refresh_reseed()
         selected = {
             peer.node_id: peer for peer in self.pool.candidates(capability)
         }
         with self._lock:
+            self._prune_peer_tracking_unlocked(time.monotonic())
             route_nodes = tuple(self._route_nodes.values())
             authenticated = frozenset(self._authenticated_nodes)
             failed_until = dict(self._failed_until)
@@ -664,7 +1113,7 @@ class WanDiscoveryClient:
                 )
             except DescriptorError:
                 continue
-            if capability not in peer.capabilities or peer.reachability != "reachable":
+            if not node_supports_route_role(peer, capability):
                 continue
             previous = selected.get(peer.node_id)
             if previous is None or peer.issued_at > previous.issued_at:
@@ -698,7 +1147,7 @@ class WanDiscoveryClient:
                 )
             except DescriptorError:
                 continue
-            if capability not in peer.capabilities or peer.reachability != "reachable":
+            if not node_supports_route_role(peer, capability):
                 continue
             previous = selected.get(peer.node_id)
             if previous is None or peer.issued_at > previous.issued_at:
@@ -715,6 +1164,7 @@ class WanDiscoveryClient:
         )
         return tuple(result)
 
+    @traced("dht-request-batch")
     def _request_batch(
         self,
         peers: list[NodeDescriptor],
@@ -723,6 +1173,8 @@ class WanDiscoveryClient:
         expected: RpcType,
         *,
         direct_first_contact: bool = False,
+        penalize_failure: bool = True,
+        record_circuits: _RecordCircuits | None = None,
     ) -> tuple[tuple[NodeDescriptor, bytes | None], ...]:
         selected = peers[:MAX_PARALLEL_DISCOVERY_REQUESTS]
         if not selected:
@@ -737,6 +1189,8 @@ class WanDiscoveryClient:
                     payload,
                     expected,
                     direct_first_contact=direct_first_contact,
+                    penalize_failure=penalize_failure,
+                    record_circuits=record_circuits,
                 )
             except BaseException as error:
                 outcomes[index] = error
@@ -750,10 +1204,14 @@ class WanDiscoveryClient:
             )
             for index, peer in enumerate(selected)
         ]
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            worker.join()
+        started_workers = []
+        try:
+            for worker in workers:
+                worker.start()
+                started_workers.append(worker)
+        finally:
+            for worker in started_workers:
+                worker.join()
         results: list[tuple[NodeDescriptor, bytes | None]] = []
         for peer, outcome in zip(selected, outcomes, strict=True):
             if isinstance(outcome, (GrangerNetworkError, OSError)):
@@ -766,12 +1224,175 @@ class WanDiscoveryClient:
                 results.append((peer, outcome))
         return tuple(results)
 
+    def _fetch_reseed_advertisement(
+        self,
+        peer: NodeDescriptor,
+        advertisement: ReseedAdvertisement,
+        *,
+        direct_first_contact: bool,
+    ) -> bool:
+        if self.reseed_store is None:
+            return False
+        content = bytearray()
+        chunk_count = 0
+        while len(content) < advertisement.size:
+            if chunk_count >= (
+                MAX_RESEED_BUNDLE_BYTES + MAX_RESEED_TRANSPORT_CHUNK_BYTES - 1
+            ) // MAX_RESEED_TRANSPORT_CHUNK_BYTES:
+                raise ResourceLimitError("reseed transfer chunk limit is exhausted")
+            chunk_count += 1
+            response = self._request(
+                peer,
+                RpcType.RESEED_CHUNK,
+                encode_reseed_chunk_request(advertisement.sha256, len(content)),
+                RpcType.RESEED_CHUNK,
+                direct_first_contact=direct_first_contact,
+                penalize_failure=False,
+            )
+            digest, offset, total_size, chunk = decode_reseed_chunk_response(response)
+            if (
+                digest != advertisement.sha256
+                or offset != len(content)
+                or total_size != advertisement.size
+                or len(chunk) != min(
+                    MAX_RESEED_TRANSPORT_CHUNK_BYTES, advertisement.size - len(content)
+                )
+            ):
+                raise ProtocolError("reseed transfer does not match its advertisement")
+            content.extend(chunk)
+        if len(content) != advertisement.size:
+            raise ProtocolError("reseed transfer size is inconsistent")
+        try:
+            encoded = bytes(content).decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ProtocolError("reseed transfer is not ASCII") from error
+        result = self.reseed_store.import_content(
+            encoded,
+            source=f"overlay:{peer.node_id[:64]}",
+            expected_advertisement=advertisement,
+        )
+        return result.installed
+
+    def refresh_reseed(self, *, direct_first_contact: bool = False) -> int:
+        if self.reseed_store is None:
+            return 0
+        with self._reseed_refresh_lock:
+            peers = list(self.pool.candidates("discovery"))[:MAX_RESEED_QUERY_PEERS]
+            if not peers:
+                raise DiscoveryError("no authenticated reseed transport peer is available")
+            responses: list[tuple[NodeDescriptor, bytes | None]] = []
+            for offset in range(0, len(peers), MAX_PARALLEL_DISCOVERY_REQUESTS):
+                responses.extend(
+                    self._request_batch(
+                        peers[offset : offset + MAX_PARALLEL_DISCOVERY_REQUESTS],
+                        RpcType.RESEED_QUERY,
+                        b"",
+                        RpcType.RESEED_QUERY,
+                        direct_first_contact=direct_first_contact,
+                        penalize_failure=False,
+                    )
+                )
+            trusted = frozenset(self.reseed_store.authority_pins)
+            high_water = self.reseed_store.high_water_marks()
+            candidates: list[tuple[NodeDescriptor, ReseedAdvertisement]] = []
+            seen: set[tuple[str, bytes, int, str]] = set()
+            current = int(time.time())
+            for peer, payload in responses:
+                if payload is None:
+                    continue
+                try:
+                    advertisements = decode_reseed_advertisements(payload)
+                except ProtocolError:
+                    continue
+                for advertisement in advertisements:
+                    previous = high_water.get(advertisement.authority_public_key)
+                    key = (
+                        peer.node_id,
+                        advertisement.authority_public_key,
+                        advertisement.generation,
+                        advertisement.sha256,
+                    )
+                    if (
+                        advertisement.authority_public_key not in trusted
+                        or advertisement.expires_at <= current
+                        or (
+                            previous is not None
+                            and (
+                                advertisement.generation < previous[0]
+                                or (
+                                    advertisement.generation == previous[0]
+                                    and advertisement.sha256 == previous[1]
+                                )
+                            )
+                        )
+                        or key in seen
+                    ):
+                        continue
+                    seen.add(key)
+                    candidates.append((peer, advertisement))
+            candidates.sort(
+                key=lambda item: (
+                    -item[1].generation,
+                    item[1].sha256,
+                    item[0].node_id,
+                )
+            )
+            installed = 0
+            attempted = 0
+            for peer, advertisement in candidates:
+                if attempted >= MAX_RESEED_FETCH_ATTEMPTS:
+                    break
+                attempted += 1
+                try:
+                    installed += int(
+                        self._fetch_reseed_advertisement(
+                            peer,
+                            advertisement,
+                            direct_first_contact=direct_first_contact,
+                        )
+                    )
+                except DiscoveryError as error:
+                    if "equivocation" in str(error).lower():
+                        raise
+                except (OSError, ProtocolError):
+                    continue
+            if installed:
+                active = self.reseed_store.load_active()
+                if not active:
+                    raise DiscoveryError("installed reseed generation is not currently valid")
+                self.pool = BootstrapPool(active, self.cache)
+                self.reseed_refreshes += installed
+            return installed
+
+    def maybe_refresh_reseed(self) -> int:
+        if self.reseed_store is None:
+            return 0
+        active = self.reseed_store.load_active()
+        latest_by_authority: dict[bytes, BootstrapSet] = {}
+        for bundle in active:
+            previous = latest_by_authority.get(bundle.authority_public_key)
+            if previous is None or bundle.generation > previous.generation:
+                latest_by_authority[bundle.authority_public_key] = bundle
+        if latest_by_authority and all(
+            min(bundle.expires_at, *(peer.expires_at for peer in bundle.peers))
+            - int(time.time()) > RESEED_REFRESH_MARGIN_SECONDS
+            for bundle in latest_by_authority.values()
+        ):
+            return 0
+        with self._lock:
+            current = time.monotonic()
+            if self._reseed_next_attempt > current:
+                return 0
+            self._reseed_next_attempt = current + RESEED_REFRESH_RETRY_SECONDS
+        return self.refresh_reseed(direct_first_contact=not self._private_routes_ready)
+
     def _prime_private_routes(
         self,
         contacts: tuple[NodeDescriptor, ...],
     ) -> bool:
         with self._lock:
             current = time.monotonic()
+            self._prune_peer_tracking_unlocked(current)
             discovery_contacts = [
                 peer
                 for peer in contacts
@@ -784,6 +1405,7 @@ class WanDiscoveryClient:
         for capability in ("access", "entry", "middle"):
             with self._lock:
                 current = time.monotonic()
+                self._prune_peer_tracking_unlocked(current)
                 eligible_contacts = [
                     peer
                     for peer in discovery_contacts
@@ -827,6 +1449,7 @@ class WanDiscoveryClient:
             return False
         return True
 
+    @traced("bootstrap-auth-dht")
     def join_network(self) -> NetworkHealthSnapshot:
         if self._joined:
             return self._health.snapshot()
@@ -982,7 +1605,7 @@ class WanDiscoveryClient:
                 )
             self._private_routes_ready = True
             self._joined = True
-            return self._health.update(
+            health = self._health.update(
                 NetworkState.JOINING,
                 bootstrap_attempted=bootstrap_attempted,
                 authenticated_peers=len(self._authenticated_nodes),
@@ -991,14 +1614,20 @@ class WanDiscoveryClient:
                 dht_ready=False,
                 failure_reason="",
             )
+            self.maybe_refresh_reseed()
+            return health
 
-    def find_nodes(self, target: bytes, capability: str) -> tuple[NodeDescriptor, ...]:
+    @traced("peer-discovery")
+    def find_nodes(self, target: bytes, capability: str, *,
+                   record_circuits: _RecordCircuits | None = None) -> tuple[NodeDescriptor, ...]:
         joined = self.join_network()
         if joined.state is NetworkState.OFFLINE:
             raise NetworkUnavailableError(f"Granger Network first contact failed: {joined.failure_reason}")
+        self.maybe_refresh_reseed()
         seeds = list(self.pool.candidates("discovery"))
         with self._lock:
             current = time.monotonic()
+            self._prune_peer_tracking_unlocked(current)
             pending = [
                 peer
                 for peer in seeds
@@ -1025,6 +1654,7 @@ class WanDiscoveryClient:
                 RpcType.FIND_NODE,
                 encode_find_node(target, capability),
                 RpcType.FIND_NODE,
+                record_circuits=record_circuits,
             )
             for peer, content in responses:
                 if content is None:
@@ -1038,9 +1668,9 @@ class WanDiscoveryClient:
                 except GrangerNetworkError:
                     continue
                 responsive.add(peer.node_id)
+                if self.cache is not None:
+                    self.cache.ingest(learned, source=f"peer:{peer.node_id}")
                 for candidate in learned:
-                    if self.cache is not None:
-                        self.cache.add(candidate, source=f"peer:{peer.node_id}")
                     previous = known.get(candidate.node_id)
                     if previous is None or candidate.issued_at > previous.issued_at:
                         known[candidate.node_id] = candidate
@@ -1060,9 +1690,9 @@ class WanDiscoveryClient:
             result = [
                 peer
                 for peer in known.values()
-                if capability in peer.capabilities
-                and peer.reachability == "reachable"
+                if node_supports_route_role(peer, capability)
                 and self._failed_until.get(peer.node_id, 0.0) <= current
+                and (record_circuits is None or peer.node_id in responsive)
             ]
         result.sort(key=lambda peer: int.from_bytes(_node_id_bytes(peer.node_id), "big") ^ int.from_bytes(target, "big"))
         all_known = tuple(known.values())
@@ -1087,14 +1717,19 @@ class WanDiscoveryClient:
             )
         return tuple(result)
 
+    @traced("descriptor-publication")
     def publish(self, record: DistributedRecord, now: int | None = None) -> int:
         envelope = encode_record(record, now=now)
         target = wan_routing_key(envelope.kind, envelope.key)
-        peers = self.find_nodes(target, "discovery")
+        payload = encode_record_envelope(envelope)
+        with _RecordCircuits(target, RpcType.STORE_RECORD, payload, self.timeout) as circuits:
+            return self._publish_record(envelope, target, payload, now, circuits)
+
+    def _publish_record(self, envelope, target, payload, now, circuits) -> int:
+        peers = self.find_nodes(target, "discovery", record_circuits=circuits)
         if len(peers) < self.minimum_replicas:
             raise NetworkUnavailableError("WAN discovery found too few storage peers")
         stored_peers: set[str] = set()
-        payload = encode_record_envelope(envelope)
         for round_index in range(MAX_RECORD_REQUEST_ROUNDS):
             pending = [peer for peer in peers if peer.node_id not in stored_peers]
             offset = 0
@@ -1110,6 +1745,7 @@ class WanDiscoveryClient:
                     RpcType.STORE_RECORD,
                     payload,
                     RpcType.STORE_RECORD,
+                    record_circuits=circuits,
                 )
                 stored_peers.update(
                     peer.node_id
@@ -1122,15 +1758,50 @@ class WanDiscoveryClient:
                 time.sleep(0.1 * (round_index + 1))
         if len(stored_peers) < self.minimum_replicas:
             raise NetworkUnavailableError("WAN publication did not reach its replica quorum")
-        with self._lock:
-            self._highest_seen[(envelope.kind, envelope.key)] = envelope.sequence
+        self._remember_record_sequence(
+            envelope.kind,
+            envelope.key,
+            envelope.sequence,
+            envelope.expires_at,
+            now=int(time.time()) if now is None else now,
+        )
         return len(stored_peers)
+
+    def public_service_sample(self) -> tuple[ServiceDescriptor, ...]:
+        # Samples are hints, never an authority. Revalidate current visibility
+        # through the normal signed quorum lookup before presenting a service.
+        self.join_network()
+        peers = list(self.pool.candidates("discovery"))[:MAX_PARALLEL_DISCOVERY_REQUESTS]
+        candidates = {}
+        for _peer, content in self._request_batch(
+            peers, RpcType.PUBLIC_SERVICE_SAMPLE, b"", RpcType.PUBLIC_SERVICE_SAMPLE,
+        ):
+            if content is None:
+                continue
+            try:
+                for service in decode_public_service_sample(content):
+                    candidates[service.service_id] = service
+            except GrangerNetworkError:
+                continue
+        result = []
+        for key in sorted(candidates)[:MAX_PUBLIC_SERVICE_SAMPLE]:
+            try:
+                service = self.lookup(SERVICE_RECORD, key)
+                if isinstance(service, ServiceDescriptor) and service.publicly_listed:
+                    result.append(service)
+            except GrangerNetworkError:
+                continue
+        return tuple(result)
 
     def lookup(self, kind: str, key: str, now: int | None = None) -> DistributedRecord:
         target = wan_routing_key(kind, key)
-        peers = self.find_nodes(target, "discovery")
-        candidates_by_peer: dict[str, RecordEnvelope] = {}
         payload = encode_find_record(kind, key)
+        with _RecordCircuits(target, RpcType.FIND_RECORD, payload, self.timeout) as circuits:
+            return self._lookup_record(kind, key, target, payload, now, circuits)
+
+    def _lookup_record(self, kind, key, target, payload, now, circuits) -> DistributedRecord:
+        peers = self.find_nodes(target, "discovery", record_circuits=circuits)
+        candidates_by_peer: dict[str, RecordEnvelope] = {}
         for round_index in range(MAX_RECORD_REQUEST_ROUNDS):
             pending = [
                 peer for peer in peers
@@ -1142,6 +1813,7 @@ class WanDiscoveryClient:
                     RpcType.FIND_RECORD,
                     payload,
                     RpcType.FIND_RECORD,
+                    record_circuits=circuits,
                 )
                 for peer, content in responses:
                     if content is None:
@@ -1158,19 +1830,20 @@ class WanDiscoveryClient:
                 time.sleep(0.1 * (round_index + 1))
         candidates = list(candidates_by_peer.values())
         if len(candidates) < self.minimum_replicas:
-            raise ResolutionError(f"WAN record replica quorum is unavailable: {kind}:{key}")
+            raise RecordQuorumError(f"WAN record replica quorum is unavailable: {kind}:{key}")
         highest = max(candidate.sequence for candidate in candidates)
-        with self._lock:
-            previous = self._highest_seen.get((kind, key), -1)
-            if highest < previous:
-                raise ReplayError("WAN lookup detected a record rollback")
         winners = [candidate for candidate in candidates if candidate.sequence == highest]
         payloads = {candidate.payload for candidate in winners}
         if len(payloads) != 1 or len(winners) < self.minimum_replicas:
-            raise DiscoveryError("WAN lookup did not obtain an unambiguous replica quorum")
+            raise RecordQuorumError("WAN lookup did not obtain an unambiguous replica quorum")
         result = decode_record(kind, key, winners[0].payload, now=now)
-        with self._lock:
-            self._highest_seen[(kind, key)] = highest
+        self._remember_record_sequence(
+            kind,
+            key,
+            highest,
+            winners[0].expires_at,
+            now=int(time.time()) if now is None else now,
+        )
         return result
 
 
@@ -1188,6 +1861,32 @@ class WanDistributedResolver:
             normalized = normalize_name(alias)
             self._alias_pins[normalized] = validate_service_id(service_id)
 
+    @traced("connection-records")
+    def resolve_connection(
+        self, name: str, now: int | None = None,
+    ) -> tuple[ServiceDescriptor, IntroductionDescriptor]:
+        normalized = normalize_name(name)
+        if not is_canonical_name(normalized):
+            service = self.resolve(normalized, now=now)
+            return service, self.resolve_introduction(service, now=now)
+        service_id = service_id_from_name(normalized)
+        # The crypto address names both records. Fetch independently, but do
+        # not expose either result until the service binding is verified.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="granger-record-lookup") as workers:
+            service_lookup = workers.submit(self.resolve, normalized, now=now)
+
+            def introduction_lookup():
+                with stage("introduction-descriptor-lookup"):
+                    record = self.discovery.lookup(INTRODUCTION_RECORD, service_id, now=now)
+                    if not isinstance(record, IntroductionDescriptor):
+                        raise ResolutionError("WAN introduction record has the wrong type")
+                    record.verify_for(service_lookup.result(), now=now)
+                    return record
+
+            introduction = workers.submit(introduction_lookup)
+            return service_lookup.result(), introduction.result()
+
+    @traced("service-descriptor-lookup")
     def resolve(self, name: str, now: int | None = None) -> ServiceDescriptor:
         normalized = normalize_name(name)
         if is_canonical_name(normalized):
@@ -1209,6 +1908,7 @@ class WanDistributedResolver:
             raise ResolutionError("WAN service record disclosed a service endpoint")
         return record
 
+    @traced("introduction-descriptor-lookup")
     def resolve_introduction(
         self,
         service: ServiceDescriptor,
@@ -1225,8 +1925,13 @@ class WanDistributedResolver:
         record.verify_for(service, now=now)
         return record
 
+    @traced("node-descriptor-lookup")
     def resolve_node(self, node_id: str, now: int | None = None) -> NodeDescriptor:
-        record = self.discovery.lookup(NODE_RECORD, validate_node_id(node_id), now=now)
+        validated = validate_node_id(node_id)
+        signed_bootstrap = self.discovery.signed_bootstrap_node(validated, now=now)
+        if signed_bootstrap is not None:
+            return signed_bootstrap
+        record = self.discovery.lookup(NODE_RECORD, validated, now=now)
         if not isinstance(record, NodeDescriptor):
             raise ResolutionError("WAN node record has the wrong type")
         return record

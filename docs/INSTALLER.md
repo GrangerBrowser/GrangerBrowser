@@ -48,7 +48,7 @@ Build the canonical portable package first, then run:
 
 ```powershell
 .\scripts\build-installer.ps1 `
-  -PackageArchive "output\distribution\Granger-Browser-v0.4.4-windows-x64.zip" `
+  -PackageArchive "output\distribution\Granger-Browser-v0.4.5-windows-x64.zip" `
   -Clean
 ```
 

@@ -67,6 +67,7 @@ class OperatorConfig:
 class _BootstrapLoadResult:
     bootstrap_sets: tuple[BootstrapSet, ...]
     failure_reason: str = ""
+    reseed_store: ReseedStore | None = None
 
 
 class _PersistentPeerPool:
@@ -432,8 +433,13 @@ def _load_bootstrap_sets(
         return _BootstrapLoadResult(
             active,
             "REFRESH_REQUIRED" if expired else "",
+            reseed,
         )
-    return _BootstrapLoadResult((), "RESEED_EXPIRED" if expired else "")
+    return _BootstrapLoadResult(
+        (),
+        "RESEED_EXPIRED" if expired else "",
+        reseed,
+    )
 
 
 def _persistent_router_peers(
@@ -475,6 +481,7 @@ class _DiscoverySupervisor:
         *,
         startup_failure_reason: str = "",
         persistent_peers: tuple[NodeDescriptor, ...] = (),
+        reseed_store: ReseedStore | None = None,
     ) -> None:
         self.node = node
         self.interval = interval
@@ -484,6 +491,7 @@ class _DiscoverySupervisor:
         self.lock = threading.Lock()
         self._descriptor_published_at: float | None = None
         self.startup_failure_reason = startup_failure_reason
+        self.reseed_store = reseed_store
         if bootstrap_sets:
             self.snapshot = {
                 "dhtReady": False,
@@ -520,6 +528,7 @@ class _DiscoverySupervisor:
             # The expired bundle is never admitted here. Only individually signed,
             # still-valid descriptors from recent authenticated sessions are used.
             pool = _PersistentPeerPool(persistent_peers)
+            cache = node.peer_cache
         self.discovery = (
             WanDiscoveryClient(
                 identity,
@@ -528,6 +537,7 @@ class _DiscoverySupervisor:
                 replication_factor=3,
                 minimum_replicas=2,
                 timeout=min(10.0, float(node.policy.connection_timeout_seconds)),
+                reseed_store=reseed_store,
             )
             if pool is not None
             else None
@@ -587,6 +597,12 @@ class _DiscoverySupervisor:
         while not self.stop_event.is_set():
             try:
                 health = self.discovery.join_network()
+                if (
+                    self.startup_failure_reason
+                    and self.reseed_store is not None
+                    and self.reseed_store.load_active()
+                ):
+                    self.startup_failure_reason = ""
                 learned: dict[str, NodeDescriptor] = {}
                 if health.state.value != "OFFLINE":
                     current = time.monotonic()
@@ -809,6 +825,9 @@ def run_operator(
     ready_file: Path,
     status_file: Path,
     diagnostics_file: Path,
+    *,
+    wan_config_publication: Path | None = None,
+    wan_config_trust_anchor: Path | None = None,
 ) -> int:
     state = Path(state_dir).resolve()
     identity_preexisting = (state / NODE_IDENTITY_FILE).is_file()
@@ -843,7 +862,14 @@ def run_operator(
         tuple(known.values()),
         listener_endpoint=config.listen,
         diagnostics_path=diagnostics_file,
+        reseed_store=bootstrap_load.reseed_store,
     )
+    if bool(wan_config_publication) != bool(wan_config_trust_anchor):
+        raise ValueError("config publication requires an existing trust anchor")
+    if wan_config_publication is not None:
+        from .wan_config_recovery import WanConfigPublisher
+        node.wan_config_publisher = WanConfigPublisher(wan_config_publication, wan_config_trust_anchor)
+    config_stamp = wan_config_publication.stat().st_mtime_ns if wan_config_publication else None
     supervisor = _DiscoverySupervisor(
         node,
         identity,
@@ -851,6 +877,7 @@ def run_operator(
         config.discovery_interval,
         startup_failure_reason=bootstrap_load.failure_reason,
         persistent_peers=persistent_peers,
+        reseed_store=bootstrap_load.reseed_store,
     )
     lease = _PidLease(pid_file)
     stop_event = threading.Event()
@@ -898,6 +925,16 @@ def run_operator(
             mode=0o600,
         )
         while not stop_event.wait(DEFAULT_STATUS_INTERVAL):
+            if wan_config_publication is not None:
+                try:
+                    stamp = wan_config_publication.stat().st_mtime_ns
+                    if stamp != config_stamp:
+                        config_stamp = stamp
+                        node.wan_config_publisher.replace(wan_config_publication, wan_config_trust_anchor)
+                except (GrangerNetworkError, OSError, ValueError):
+                    # Keep the preceding validated snapshot only until expiry.
+                    # Malformed control updates must not stop a healthy router.
+                    pass
             current_time = int(time.time())
             descriptor, _renewed = _renew_running_descriptor(
                 config,
@@ -962,6 +999,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--ready-file", type=Path, required=True)
     run.add_argument("--status-file", type=Path, required=True)
     run.add_argument("--diagnostics", type=Path, required=True)
+    run.add_argument("--wan-config-publication", type=Path)
+    run.add_argument("--wan-config-trust-anchor", type=Path)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--state-dir", type=Path, required=True)
     return parser
@@ -1027,6 +1066,8 @@ def main(argv: list[str] | None = None) -> int:
             options.ready_file,
             options.status_file,
             options.diagnostics,
+            wan_config_publication=options.wan_config_publication,
+            wan_config_trust_anchor=options.wan_config_trust_anchor,
         )
     except DiscoveryError as error:
         if options.command == "run":

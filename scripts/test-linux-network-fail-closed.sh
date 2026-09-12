@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-appimage="${1:-$project_root/output/linux/GrangerBrowser-0.4.4-x86_64.AppImage}"
+appimage="${1:-$project_root/output/linux/GrangerBrowser-0.4.5-x86_64.AppImage}"
 report_root="${2:-$project_root/output/linux/acceptance}"
 report="$report_root/network-namespace-fail-closed.json"
 

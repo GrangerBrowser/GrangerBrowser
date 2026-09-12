@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import hashlib
 import secrets
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .cells import CellMultiplexer, MuxStream
 from .circuit import BuiltCircuit, CircuitBuilder
 from .descriptor import ServiceDescriptor
-from .errors import GrangerNetworkError, OverlayRoutingError, ProtocolError
+from .errors import (
+    GrangerNetworkError, IntroductionOfflineError, OverlayRoutingError, PeerRpcError, ProtocolError,
+)
 from .http_bridge import HttpResult, LoopbackHttpBridge
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
@@ -19,7 +24,7 @@ from .peer_rpc import PeerRole, RpcType, encode_error
 from .protocol import VERSION_3, SecureChannel, client_handshake, server_handshake
 from .wan_application import WanApplicationClient, WanApplicationServer
 from .wan_control import (
-    MAX_RENDEZVOUS_GRANT_LIFETIME,
+    DEFAULT_RENDEZVOUS_GRANT_LIFETIME,
     MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
     IntroductionRequest,
     RendezvousGrant,
@@ -32,6 +37,7 @@ from .wan_control import (
 
 
 _RENDEZVOUS_ROUTE_FAILURE_LIMIT = 3
+_REGISTRATION_ISSUER_MARGIN_SECONDS = 5
 MAX_HOSTED_SESSIONS = 4
 RoutePrefix = tuple[tuple[NodeDescriptor, str], ...]
 
@@ -124,6 +130,7 @@ class WanServiceClient:
             raise OverlayRoutingError("rendezvous route selector is invalid")
         self.rendezvous_route_selector = rendezvous_route_selector
 
+    @traced("service-connect")
     def connect(self, introduction_node: NodeDescriptor) -> WanServiceSession:
         point = next(
             (point for point in self.introduction.points if point.node_id == introduction_node.node_id),
@@ -161,7 +168,15 @@ class WanServiceClient:
             )
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
             detail = str(error).strip()
-            raise OverlayRoutingError(
+            # Only the end-to-end authenticated endpoint's reply is terminal for
+            # this introduction. An intermediate EXTEND error must remain retryable.
+            error_type = (
+                IntroductionOfflineError
+                if introduction_phase == "request" and isinstance(error, PeerRpcError)
+                and error.code == "SERVICE_OFFLINE"
+                else OverlayRoutingError
+            )
+            raise error_type(
                 f"introduction stage failed during {introduction_phase} "
                 f"({type(error).__name__})"
                 + (f": {detail}" if detail else "")
@@ -486,6 +501,7 @@ class WanServiceHost:
         )
         self._thread.start()
 
+    @traced("introduction-rendezvous-readiness")
     def wait_ready(self, timeout: float = 15.0) -> None:
         if not self._ready.wait(timeout):
             if self.errors:
@@ -515,17 +531,55 @@ class WanServiceHost:
         for pending_circuit, _worker in pending:
             pending_circuit.close()
 
+    def _open_initial_circuits(self, builder: CircuitBuilder) -> tuple[BuiltCircuit, ...]:
+        routes = (*self.introduction_routes, self.rendezvous_route)
+        futures = []
+
+        def open_route(route):
+            if self._stop.is_set():
+                raise OverlayRoutingError("service is stopping")
+            return builder.open(route)
+
+        try:
+            # Independent chains use fresh hop keys. Only startup overlaps;
+            # no registration or ready state is published until all builds join.
+            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="granger-host-startup") as workers:
+                for route in routes:
+                    futures.append(workers.submit(open_route, route))
+                circuits = []
+                for route, future in zip(routes, futures, strict=True):
+                    try:
+                        circuits.append(future.result())
+                    except BaseException as error:
+                        self._record_startup_failure(route, error)
+                        raise
+            if self._stop.is_set():
+                raise OverlayRoutingError("service is stopping")
+            return tuple(circuits)
+        except BaseException:
+            # Executor shutdown joined even the later successful builds. None
+            # may escape when an earlier build or worker submission failed.
+            for future in futures:
+                if future.done() and not future.cancelled() and future.exception() is None:
+                    future.result().close()
+            raise
+
     def _run(self) -> None:
+        initial_rendezvous = None
         try:
             builder = CircuitBuilder(self.identity, PeerRole.SERVICE, timeout=self.timeout)
-            for route in self.introduction_routes:
+            initial = self._open_initial_circuits(builder)
+            initial_rendezvous = initial[-1]
+            with self._grant_condition:
+                if self._stop.is_set():
+                    for circuit in initial:
+                        circuit.close()
+                    raise OverlayRoutingError("service is stopping")
+                self._intro_circuits.extend(initial[:-1])
+                self._rendezvous_circuit = initial_rendezvous
+            for route, circuit in zip(self.introduction_routes, initial[:-1], strict=True):
                 try:
-                    circuit = builder.open(route)
                     circuit.endpoint.channel.connection.settimeout(self.timeout)
-                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                    self._record_startup_failure(route, error)
-                    raise
-                try:
                     circuit.endpoint.rpc.request(
                         RpcType.INTRO_REGISTER,
                         encode_intro_registration(self.service, self.introduction),
@@ -541,7 +595,6 @@ class WanServiceHost:
                     )
                     circuit.close()
                     raise
-                self._intro_circuits.append(circuit)
                 with self._grant_condition:
                     self._intro_activity[route[-1][0].node_id] = time.monotonic()
             for circuit in self._intro_circuits:
@@ -576,7 +629,12 @@ class WanServiceHost:
                     ):
                         break
                 try:
-                    self._serve_rendezvous_session(builder)
+                    if initial_rendezvous is not None:
+                        prepared = initial_rendezvous
+                        initial_rendezvous = None
+                        self._serve_rendezvous_session(builder, initial_circuit=prepared)
+                    else:
+                        self._serve_rendezvous_session(builder)
                     consecutive_route_failures = 0
                 except _RendezvousRouteUnavailable as error:
                     if self._stop.is_set() or self._recovery.is_set():
@@ -592,8 +650,9 @@ class WanServiceHost:
                         raise
                     consecutive_route_failures += 1
                     if len(self.session_failures) < 1024:
+                        cause = error.__cause__ if isinstance(error.__cause__, Exception) else error
                         self.session_failures.append(
-                            f"rendezvous-route:{type(error.__cause__).__name__}:{error}"
+                            f"rendezvous-route:{type(cause).__name__}"
                         )
                     if consecutive_route_failures >= _RENDEZVOUS_ROUTE_FAILURE_LIMIT:
                         self._request_recovery(
@@ -608,7 +667,7 @@ class WanServiceHost:
                         raise
                     consecutive_route_failures = 0
                     if len(self.session_failures) < 1024:
-                        self.session_failures.append(f"{type(error).__name__}:{error}")
+                        self.session_failures.append(type(error).__name__)
                     self._stop.wait(0.1)
             if (
                 not self._stop.is_set()
@@ -618,20 +677,32 @@ class WanServiceHost:
                 raise ProtocolError("service introduction descriptor expired")
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
             if not self._stop.is_set():
-                self.errors.append(f"service-session:{type(error).__name__}:{error}")
+                self.errors.append(f"service-session:{type(error).__name__}")
         finally:
+            if initial_rendezvous is not None:
+                initial_rendezvous.close()
+                with self._grant_condition:
+                    if self._rendezvous_circuit is initial_rendezvous:
+                        self._rendezvous_circuit = None
             self._ready.set()
 
-    def _serve_rendezvous_session(self, builder: CircuitBuilder) -> None:
+    @traced("rendezvous-registration")
+    def _serve_rendezvous_session(self, builder: CircuitBuilder, *,
+                                  initial_circuit: BuiltCircuit | None = None) -> None:
         cookie = secrets.token_bytes(32)
-        expires_at = int(time.time()) + self.rendezvous_lifetime
+        # Leave sender-side clock headroom without extending receiver validity.
+        expires_at = int(time.time()) + min(
+            self.rendezvous_lifetime,
+            MAX_RENDEZVOUS_REGISTRATION_LIFETIME - _REGISTRATION_ISSUER_MARGIN_SECONDS,
+        )
         cell_circuit_id = secrets.token_bytes(16)
         route_ready = False
-        circuit = None
+        circuit = initial_circuit
         rendezvous_mux = None
         handed_off = False
         try:
-            circuit = builder.open(self.rendezvous_route)
+            if circuit is None:
+                circuit = builder.open(self.rendezvous_route)
             with self._grant_condition:
                 if self._stop.is_set() or self._recovery.is_set():
                     raise OverlayRoutingError("service route recovery was requested")
@@ -836,10 +907,13 @@ class WanServiceHost:
                     )
                     continue
                 cookie, expires_at = grant_slot
+                # Issue the normal short grant, not the receiver's absolute
+                # maximum. A slightly leading host clock must not exceed that
+                # unchanged validation bound at an introduction node.
                 lifetime = max(
                     1,
                     min(
-                        MAX_RENDEZVOUS_GRANT_LIFETIME,
+                        DEFAULT_RENDEZVOUS_GRANT_LIFETIME,
                         expires_at - int(time.time()),
                     ),
                 )
@@ -861,12 +935,13 @@ class WanServiceHost:
                 with self._grant_condition:
                     self._intro_activity.pop(node_id, None)
                 if not self._stop.is_set():
-                    reason = f"introduction:{type(error).__name__}:{error}"
+                    reason = f"introduction:{type(error).__name__}"
                     if len(self.session_failures) < 1024:
                         self.session_failures.append(reason)
                     self._request_recovery(reason)
                 return
 
+    @traced("host-teardown")
     def stop(self) -> None:
         self._stop.set()
         with self._grant_condition:

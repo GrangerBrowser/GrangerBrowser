@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Setup = "output/distribution/GrangerSetup.exe",
-    [string]$PackageArchive = "output/distribution/Granger-Browser-v0.4.4-windows-x64.zip",
+    [string]$PackageArchive = "output/distribution/Granger-Browser-v0.4.5-windows-x64.zip",
     [string]$TestRoot = "output/installer-acceptance"
 )
 
@@ -25,6 +25,9 @@ $packagePath = Resolve-WorkspacePath $PackageArchive
 $testPath = Resolve-WorkspacePath $TestRoot
 if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) { throw "Setup not found: $setupPath" }
 if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) { throw "Package not found: $packagePath" }
+if (@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'GrangerBrowser.exe' }).Count -ne 0) {
+    throw "Close Granger Browser before running installer acceptance."
+}
 $packageName = [IO.Path]::GetFileName($packagePath)
 if ($packageName -notmatch '^Granger-Browser-v(\d+\.\d+\.\d+)-windows-x64\.zip$') {
     throw "Unexpected portable package name: $packageName"
@@ -58,28 +61,50 @@ function Invoke-Setup {
 
 function Stop-IsolatedBrowser([string]$Root) {
     $deadline = (Get-Date).AddSeconds(8)
+    $quietSince = $null
     do {
-        $browser = @(Get-CimInstance Win32_Process | Where-Object {
-            $_.Name -eq 'GrangerBrowser.exe' -and $_.ExecutablePath -and
-            $_.ExecutablePath.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)
+        $allBrowsers = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'GrangerBrowser.exe'
         })
-        foreach ($entry in $browser) {
+        foreach ($entry in $allBrowsers) {
             $process = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
             if ($process -and $process.MainWindowHandle -ne 0) {
                 $null = $process.CloseMainWindow()
             }
         }
-        if ($browser.Count -eq 0) { return }
+        if ($allBrowsers.Count -eq 0) {
+            if ($null -eq $quietSince) { $quietSince = Get-Date }
+            if (((Get-Date) - $quietSince).TotalSeconds -ge 1) { return }
+        } else {
+            $quietSince = $null
+        }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
 
+    Get-CimInstance Win32_Process | Where-Object {
+        $_.Name -eq 'GrangerBrowser.exe'
+    } | ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
     Get-CimInstance Win32_Process | Where-Object {
         $_.ExecutablePath -and
         $_.ExecutablePath.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)
     } | ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
-    Start-Sleep -Milliseconds 500
+    $deadline = (Get-Date).AddSeconds(8)
+    do {
+        if (@(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'GrangerBrowser.exe'
+        }).Count -eq 0) {
+            Start-Sleep -Seconds 1
+            if (@(Get-CimInstance Win32_Process | Where-Object {
+                $_.Name -eq 'GrangerBrowser.exe'
+            }).Count -eq 0) { return }
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    throw "Installed Granger Browser did not stop before the next installer operation."
 }
 
 Invoke-Setup @('--test-mode', "--self-test=$selfTest")

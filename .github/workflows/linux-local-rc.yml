@@ -148,7 +148,7 @@ jobs:
         with:
           name: granger-linux-local-rc-${{ github.sha }}
           path: |
-            output/linux/GrangerBrowser-0.4.4-x86_64.AppImage
+            output/linux/GrangerBrowser-0.4.5-x86_64.AppImage
             output/linux/SHA256SUMS-linux.txt
             output/linux/linux-build-report.json
             output/linux/acceptance-summary.json

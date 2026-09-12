@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(GrangerBrowser
-    VERSION 0.4.4
+    VERSION 0.4.5
     DESCRIPTION "Granger Browser privacy browser with integrated search"
     LANGUAGES C CXX
 )
@@ -71,6 +71,8 @@ qt_add_executable(granger_browser
     granger/network/GrangerNetworkRuntime.h
     granger/network/GrangerHostingManager.cpp
     granger/network/GrangerHostingManager.h
+    granger/core/UpdateManager.cpp
+    granger/core/UpdateManager.h
     granger/network/GrangerWanConfigPaths.cpp
     granger/network/GrangerWanConfigPaths.h
     granger/network/GrangerNetworkBrowserSmokeTests.cpp

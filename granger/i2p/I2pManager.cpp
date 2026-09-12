@@ -421,38 +421,62 @@ bool I2pManager::ensureAddressBookBootstrap(QString *error)
     const QDir data(m_status.dataDirectory);
     const QFileInfo persistedIndex(data.filePath(QStringLiteral("addressbook/addresses.csv")));
     const QFileInfo existingHosts(data.filePath(QStringLiteral("hosts.txt")));
-    if ((persistedIndex.isFile() && persistedIndex.size() > 0)
-        || (existingHosts.isFile() && existingHosts.size() > 0)) {
+    if (persistedIndex.isFile() && persistedIndex.size() > 0) {
         if (error) error->clear();
         return true;
     }
 
-    QFile resource(QStringLiteral(":/i2p/hosts.txt"));
-    if (!resource.open(QIODevice::ReadOnly)) {
+    QFile indexResource(QStringLiteral(":/i2p/addresses.csv"));
+    QFile hostsResource(QStringLiteral(":/i2p/hosts.txt"));
+    if (!indexResource.open(QIODevice::ReadOnly)
+        || !hostsResource.open(QIODevice::ReadOnly)) {
         if (error) *error = QStringLiteral("Bundled I2P address-book bootstrap is unavailable");
         return false;
     }
-    const QByteArray contents = resource.readAll();
-    int validEntries = 0;
-    for (const QByteArray &line : contents.split('\n')) {
+    const QByteArray indexContents = indexResource.readAll();
+    const QByteArray hostsContents = hostsResource.readAll();
+    int validIndexEntries = 0;
+    for (const QByteArray &line : indexContents.split('\n')) {
+        const QByteArray trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith('#')
+            && trimmed.indexOf(QByteArrayLiteral(".i2p,")) > 0) {
+            ++validIndexEntries;
+        }
+    }
+    int validHostEntries = 0;
+    for (const QByteArray &line : hostsContents.split('\n')) {
         const QByteArray trimmed = line.trimmed();
         if (!trimmed.isEmpty() && !trimmed.startsWith('#')
             && trimmed.indexOf(QByteArrayLiteral(".i2p=")) > 0) {
-            ++validEntries;
+            ++validHostEntries;
         }
     }
-    if (validEntries < 10) {
+    if (validIndexEntries < 10 || validHostEntries < 10) {
         if (error) *error = QStringLiteral("Bundled I2P address-book bootstrap is invalid");
         return false;
     }
 
-    QSaveFile output(existingHosts.absoluteFilePath());
-    if (!output.open(QIODevice::WriteOnly)
-        || output.write(contents) != contents.size() || !output.commit()) {
+    if (!QDir().mkpath(persistedIndex.absolutePath())) {
         if (error) {
-            *error = QStringLiteral("Unable to initialize the I2P address book: %1")
-                         .arg(output.errorString());
+            *error = QStringLiteral("Unable to create the I2P address-book directory");
         }
+        return false;
+    }
+    const auto writeBootstrap = [error](const QString &path, const QByteArray &contents) {
+        QSaveFile output(path);
+        if (!output.open(QIODevice::WriteOnly)
+            || output.write(contents) != contents.size() || !output.commit()) {
+            if (error) {
+                *error = QStringLiteral("Unable to initialize the I2P address book: %1")
+                             .arg(output.errorString());
+            }
+            return false;
+        }
+        return true;
+    };
+    if (!writeBootstrap(persistedIndex.absoluteFilePath(), indexContents)) return false;
+    if ((!existingHosts.isFile() || existingHosts.size() == 0)
+        && !writeBootstrap(existingHosts.absoluteFilePath(), hostsContents)) {
         return false;
     }
     if (error) error->clear();
@@ -472,10 +496,8 @@ void I2pManager::refreshAddressBookStatus()
         }
         return count;
     };
-    int entries = countEntries(data.filePath(QStringLiteral("addressbook/addresses.csv")), ',');
-    if (entries == 0 && m_status.proxyListening) {
-        entries = countEntries(data.filePath(QStringLiteral("hosts.txt")), '=');
-    }
+    const int entries = countEntries(
+        data.filePath(QStringLiteral("addressbook/addresses.csv")), ',');
     m_status.addressBookEntries = entries;
     m_status.addressBookReady = entries > 0;
 }

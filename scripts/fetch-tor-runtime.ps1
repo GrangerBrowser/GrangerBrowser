@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ArchivePath = "output/third-party/tor-download/tor-expert-bundle-windows-x86_64-15.0.20.tar.gz",
-    [string]$Destination = "output/tor-runtime"
+    [string]$ArchivePath = "build/dependency-cache/tor-download/tor-expert-bundle-windows-x86_64-15.0.20.tar.gz",
+    [string]$Destination = "build/dependency-cache/tor-runtime"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,9 +34,9 @@ function Resolve-WorkspaceOutputPath {
     } else {
         [IO.Path]::GetFullPath((Join-Path $projectRoot $Path))
     }
-    $outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "output")).TrimEnd('\')
+    $outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "build/dependency-cache")).TrimEnd('\')
     if (-not $resolved.StartsWith($outputRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Tor build inputs must remain under the ignored output directory: $resolved"
+        throw "Tor build inputs must remain under build/dependency-cache: $resolved"
     }
     return $resolved
 }
@@ -129,7 +129,7 @@ foreach ($entry in $entries) {
     }
 }
 
-$extractRoot = Resolve-WorkspaceOutputPath "output/third-party/tor-extract-$bundleVersion"
+$extractRoot = Resolve-WorkspaceOutputPath "build/dependency-cache/tor-extract-$bundleVersion"
 if (Test-Path -LiteralPath $extractRoot) { Remove-Item -LiteralPath $extractRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $extractRoot | Out-Null
 & tar.exe -xf $archive -C $extractRoot

@@ -1,4 +1,5 @@
 #include "granger/ui/MainWindow.h"
+#include "granger/core/Brand.h"
 
 #include <QApplication>
 #include <QAction>
@@ -1469,6 +1470,13 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
         openHomeTab();
     }
     QTimer::singleShot(0, this, [this] { m_hosting.restoreEnabledServices(); });
+    connect(&m_updates, &UpdateManager::changed, this, [this] {
+        BrowserTab *tab = currentTab();
+        if (tab && tab->displayAddress().startsWith(QStringLiteral("about:settings?category=about"))) {
+            loadInternalPage(tab, QStringLiteral("about:settings?category=about"));
+        }
+    }, Qt::QueuedConnection);
+    QTimer::singleShot(0, &m_updates, &UpdateManager::initialize);
 }
 
 MainWindow::~MainWindow()
@@ -2204,6 +2212,11 @@ bool MainWindow::createHostedLocalApplicationForDiagnostics(
 bool MainWindow::startHostedServiceForDiagnostics(const QString &id, QString *error)
 {
     return m_hosting.startService(id, error);
+}
+
+bool MainWindow::setHostedVisibilityForDiagnostics(const QString &id, const QString &visibility, QString *error)
+{
+    return m_hosting.setVisibility(id, visibility, error);
 }
 
 bool MainWindow::stopHostedServiceForDiagnostics(const QString &id, QString *error)
@@ -6342,6 +6355,36 @@ globalThis.__grangerSupportCopyReset=setTimeout(()=>{
                             : QStringLiteral("hosting.starting")) : error);
         return;
     }
+    if (path.startsWith(QStringLiteral("/updates/"))) {
+        if (tab->displayAddress() != QStringLiteral("about:settings?category=about")
+            || !tab->page() || !Brand::isInternalHost(tab->page()->url().host())) return;
+        if (path == QStringLiteral("/updates/check")) m_updates.check();
+        else if (path == QStringLiteral("/updates/now")) m_updates.updateNow();
+        else if (path == QStringLiteral("/updates/later")) m_updates.later();
+        else if (path == QStringLiteral("/updates/policy")) {
+            const QString mode = formValue(QStringLiteral("policy"));
+            const bool consent = mode != QStringLiteral("auto") || QMessageBox::question(
+                this, Localization::text(QStringLiteral("updates.title")),
+                Localization::text(QStringLiteral("updates.auto_confirm")),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+            if (consent) m_updates.setPolicy(mode, mode == QStringLiteral("auto"));
+        } else if (path == QStringLiteral("/updates/apply")) {
+            const bool consent = QMessageBox::question(this, Localization::text(QStringLiteral("updates.title")),
+                Localization::text(QStringLiteral("updates.restart_confirm")),
+                QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+            if (consent) m_updates.applyAndRestart(true);
+        }
+        return;
+    }
+    if (path == QStringLiteral("/hosting/visibility")) {
+        if (tab->displayAddress() != QStringLiteral("about:settings?category=hosting")
+            || !tab->page() || !Brand::isInternalHost(tab->page()->url().host())) return;
+        QString error;
+        const bool ok = m_hosting.setVisibility(query.queryItemValue(QStringLiteral("id")),
+                                                formValue(QStringLiteral("visibility")), &error);
+        refreshHosting(ok ? Localization::text(QStringLiteral("hosting.updated")) : error);
+        return;
+    }
     if (path == QStringLiteral("/hosting/edit")) {
         const HostedServiceRecord record = m_hosting.service(
             query.queryItemValue(QStringLiteral("id")));
@@ -8966,6 +9009,36 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     context.dataRoot = AppPaths::dataRoot();
     context.profileRoot = AppPaths::webEngineProfileRoot();
     context.applicationVersion = QCoreApplication::applicationVersion();
+    if (context.settingsCategory == QStringLiteral("about")) {
+        const QJsonObject update = m_updates.snapshot();
+        const auto tx = [](const char *key) { return Localization::text(QString::fromLatin1(key)).toHtmlEscaped(); };
+        const QString state = update.value(QStringLiteral("state")).toString();
+        const QString policy = update.value(QStringLiteral("policy")).toString();
+        const auto command = [&tx](const QString &name, const char *label, bool enabled = true) {
+            return enabled ? QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
+                                 .arg(actionUrl(QStringLiteral("updates/") + name), tx(label))
+                           : QStringLiteral("<button type=\"button\" disabled>%1</button>").arg(tx(label));
+        };
+        context.updatesHtml = QStringLiteral(
+            "<section class=\"ds-card updates-panel\"><div class=\"ds-card-header\"><h3>%1</h3></div>"
+            "<div class=\"ds-card-body\"><dl><dt>%2</dt><dd>%3</dd><dt>%4</dt><dd>%5</dd></dl>"
+            "<p role=\"status\" data-update-state=\"%6\">%7</p><p>%8</p>"
+            "<details><summary>%9</summary><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">%10</pre></details>"
+            "<form action=\"%11\" method=\"get\"><label class=\"field\"><span>%12</span>"
+            "<select name=\"policy\"><option value=\"ask\"%13>%14</option><option value=\"auto\"%15>%16</option></select>"
+            "</label><button type=\"submit\">%17</button></form></div><div class=\"ds-card-footer\">%18</div></section>")
+                .arg(tx("updates.title"), tx("updates.current"), context.applicationVersion.toHtmlEscaped(),
+                     tx("updates.available"), update.value(QStringLiteral("availableVersion")).toString(QStringLiteral("--")).toHtmlEscaped(),
+                     state.toHtmlEscaped(), Localization::text(QStringLiteral("updates.state.") + state.toLower()).toHtmlEscaped(),
+                     update.value(QStringLiteral("code")).toString().toHtmlEscaped(), tx("updates.changes"),
+                     update.value(QStringLiteral("releaseNotes")).toString().toHtmlEscaped(), actionUrl(QStringLiteral("updates/policy")),
+                     tx("updates.policy"), policy == QStringLiteral("ask") ? QStringLiteral(" selected") : QString(), tx("updates.ask"),
+                     policy == QStringLiteral("auto") ? QStringLiteral(" selected") : QString(), tx("updates.auto"), tx("common.save"),
+                     command(QStringLiteral("check"), "updates.check")
+                     + command(QStringLiteral("now"), "updates.now", state == QStringLiteral("AVAILABLE"))
+                     + command(QStringLiteral("later"), "updates.later")
+                     + command(QStringLiteral("apply"), "updates.apply", state == QStringLiteral("STAGED")));
+    }
     if (page == QStringLiteral("about:settings") && settingsCategory == QStringLiteral("search")) {
         const QStringList enabledEngines = m_settings.enabledSearchEngines();
         for (const SearchEngine &engine : m_search.engines()) {
@@ -11791,6 +11864,25 @@ QString MainWindow::hostingSettingsHtml() const
             actions += QStringLiteral("<a class=\"button danger\" href=\"%1\">%2</a>")
                            .arg(serviceAction(QStringLiteral("hosting/delete")),
                                 text("common.delete").toHtmlEscaped());
+            const QString visibilityForm = QStringLiteral(
+                "<form class=\"hosting-visibility\" action=\"%1\" method=\"get\">"
+                "<input type=\"hidden\" name=\"id\" value=\"%2\">"
+                "<label class=\"field\"><span>%3</span><select name=\"visibility\">"
+                "<option value=\"unlisted\"%4>%5</option><option value=\"public\"%6>%7</option>"
+                "</select></label><button type=\"submit\" class=\"secondary\">%8</button></form>")
+                    .arg(action(QStringLiteral("hosting/visibility")), service.id.toHtmlEscaped(),
+                         text("hosting.visibility").toHtmlEscaped(),
+                         service.visibility == QStringLiteral("unlisted") ? QStringLiteral(" selected") : QString(),
+                         text("hosting.visibility.unlisted").toHtmlEscaped(),
+                         service.visibility == QStringLiteral("public") ? QStringLiteral(" selected") : QString(),
+                         text("hosting.visibility.public").toHtmlEscaped(), text("common.save").toHtmlEscaped());
+            const QString details = QStringLiteral(
+                "<details class=\"hosting-details\"><summary>%1</summary><code>%2</code>"
+                "<dl><dt>%3</dt><dd>%4</dd><dt>%5</dt><dd>%6</dd></dl></details>")
+                    .arg(text("hosting.details").toHtmlEscaped(), service.address.toHtmlEscaped(),
+                         text("hosting.requests").toHtmlEscaped(), QString::number(service.requests),
+                         text("hosting.payload_bytes").toHtmlEscaped(),
+                         QStringLiteral("%1 / %2").arg(service.receivedBytes).arg(service.sentBytes));
             html += QStringLiteral(
                 "<article class=\"hosting-service-card ds-card\" role=\"listitem\"><div class=\"hosting-service-main\">"
                 "<div class=\"hosting-service-title\"><div><h3>%1</h3><span>%2</span></div>"
@@ -11798,23 +11890,23 @@ QString MainWindow::hostingSettingsHtml() const
                 "<div class=\"hosting-address\"><code>%5</code><a href=\"%6\" title=\"%7\">%8</a></div>"
                 "<div class=\"hosting-meta\"><div><span>%9</span><strong>%10</strong></div>"
                 "<div><span>%11</span><strong>%12</strong></div><div><span>%13</span><strong>%14</strong></div></div>"
-                "%15</div><div class=\"hosting-service-actions\">%16</div></article>")
+                "%15%17%18</div><div class=\"hosting-service-actions\">%16</div></article>")
                     .arg(service.title.toHtmlEscaped(), typeLabel.toHtmlEscaped(),
                          service.status.toHtmlEscaped(), statusText(service.status).toHtmlEscaped(),
-                         service.address.toHtmlEscaped(),
+                         (service.address.left(12) + QStringLiteral("...") + service.address.right(16)).toHtmlEscaped(),
                          serviceAction(QStringLiteral("hosting/copy")),
                          text("hosting.copy_address").toHtmlEscaped(),
                          text("common.copy").toHtmlEscaped(),
                          text("hosting.traffic").toHtmlEscaped(),
-                         text("hosting.traffic.private").toHtmlEscaped(),
+                         QLocale().formattedDataSize(service.sentBytes).toHtmlEscaped(),
                          text("hosting.uptime").toHtmlEscaped(),
                          running ? uptimeText(service.uptimeSeconds).toHtmlEscaped() : QStringLiteral("--"),
-                         text("hosting.autostart").toHtmlEscaped(),
-                         (service.autoStart ? text("common.yes") : text("common.no")).toHtmlEscaped(),
+                         text("hosting.requests").toHtmlEscaped(),
+                         QString::number(service.requests),
                          service.error.isEmpty()
                              ? QString() : QStringLiteral("<p class=\"hosting-error\">%1</p>")
                                                    .arg(service.error.toHtmlEscaped()),
-                         actions);
+                         actions, visibilityForm, details);
         }
         html += QStringLiteral("</div>");
     }

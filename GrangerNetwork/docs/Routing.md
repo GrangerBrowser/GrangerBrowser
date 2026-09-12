@@ -34,6 +34,12 @@ route:
 - reports `diversityRelaxed` when the prefix preference cannot be met;
 - never treats an ordinary client or service as a relay automatically.
 
+An ordinary browser gateway explicitly opts in to the `middle` role with a
+signed short-lived adjacency descriptor. Such a descriptor is eligible only
+when it immediately follows its named reachable anchor. It cannot be selected
+as the first hop or for access, guard, discovery, introduction, rendezvous, or
+service-relay roles.
+
 Network-prefix diversity is a limited heuristic. It does not establish
 different operators, families, AS numbers, hosting providers, jurisdictions, or
 failure domains.
@@ -47,6 +53,13 @@ The endpoint connects only to the access relay. Circuit extension is incremental
 3. Create a fixed-cell stream through that hop.
 4. Authenticate the next relay over that stream.
 5. Repeat until the final introduction or rendezvous role is reached.
+
+For a directly reachable next hop, the current relay opens a new TCP connection
+as before. For an adjacency descriptor, the named anchor consumes a previously
+authenticated outbound session registered by that peer. The restricted peer
+then accepts `OPEN_CIRCUIT` over this channel and dials the following verified
+hop outbound. No unsolicited inbound connection to the restricted peer is
+required.
 
 Each extension authenticates with a per-hop ephemeral identity. Each relay
 receives only its previous transport peer, its next node descriptor, its local
@@ -67,6 +80,18 @@ Recovery is always another verified overlay route. There is no service endpoint
 in discovery, no direct dial API, and no DNS, clearnet, Tor, I2P, LAN, or
 compatibility-rendezvous fallback.
 
+Private discovery retries at most 12 routes. Queued candidates are rechecked
+against failures learned by concurrent requests before each new attempt.
+Intermediate extension failures enter a bounded, descriptor-versioned cooldown
+for the directed role edge, not a global exclusion of either peer. An exhausted
+FIND_NODE search retains a 60-second retry window, including searches exhausted
+before the terminal hop. Record RPCs and other roles remain eligible. Expired live-view
+descriptors are excluded even if they remain in memory. Each role's search
+set is capped at 32 candidates, sampled across advertised network groups when
+larger, bounding enumeration to 32 cubed combinations. Four distinct node
+identities and adjacent-middle binding remain mandatory. These are local
+selection heuristics, not operator-independence or Sybil guarantees.
+
 ## Resource limits
 
 Node descriptors publish bounded relay policy. Runtime enforcement covers
@@ -74,6 +99,25 @@ connections, circuits, streams, bytes, token-bucket rate/burst, timeouts, and
 bounded captures/diagnostics. Fixed cells use explicit stream receive windows
 and TCP backpressure. Resource exhaustion resets the affected stream/circuit or
 rejects the connection; it does not widen routing policy.
+
+Receive payload budgets are shared across a node's multiplexers. Each source
+has at most 32 simultaneous connections and 4096 RPCs per minute across
+reconnects, in addition to global policy and per-connection RPC limits. Source
+accounting retains only transient keyed hashes, not persistent raw addresses.
+Several users behind one NAT share this source limit. It is not protection
+against distributed bandwidth exhaustion or attackers with many source IPs.
+
+Reverse adjacencies are bounded globally and per identity, are one-shot, expire
+with their descriptor, and are advertised only while a live slot is available.
+They are not persisted in the peer cache or treated as DHT storage nodes.
+Direct discovery does not return adjacency descriptors; a requester must first
+use a private access/guard/middle discovery route.
+
+The browser isolates cached application circuits by normalized service name.
+A circuit rotates after 10 minutes, 128 requests, 64 MiB, or transport failure;
+at most 16 service circuits are retained. Repeated assets for one origin may
+therefore remain linkable by timing on that circuit, while unrelated services
+do not share the same end-to-end service session.
 
 ## Known metadata
 

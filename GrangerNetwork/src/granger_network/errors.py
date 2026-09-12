@@ -22,12 +22,24 @@ class NetworkUnavailableError(DiscoveryError):
     """Raised when authenticated discovery cannot reach its required peers."""
 
 
+class RecordQuorumError(DiscoveryError):
+    """The queried replicas did not establish a unique signed record quorum."""
+
+
 class TransportPolicyError(GrangerNetworkError):
     """Raised before a transport can escape the allowed private boundary."""
 
 
 class ProtocolError(GrangerNetworkError):
     """Raised for malformed or unauthenticated protocol traffic."""
+
+
+class PeerRpcError(ProtocolError):
+    """A request-correlated error received on an authenticated peer channel."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(f"peer RPC request failed: {code}")
 
 
 class ConnectionClosedError(ProtocolError):
@@ -48,6 +60,10 @@ class RendezvousError(GrangerNetworkError):
 
 class OverlayRoutingError(GrangerNetworkError):
     """Raised when a distributed overlay route cannot be built safely."""
+
+
+class IntroductionOfflineError(OverlayRoutingError):
+    """The authenticated introduction endpoint has no live host registration."""
 
 
 class ResourceLimitError(OverlayRoutingError):

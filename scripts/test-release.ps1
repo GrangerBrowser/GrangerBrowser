@@ -6,7 +6,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$sourcePackage = [IO.Path]::GetFullPath((Join-Path $projectRoot $PackageDirectory))
+$packageInput = if ([IO.Path]::IsPathRooted($PackageDirectory)) {
+    $PackageDirectory
+} else {
+    Join-Path $projectRoot $PackageDirectory
+}
+$sourcePackage = [IO.Path]::GetFullPath($packageInput)
 if (-not (Test-Path -LiteralPath (Join-Path $sourcePackage "GrangerBrowser.exe"))) {
     throw "Packaged executable not found under $sourcePackage"
 }
@@ -14,16 +19,17 @@ $portability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `
     -PackageDirectory $sourcePackage.Substring([IO.Path]::GetFullPath($projectRoot).TrimEnd('\').Length + 1)
 if (-not $portability.OK) { throw "Windows portability validation failed before acceptance." }
 
-$testRoot = Join-Path $projectRoot "output/release acceptance/path with spaces"
+$temporaryRoot = Join-Path (Join-Path $projectRoot 'build/package-work') ('qa-' + [Guid]::NewGuid().ToString('N'))
+$testRoot = $temporaryRoot
+try {
 $copiedPackage = Join-Path $testRoot "copied release/Granger Browser"
 $dataRoot = Join-Path $testRoot "local data"
 $settingsRoot = Join-Path $testRoot "settings"
 $unrelatedCwd = Join-Path $testRoot "unrelated cwd"
 $resolvedTest = [IO.Path]::GetFullPath($testRoot)
-if (-not $resolvedTest.StartsWith([IO.Path]::GetFullPath($projectRoot), [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Acceptance directory escaped the workspace."
+if (-not $resolvedTest.Equals($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Acceptance directory escaped its temporary root."
 }
-if (Test-Path -LiteralPath $resolvedTest) { Remove-Item -LiteralPath $resolvedTest -Recurse -Force }
 New-Item -ItemType Directory -Path $copiedPackage,$dataRoot,$settingsRoot,$unrelatedCwd -Force | Out-Null
 Copy-Item -Path (Join-Path $sourcePackage "*") -Destination $copiedPackage -Recurse -Force
 $executable = Join-Path $copiedPackage "GrangerBrowser.exe"
@@ -137,7 +143,18 @@ function Invoke-GrangerBrowser {
     } else {
         $process.WaitForExit()
     }
-    if ($process.ExitCode -ne 0 -and -not $AllowNonZero) { throw "Granger Browser failed with exit code $($process.ExitCode): $($Arguments -join ' ')" }
+    if ($process.ExitCode -ne 0 -and -not $AllowNonZero) {
+        $reportArgument = @($Arguments | Where-Object { $_.StartsWith('--smoke-output=') }) | Select-Object -First 1
+        if ($reportArgument) {
+            $reportPath = $reportArgument.Substring('--smoke-output='.Length)
+            if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+                $failedReport = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                @($failedReport.cases | Where-Object { $_.passed -eq $false } |
+                    Select-Object -First 16 name,actual) | ConvertTo-Json -Depth 4 | Write-Host
+            }
+        }
+        throw "Granger Browser failed with exit code $($process.ExitCode): $($Arguments -join ' ')"
+    }
     return $process.ExitCode
 }
 
@@ -883,4 +900,37 @@ userAgentProfile=default
         [Environment]::SetEnvironmentVariable($name, $oldDevelopmentEnvironment[$name], "Process")
     }
 }
-Write-Host "Release acceptance passed in $testRoot"
+Write-Host 'Release acceptance passed; temporary evidence removed after completion.'
+} finally {
+    if (Test-Path -LiteralPath $temporaryRoot) {
+        $resolved = [IO.Path]::GetFullPath($temporaryRoot)
+        $temp = [IO.Path]::GetFullPath((Join-Path $projectRoot 'build/package-work')).TrimEnd('\')
+        if ([IO.Path]::GetDirectoryName($resolved) -ne $temp -or
+            [IO.Path]::GetFileName($resolved) -notmatch '^qa-[a-f0-9]{32}$') {
+            throw 'Unsafe acceptance cleanup path.'
+        }
+        if ((Get-Item -LiteralPath $resolved -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Acceptance cleanup root must not be a reparse point.'
+        }
+        $reparsePoints = @(Get-ChildItem -LiteralPath $resolved -Recurse -Force | Where-Object {
+            $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+        } | Sort-Object { $_.FullName.Length } -Descending)
+        foreach ($item in $reparsePoints) {
+            $itemPath = [IO.Path]::GetFullPath($item.FullName)
+            if (-not $itemPath.StartsWith($resolved + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Acceptance cleanup found a reparse point outside its temporary root.'
+            }
+            if ($item.PSIsContainer) {
+                [IO.Directory]::Delete($itemPath)
+            } else {
+                [IO.File]::Delete($itemPath)
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $resolved -Recurse -Force | Where-Object {
+            $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+        }).Count -ne 0) {
+            throw 'Acceptance cleanup could not remove its reparse-point fixtures.'
+        }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+}

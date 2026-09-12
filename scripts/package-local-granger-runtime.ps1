@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$PackageDirectory = "release/.local-staging",
+    [Parameter(Mandatory)][string]$PackageDirectory,
     [string]$PythonExecutable = "",
     [string]$WanBundleDirectory = $env:GRANGER_NETWORK_RELEASE_BUNDLE,
     [ValidateRange(0, 604800)]
@@ -9,15 +9,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'PackageWorkspace.ps1')
 $workspaceRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
-$packageRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $PackageDirectory)).TrimEnd('\')
-$approvedPackageRoot = [IO.Path]::GetFullPath(
-    (Join-Path $projectRoot "release/.local-staging")).TrimEnd('\')
-if (-not $packageRoot.Equals($approvedPackageRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "The app-local Granger Network runtime may only be added to release/.local-staging."
-}
-if (-not $packageRoot.StartsWith($workspaceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw "PackageDirectory escaped the project workspace."
+$packageRoot = Resolve-PackageCandidate -ProjectRoot $projectRoot -Path $PackageDirectory
+if ([string]::IsNullOrWhiteSpace($WanBundleDirectory)) {
+    throw 'WAN_BUNDLE_REQUIRED: production packaging requires a signed WAN bundle and the existing external config-authority pin. Fixture acceptance cannot replace this gate.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $packageRoot "GrangerBrowser.exe") -PathType Leaf)) {
     throw "Base staged package is missing GrangerBrowser.exe."
@@ -149,8 +145,19 @@ $runtimeRoot = Join-Path $packageRoot "runtime/python"
 $runtimeLib = Join-Path $runtimeRoot "Lib"
 $runtimeSitePackages = Join-Path $runtimeLib "site-packages"
 if (Test-Path -LiteralPath $runtimeRoot) {
-    if (-not $runtimeRoot.StartsWith($approvedPackageRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to replace a runtime outside local staging."
+    $resolvedRuntime = [IO.Path]::GetFullPath($runtimeRoot)
+    if (-not $resolvedRuntime.StartsWith($packageRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        ((Get-Item -LiteralPath $runtimeRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -Force | Where-Object {
+            $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+        }).Count -ne 0) {
+        throw 'Refusing to replace a runtime outside its validated candidate.'
+    }
+    if (@(Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith(
+            $resolvedRuntime + '\', [StringComparison]::OrdinalIgnoreCase)
+    }).Count -ne 0) {
+        throw 'A process is still using the candidate Python runtime.'
     }
     Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
 }
@@ -213,6 +220,9 @@ Copy-Item -LiteralPath $cffiBackend -Destination $runtimeSitePackages
 Copy-Item -LiteralPath $pycparserRoot -Destination $runtimeSitePackages -Recurse
 Copy-Item -LiteralPath $pycparserDistInfo -Destination $runtimeSitePackages -Recurse
 Copy-Item -LiteralPath $networkSource -Destination $runtimeSitePackages -Recurse
+foreach ($module in @("release_update.py", "windows_artifact_trust.py")) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $module) -Destination $runtimeSitePackages
+}
 Get-ChildItem -LiteralPath $runtimeRoot -Directory -Recurse -Force |
     Where-Object { $_.Name -eq "__pycache__" } |
     Sort-Object FullName -Descending |
@@ -528,6 +538,8 @@ $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $manifestPath -En
     GrangerRuntimeReleaseId = $runtimeReleaseId
     SourceHead = $sourceHead
     RuntimeFiles = @(Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File).Count
+    SignedWanBundle = [bool]$wanBundleInfo.Bundled
+    WanConfigGeneration = [long]$wanBundleInfo.Generation
     RuntimeSize = (Get-ChildItem -LiteralPath $runtimeRoot -Recurse -File |
         Measure-Object Length -Sum).Sum
 }

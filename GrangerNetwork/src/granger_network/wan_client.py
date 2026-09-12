@@ -4,12 +4,13 @@ import argparse
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 from .descriptor import ServiceDescriptor
 from ._codec import atomic_write_text
-from .errors import GrangerNetworkError, OverlayRoutingError, ReplayError
+from .errors import GrangerNetworkError, IntroductionOfflineError, OverlayRoutingError, ReplayError
 from .peer import NodeDescriptor
 from .wan_config import WanDiscoveryRuntime
 from .wan_config import load_discovery_runtime
@@ -38,8 +39,7 @@ def connect_service(
 ) -> WanClientConnection:
     if not 1 <= route_attempts <= 8:
         raise ValueError("WAN route attempt count is invalid")
-    service = resolver.resolve(name)
-    introduction = resolver.resolve_introduction(service)
+    service, introduction = resolver.resolve_connection(name)
     selector = WanRouteSelector(
         runtime.discovery,
         guard_seed=runtime.identity.public_key_bytes,
@@ -49,14 +49,19 @@ def connect_service(
     pair_use: dict[tuple[str, ...], int] = {}
     while attempts < route_attempts:
         introduction_nodes = []
-        for point in introduction.points:
-            try:
-                introduction_nodes.append(resolver.resolve_node(point.node_id))
-            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                failures.append(
-                    f"introduction node resolution failed ({point.node_id[:12]}): "
-                    f"{type(error).__name__}: {error}"
-                )
+        # Each lookup keeps its own authenticated quorum and private circuits.
+        # Bound independent lookups to two and join every task before proceeding.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="granger-intro-lookup") as workers:
+            lookups = [(point, workers.submit(resolver.resolve_node, point.node_id))
+                       for point in introduction.points]
+            for point, lookup in lookups:
+                try:
+                    introduction_nodes.append(lookup.result())
+                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                    failures.append(
+                        f"introduction node resolution failed ({point.node_id[:12]}): "
+                        f"{type(error).__name__}: {error}"
+                    )
         candidate_sets: list[tuple[NodeDescriptor, list[WanRouteSelection]]] = []
         for introduction_node in introduction_nodes:
             try:
@@ -72,6 +77,7 @@ def connect_service(
                 candidate_sets.append((introduction_node, list(candidates)))
 
         changed = False
+        offline_endpoints: set[str] = set()
         candidate_count = max(
             (len(candidates) for _, candidates in candidate_sets),
             default=0,
@@ -137,6 +143,14 @@ def connect_service(
                         failures.append(detail)
                     else:
                         failures.append(type(error).__name__)
+                    if isinstance(error, IntroductionOfflineError):
+                        # A different path cannot repair this endpoint's missing
+                        # host registration. Try the other signed points, then
+                        # check for a rotated introduction once. Never cache this
+                        # negative across requests or descriptor sequences.
+                        candidates.clear()
+                        offline_endpoints.add(introduction_node.node_id)
+                        continue
                     refreshable_failure = detail.startswith(
                         "introduction stage failed during request"
                     ) or detail.startswith((
@@ -165,7 +179,19 @@ def connect_service(
                             break
             if changed or attempts >= route_attempts:
                 break
+        if not changed and offline_endpoints and attempts < route_attempts:
+            latest = resolver.resolve_introduction(service)
+            if (latest.sequence < introduction.sequence
+                    or (latest.sequence == introduction.sequence and latest != introduction)):
+                raise ReplayError("introduction refresh rejected rollback or equivocation")
+            if latest.sequence > introduction.sequence:
+                introduction = latest
+                changed = True
         if not changed:
+            if offline_endpoints == {point.node_id for point in introduction.points}:
+                raise IntroductionOfflineError(
+                    "all current introduction endpoints reported no live host registration"
+                )
             break
     raise OverlayRoutingError(
         "private route attempts were exhausted without a direct fallback: "

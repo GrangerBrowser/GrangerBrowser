@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from .stage_trace import traced
+
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -14,6 +17,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ._codec import (
+    atomic_write_bytes,
     atomic_write_text,
     canonical_json,
     decode_base64url,
@@ -26,6 +30,7 @@ from .bootstrap import (
     DEFAULT_PROTOCOL_VERSION,
     BootstrapPool,
     BootstrapSet,
+    CachedPeerPool,
     PeerCache,
 )
 from .errors import DiscoveryError
@@ -43,6 +48,7 @@ MAX_SIGNED_CONFIG_LIFETIME = 180 * 24 * 60 * 60
 MAX_CONFIG_CLOCK_SKEW = 120
 _MAX_GENERATION = 2**63 - 1
 _SHA256_HEX_LENGTH = 64
+MAX_WAN_DOCUMENT_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -75,15 +81,23 @@ class BrowserWanConfig:
 def _read_document(path: Path, label: str) -> tuple[Path, bytes, dict[str, object]]:
     source = Path(path).resolve()
     try:
-        content = source.read_bytes()
+        with source.open("rb") as stream:
+            content = stream.read(MAX_WAN_DOCUMENT_BYTES + 1)
+        if len(content) > MAX_WAN_DOCUMENT_BYTES:
+            raise ValueError("document size exceeds its limit")
         document = parse_json_object(content.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        raise DiscoveryError(f"{label} is invalid: {error}") from error
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise DiscoveryError(f"{label} is invalid") from error
     return source, content, document
 
 
 def _config_member(root: Path, value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value or Path(value).is_absolute():
+    if (
+        not isinstance(value, str)
+        or len(value) > 240
+        or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*", value)
+        or any(part.endswith(".") for part in value.split("/"))
+    ):
         raise DiscoveryError(f"browser WAN {label} path is invalid")
     candidate = (root / value).resolve()
     try:
@@ -275,10 +289,6 @@ def _load_signed_config(
         or expires_at - issued_at > MAX_SIGNED_CONFIG_LIFETIME
     ):
         raise DiscoveryError("signed browser WAN config validity is invalid")
-    current = int(time.time()) if now is None else now
-    if issued_at > current + MAX_CONFIG_CLOCK_SKEW or expires_at <= current:
-        raise DiscoveryError("signed browser WAN config is not currently valid")
-
     trust_anchor = _load_public_pin(trust_anchor_path, "browser WAN trust anchor")
     try:
         embedded_key = decode_base64url(document["configAuthorityKey"])
@@ -296,6 +306,12 @@ def _load_signed_config(
         )
     except (InvalidSignature, ValueError) as error:
         raise DiscoveryError("signed browser WAN config signature is invalid") from error
+
+    current = int(time.time()) if now is None else now
+    if issued_at > current + MAX_CONFIG_CLOCK_SKEW:
+        raise DiscoveryError("signed browser WAN config is not currently valid (CONFIG_NOT_YET_VALID)")
+    if expires_at <= current:
+        raise DiscoveryError("signed browser WAN config is not currently valid (CONFIG_EXPIRED)")
 
     alias_pins, route_attempts, replication_factor, minimum_replicas, timeout = (
         _validate_policy(document)
@@ -343,6 +359,7 @@ def _load_signed_config(
     return result
 
 
+@traced("signed-config-validation")
 def load_browser_wan_config(
     path: Path,
     *,
@@ -454,39 +471,44 @@ class _ProvisionLock(AbstractContextManager[None]):
     def __enter__(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout
-        while True:
-            try:
-                self.descriptor = os.open(
-                    self.path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
-                )
-                os.write(self.descriptor, f"{os.getpid()}\n".encode("ascii"))
-                os.fsync(self.descriptor)
-                return None
-            except FileExistsError:
+        self.descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if os.fstat(self.descriptor).st_size == 0:
+                os.write(self.descriptor, b"\x00")
+            while True:
                 try:
-                    stale = time.time() - self.path.stat().st_mtime > 30.0
+                    os.lseek(self.descriptor, 0, os.SEEK_SET)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(self.descriptor, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(self.descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return None
                 except OSError:
-                    stale = False
-                if stale:
-                    try:
-                        self.path.unlink()
-                    except OSError:
-                        pass
-                    continue
-                if time.monotonic() >= deadline:
-                    raise DiscoveryError("browser WAN provisioning lock timed out")
-                time.sleep(0.05)
+                    if time.monotonic() >= deadline:
+                        raise DiscoveryError("browser WAN provisioning lock timed out")
+                    time.sleep(0.05)
+        except Exception:
+            os.close(self.descriptor)
+            self.descriptor = None
+            raise
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if self.descriptor is not None:
-            os.close(self.descriptor)
-            self.descriptor = None
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+            try:
+                os.lseek(self.descriptor, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self.descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(self.descriptor)
+                self.descriptor = None
+        # Keep the lock inode: deleting a lock file allows two independent
+        # owners on POSIX. The OS releases the lock when its process dies.
 
 
 def _active_config_path(install_root: Path) -> tuple[Path, int, str] | None:
@@ -527,9 +549,17 @@ def _install_bundle(
                 source = _config_member(bundle_path.parent, member, "bundle member")
                 target = temporary / member
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-            shutil.copyfile(bundle_path, temporary / "browser-wan.json")
+                atomic_write_bytes(target, source.read_bytes(), mode=0o600)
+            atomic_write_bytes(
+                temporary / "browser-wan.json", _content, mode=0o600
+            )
             os.replace(temporary, destination)
+            if os.name != "nt":
+                directory = os.open(bundles_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary, ignore_errors=True)
@@ -544,12 +574,12 @@ def _write_activation_state(
 ) -> None:
     relative = installed_config.relative_to(install_root).as_posix()
     atomic_write_text(
-        install_root / "active.json",
+        rollback_state_path,
         json.dumps(
             {
-                "config": relative,
                 "configSha256": config.sha256,
                 "generation": config.generation,
+                "networkId": config.network_id,
                 "version": 1,
             },
             ensure_ascii=True,
@@ -560,12 +590,12 @@ def _write_activation_state(
         mode=0o600,
     )
     atomic_write_text(
-        rollback_state_path,
+        install_root / "active.json",
         json.dumps(
             {
+                "config": relative,
                 "configSha256": config.sha256,
                 "generation": config.generation,
-                "networkId": config.network_id,
                 "version": 1,
             },
             ensure_ascii=True,
@@ -591,19 +621,26 @@ def ensure_browser_wan_config(
     rollback_path = Path(rollback_state_path).resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     with _ProvisionLock(destination_root / ".provision.lock"):
-        bundled = load_browser_wan_config(
-            bundle_path,
-            trust_anchor_path=trust_anchor,
-            now=now,
-            allow_legacy=False,
-        )
         rollback = _load_rollback_state(rollback_path)
         active = _active_config_path(destination_root)
+        installed = None
+        installed_path = None
+        active_error = None
+        # A crash after high-water persistence but before pointer activation is
+        # repaired only from the exact verified immutable generation, never N-1.
+        if rollback is not None and (active is None or active[1] < int(rollback["generation"])):
+            recovery_path = destination_root / "bundles" / (
+                f"{int(rollback['generation']):020d}-{str(rollback['configSha256'])[:16]}"
+            ) / "browser-wan.json"
+            recovered = load_browser_wan_config(
+                recovery_path, trust_anchor_path=trust_anchor,
+                rollback_state_path=rollback_path, now=now, allow_legacy=False,
+            )
+            _write_activation_state(recovery_path, recovered, destination_root, rollback_path)
+            active = (recovery_path, recovered.generation, recovered.sha256)
         if active is not None:
             active_path, active_generation, active_digest = active
-            if active_generation > bundled.generation:
-                raise DiscoveryError("browser WAN bundled config rollback was rejected")
-            if active_generation == bundled.generation:
+            try:
                 installed = load_browser_wan_config(
                     active_path,
                     trust_anchor_path=trust_anchor,
@@ -614,16 +651,31 @@ def ensure_browser_wan_config(
                 if (
                     installed.generation != active_generation
                     or installed.sha256 != active_digest
-                    or installed.sha256 != bundled.sha256
                 ):
                     raise DiscoveryError("browser WAN config generation equivocation was rejected")
-                return active_path
-        if rollback is not None:
-            highest = int(rollback["generation"])
-            if bundled.generation < highest:
-                raise DiscoveryError("browser WAN bundled config rollback was rejected")
-            if bundled.generation == highest and bundled.sha256 != rollback["configSha256"]:
-                raise DiscoveryError("browser WAN bundled config equivocation was rejected")
+                installed_path = active_path
+                if rollback is None or installed.generation > int(rollback["generation"]):
+                    _write_activation_state(active_path, installed, destination_root, rollback_path)
+            except DiscoveryError as error:
+                installed = None
+                active_error = error
+        try:
+            bundled = load_browser_wan_config(
+                bundle_path, trust_anchor_path=trust_anchor, now=now, allow_legacy=False,
+            )
+        except DiscoveryError:
+            if installed is not None:
+                return installed_path
+            raise
+        if installed is not None and installed.generation > bundled.generation:
+            return installed_path
+        _enforce_rollback(bundled, rollback_path)
+        if active is not None and bundled.generation == active[1]:
+            if bundled.sha256 != active[2]:
+                raise DiscoveryError("browser WAN config generation equivocation was rejected")
+            if active_error is not None:
+                raise active_error
+            return installed_path
 
         installed_path = _install_bundle(bundle_path, bundled, destination_root)
         verified = load_browser_wan_config(
@@ -635,8 +687,12 @@ def ensure_browser_wan_config(
         if verified.sha256 != bundled.sha256 or verified.generation != bundled.generation:
             raise DiscoveryError("installed browser WAN config does not match its signed bundle")
         _write_activation_state(installed_path, verified, destination_root, rollback_path)
+        # Keep the preceding snapshot for in-flight readers, not for rollback.
+        keep = {installed_path.parent}
+        if active is not None:
+            keep.add(active[0].parent)
         for candidate in (destination_root / "bundles").iterdir():
-            if candidate.is_dir() and candidate != installed_path.parent:
+            if candidate.is_dir() and candidate not in keep:
                 shutil.rmtree(candidate, ignore_errors=True)
         return installed_path
 
@@ -668,6 +724,7 @@ def load_or_create_identity(path: Path) -> ServiceIdentity:
     return identity
 
 
+@traced("bootstrap")
 def load_discovery_runtime(
     bootstrap_path: Path,
     authority_pin_path: Path,
@@ -700,6 +757,25 @@ def load_discovery_runtime(
     except DiscoveryError as error:
         import_error = error
     bootstrap_sets = reseed.load_active()
+    if not bootstrap_sets and cache.ranked("discovery"):
+        recovery_identity = load_or_create_identity(identity_path)
+        recovery = WanDiscoveryClient(
+            recovery_identity,
+            CachedPeerPool(cache),
+            cache=cache,
+            timeout=timeout,
+            replication_factor=replication_factor,
+            minimum_replicas=minimum_replicas,
+            reseed_store=reseed,
+        )
+        try:
+            recovery.refresh_reseed(direct_first_contact=True)
+        except DiscoveryError as error:
+            if "equivocation" in str(error).lower():
+                raise
+        except OSError:
+            pass
+        bootstrap_sets = reseed.load_active()
     if not bootstrap_sets:
         if import_error is not None:
             raise import_error
@@ -714,5 +790,6 @@ def load_discovery_runtime(
         timeout=timeout,
         replication_factor=replication_factor,
         minimum_replicas=minimum_replicas,
+        reseed_store=reseed,
     )
     return WanDiscoveryRuntime(identity, bootstrap, cache, discovery, reseed)

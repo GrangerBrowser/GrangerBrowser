@@ -30,10 +30,18 @@ The build validates the detached signature against the same Tor Browser
 Developers primary fingerprint and records hashes for the Linux Tor,
 lyrebird, Conjure, GeoIP, and transport configuration files.
 
-The i2pd archive is the official Windows x64 MinGW release with SHA-256
-`A0A8FB199A6BC5B487DF71567791DE6997050B921D65622EF9E936FFA88BC83F`.
-It is licensed under BSD-3-Clause. Binaries and certificates are read from the
-package; mutable router state is stored under the Granger user-data root.
+The Windows runtime is built from the pinned PurpleI2P i2pd 2.61.0 source
+archive with SHA-256
+`AFEA2C34A8FDBE36DF5AFAAACE79CEB0B45898B9EF9011946E3A692F8F318099`
+and commit `635b013a612ff47278ef02acf8580a28e10e26c5`. The reproducible x64
+MSVC build uses static dependencies and has SHA-256
+`96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591`.
+The MSVC build uses deterministic path mapping for i2pd and its static
+dependencies; package validation rejects binaries containing the local build
+root.
+It is licensed under BSD-3-Clause. The binary and source-tree reseed
+certificates are read from the package; mutable router state is stored under
+the Granger user-data root.
 
 The Linux local RC uses PurpleI2P's official Ubuntu Jammy amd64 package with
 SHA-256
@@ -51,15 +59,17 @@ i2pd. Granger never sends an I2P hostname to Windows or Linux system DNS, Tor
 DNS, or a clearnet resolver. An unknown name therefore fails inside the I2P
 backend.
 
-On a new profile, Granger copies a compiled address-book bootstrap to the
-writable I2P data directory before starting i2pd. The snapshot was retrieved
-through I2P from the i2pd 2.61.0 default subscription at
+On a new profile, Granger copies compiled `addressbook/addresses.csv` and
+`hosts.txt` bootstraps to the writable I2P data directory before starting
+i2pd. The snapshot was retrieved through I2P from the i2pd 2.61.0 default
+subscription at
 `http://shx5vqsw7usdaunyzr2qmes2fq37oumybpudrd4jjj4e4vk4uusa.b32.i2p/hosts.txt`.
 Its source-file SHA-256 is
 `4EA21E8A9C631A60382DAF23BD90D0BAE0CAB742B93B21BBF3BD885F05F78000`.
 It is used only when neither a persisted address book nor an existing
-`hosts.txt` is present. i2pd then persists and updates the address book through
-its normal `http://reg.i2p/hosts.txt` subscription. Installation files remain
+`addressbook/addresses.csv` is present and non-empty. An existing `hosts.txt`
+is preserved. i2pd then persists and updates the address book through its
+normal `http://reg.i2p/hosts.txt` subscription. Installation files remain
 read-only; address-book, NetDB, keys, tunnels, and logs remain in the Granger
 user-data directory.
 
@@ -68,12 +78,12 @@ construction, route verification, and address-book readiness. A router may
 report `Firewalled` and still be usable for client browsing; that label alone
 does not fail verification.
 
-The official i2pd Windows archive includes a tray application. Granger starts
-that unmodified binary on a dedicated, non-visible Windows desktop and
-requests a normal window-message shutdown there. This keeps the bundled
-backend visible in Task Manager while preventing its window, tray icon, and
-startup notification from appearing on the user's desktop. The diagnostic web
-console listens only on `127.0.0.1:19770` and is not opened automatically.
+Granger builds the upstream Windows application without source modifications,
+starts it on a dedicated non-visible Windows desktop, and requests a normal
+window-message shutdown there. This keeps the bundled backend visible in Task
+Manager while preventing its window, tray icon, and startup notification from
+appearing on the user's desktop. The diagnostic web console listens only on
+`127.0.0.1:19770` and is not opened automatically.
 
 ## Verification and failover
 

@@ -35,7 +35,7 @@ scripts/build-linux-appimage.sh
 Generated files remain below ignored `output/` storage:
 
 ```text
-output/linux/GrangerBrowser-0.4.4-x86_64.AppImage
+output/linux/GrangerBrowser-0.4.5-x86_64.AppImage
 output/linux/SHA256SUMS-linux.txt
 output/linux/linux-build-report.json
 output/linux/acceptance/
