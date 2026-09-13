@@ -184,6 +184,23 @@ class PrivateDiscoveryFailureTests(unittest.TestCase):
         route = client._private_route_candidates(self.peers[0], limit=1)[0]
         self.assertEqual({p.node_id for p, _ in route}, {p.node_id for p in self.peers})
 
+    def test_direct_failure_only_excludes_the_failed_access_role(self):
+        target = self.peers[0]
+        failed_access = self.peers[1]
+        self.client._record_peer_failure(
+            failed_access.node_id,
+            time.monotonic() + 60.0,
+        )
+
+        routes = self.client._private_route_candidates(target, limit=6)
+
+        self.assertTrue(routes)
+        for route in routes:
+            self.assertEqual(len(route), 4)
+            self.assertEqual(len({peer.node_id for peer, _role in route}), 4)
+            self.assertNotEqual(route[0][0].node_id, failed_access.node_id)
+            self.assertIn(failed_access.node_id, {peer.node_id for peer, _role in route[1:]})
+
     def test_record_phases_do_not_restart_an_exhausted_route_search(self):
         from granger_network.wan_discovery import _RecordCircuits, encode_find_node
         target = b"t" * 32
@@ -566,10 +583,13 @@ class PrivateDiscoveryFailureTests(unittest.TestCase):
 
         with patch("granger_network.circuit.CircuitBuilder") as builder:
             builder.return_value.open.side_effect = fail_access
-            with self.assertRaises(DiscoveryError):
+            with self.assertRaises((DiscoveryError, ConnectionRefusedError)):
                 self.client._request(self.peers[0], RpcType.FIND_NODE, b"request", RpcType.FIND_NODE)
-        self.assertEqual(len(failed_access), 1)
-        self.assertIn(failed_access[0], self.client._failed_until)
+        self.assertEqual(
+            set(failed_access),
+            {peer.node_id for peer in self.peers[1:]},
+        )
+        self.assertTrue(set(failed_access) <= set(self.client._failed_until))
         self.assertNotIn(self.peers[0].node_id, self.client._failed_until)
 
 

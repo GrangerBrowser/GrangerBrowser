@@ -712,7 +712,7 @@ class WanDiscoveryClient:
                 if node_supports_route_role(node, capability)
                 and node.expires_at > wall_now
                 and node.node_id not in excluded
-                and node.node_id not in failed
+                and (capability != "access" or node.node_id not in failed)
             }
             if capability == "middle":
                 selected = {
@@ -929,11 +929,10 @@ class WanDiscoveryClient:
                     # Other record lookups can learn failures while this queue waits.
                     with self._lock:
                         current = time.monotonic()
-                        return (not any(self._failed_until.get(node.node_id, 0.0) > current
-                                    for node, _role in candidate[:-1])
-                            and not any(self._failed_route_edges.get(
-                                _route_edge_key(left, left_role, right, right_role), 0.0) > current
-                                for (left, left_role), (right, right_role) in zip(candidate, candidate[1:])))
+                    return (self._failed_until.get(candidate[0][0].node_id, 0.0) <= current
+                        and not any(self._failed_route_edges.get(
+                            _route_edge_key(left, left_role, right, right_role), 0.0) > current
+                            for (left, left_role), (right, right_role) in zip(candidate, candidate[1:])))
 
                 for _route_attempt in range(MAX_PRIVATE_ROUTE_ATTEMPTS - len(attempted_routes)):
                     circuit = (record_circuits.take(peer)
