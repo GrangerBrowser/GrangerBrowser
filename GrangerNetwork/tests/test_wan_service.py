@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from granger_network.browser_gateway import CircuitRotationPolicy, _WanGateway
+from granger_network.cells import CellMultiplexer, MuxStream
 from granger_network.circuit import CircuitBuilder
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.errors import (
@@ -490,6 +491,37 @@ class WanServiceTests(unittest.TestCase):
                 previous.close()
             if worker is not None:
                 worker.join(timeout=5.0)
+            host.stop()
+
+    def test_nested_multiplexers_do_not_inherit_operation_timeouts(self) -> None:
+        host, client, intro = self._rotation_pair()
+        inherited_timeouts: list[float | None] = []
+        timeout_lock = threading.Lock()
+        session = None
+
+        def construct_multiplexer(channel, *args, **kwargs):
+            if isinstance(channel.connection, MuxStream):
+                with timeout_lock:
+                    inherited_timeouts.append(channel.connection._timeout)
+            return CellMultiplexer(channel, *args, **kwargs)
+
+        try:
+            with (
+                patch("socket.getaddrinfo", side_effect=AssertionError("DNS used")),
+                patch(
+                    "granger_network.wan_service.CellMultiplexer",
+                    side_effect=construct_multiplexer,
+                ),
+            ):
+                host.start_background()
+                host.wait_ready(15.0)
+                session = client.connect(intro)
+                self.assertEqual(session.fetch("/").body, HTML)
+            self.assertGreaterEqual(len(inherited_timeouts), 4)
+            self.assertTrue(all(timeout is None for timeout in inherited_timeouts))
+        finally:
+            if session is not None:
+                session.close()
             host.stop()
 
     def test_abandoned_grant_does_not_block_next_client(self) -> None:

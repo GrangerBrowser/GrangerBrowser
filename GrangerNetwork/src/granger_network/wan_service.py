@@ -26,6 +26,7 @@ from .wan_application import WanApplicationClient, WanApplicationServer
 from .wan_control import (
     DEFAULT_RENDEZVOUS_GRANT_LIFETIME,
     MAX_RENDEZVOUS_REGISTRATION_LIFETIME,
+    RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
     IntroductionRequest,
     RendezvousGrant,
     RendezvousJoin,
@@ -226,10 +227,14 @@ class WanServiceClient:
                 expected=RpcType.RENDEZVOUS_JOIN,
             )
             rendezvous_phase = "stream"
+            # The operation timeout bounds JOIN only. A background multiplexer
+            # must not inherit that deadline from its parent circuit stream.
+            rendezvous_circuit.endpoint.channel.connection.settimeout(None)
             rendezvous_mux = CellMultiplexer(
                 rendezvous_circuit.endpoint.channel,
                 cell_circuit_id,
                 initiator=True,
+                keepalive_interval_seconds=RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
             )
             stream = rendezvous_mux.open_stream(self.timeout)
             stream.settimeout(self.timeout)
@@ -240,7 +245,6 @@ class WanServiceClient:
                 session_id=rendezvous_session_id(grant.cookie),
                 protocol_version=VERSION_3,
             )
-            rendezvous_circuit.endpoint.channel.connection.settimeout(None)
             stream.settimeout(None)
             application_mux = CellMultiplexer(
                 channel,
@@ -718,13 +722,16 @@ class WanServiceHost:
                 registration.encode(),
                 expected=RpcType.RENDEZVOUS_REGISTER,
             )
+            # Registration is bounded, but the rendezvous reader remains alive
+            # while a client builds its independent route.
+            circuit.endpoint.channel.connection.settimeout(None)
             rendezvous_mux = CellMultiplexer(
                 circuit.endpoint.channel,
                 cell_circuit_id,
                 initiator=True,
+                keepalive_interval_seconds=RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
             )
             rendezvous_stream = rendezvous_mux.open_stream(self.timeout)
-            circuit.endpoint.channel.connection.settimeout(None)
             rendezvous_stream.settimeout(float(self.rendezvous_lifetime))
             route_ready = True
             worker = threading.Thread(
@@ -782,6 +789,7 @@ class WanServiceHost:
                 expected_session_id=rendezvous_session_id(cookie),
                 protocol_version=VERSION_3,
             )
+            rendezvous_stream.settimeout(None)
             with self._grant_condition:
                 if self._grant_slot is not None and self._grant_slot[0] == cookie:
                     self._grant_slot = None

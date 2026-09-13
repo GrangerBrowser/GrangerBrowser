@@ -259,6 +259,34 @@ class RelayCellTests(unittest.TestCase):
             with self.assertRaises(ProtocolError):
                 cover_profile_from_environment()
 
+    def test_required_keepalive_uses_cover_cells_and_stops_with_the_mux(self) -> None:
+        client_channel, server_channel = channel_pair()
+        circuit = secrets.token_bytes(16)
+        client_mux = CellMultiplexer(
+            client_channel,
+            circuit,
+            initiator=True,
+            cover_profile=CoverTrafficProfile.OFF,
+            keepalive_interval_seconds=0.05,
+        )
+        server_mux = CellMultiplexer(server_channel, circuit, initiator=False)
+        try:
+            deadline = time.monotonic() + 2.0
+            while (
+                server_mux.traffic_counters["coverCellsReceived"] == 0
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            self.assertGreater(server_mux.traffic_counters["coverCellsReceived"], 0)
+            self.assertEqual(server_mux.active_streams, 0)
+            keepalive = client_mux._keepalive_thread
+            self.assertIsNotNone(keepalive)
+            client_mux.close()
+            self.assertFalse(keepalive.is_alive())
+        finally:
+            client_mux.close()
+            server_mux.close()
+
     def test_cover_budget_is_bounded_and_yields_when_real_send_owns_channel(self) -> None:
         client_channel, server_channel = channel_pair()
         circuit = secrets.token_bytes(16)

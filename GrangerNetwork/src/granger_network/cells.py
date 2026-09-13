@@ -451,6 +451,7 @@ class CellMultiplexer:
         stream_window: int = DEFAULT_STREAM_WINDOW,
         max_streams: int = MAX_STREAMS_PER_MULTIPLEXER,
         cover_profile: CoverTrafficProfile | str = CoverTrafficProfile.OFF,
+        keepalive_interval_seconds: float | None = None,
         receive_budget: ReceiveMemoryBudget | None = None,
     ) -> None:
         if not isinstance(channel, SecureChannel) or channel.protocol_version != VERSION_3:
@@ -477,6 +478,17 @@ class CellMultiplexer:
             min(4 * 1024 * 1024 * 1024, stream_window * max_streams)
         )
         self.cover_policy = CoverTrafficPolicy.for_profile(cover_profile)
+        if keepalive_interval_seconds is not None and (
+            isinstance(keepalive_interval_seconds, bool)
+            or not isinstance(keepalive_interval_seconds, (int, float))
+            or not 0.05 <= keepalive_interval_seconds <= 60.0
+        ):
+            raise ResourceLimitError("relay keepalive interval is invalid")
+        self.keepalive_interval_seconds = (
+            None
+            if keepalive_interval_seconds is None
+            else float(keepalive_interval_seconds)
+        )
         self._streams: dict[int, MuxStream] = {}
         self._accept_queue: deque[MuxStream] = deque()
         self._condition = threading.Condition()
@@ -495,6 +507,7 @@ class CellMultiplexer:
         self._cover_send_times: deque[float] = deque()
         self._cover_stop = threading.Event()
         self._cover_thread: threading.Thread | None = None
+        self._keepalive_thread: threading.Thread | None = None
         self._reader = threading.Thread(
             target=self._read_loop,
             name=f"granger-cell-{circuit_id.hex()[:8]}",
@@ -508,6 +521,13 @@ class CellMultiplexer:
                 daemon=True,
             )
             self._cover_thread.start()
+        if self.keepalive_interval_seconds is not None:
+            self._keepalive_thread = threading.Thread(
+                target=self._keepalive_loop,
+                name=f"granger-keepalive-{circuit_id.hex()[:8]}",
+                daemon=True,
+            )
+            self._keepalive_thread.start()
 
     @property
     def failed(self) -> bool:
@@ -638,6 +658,28 @@ class CellMultiplexer:
             )
         ):
             self.send_cover()
+
+    def _send_keepalive(self) -> bool:
+        if not self._send_lock.acquire(blocking=False):
+            return False
+        try:
+            if self._failed is not None or self._closed:
+                return False
+            self._transmit_locked(((CellType.COVER, 0, b"", 0),))
+            with self._metrics_lock:
+                self._cover_cells_sent += 1
+            return True
+        except (OSError, ProtocolError) as error:
+            if not self._closed:
+                self._fail(error)
+            return False
+        finally:
+            self._send_lock.release()
+
+    def _keepalive_loop(self) -> None:
+        assert self.keepalive_interval_seconds is not None
+        while not self._cover_stop.wait(self.keepalive_interval_seconds):
+            self._send_keepalive()
 
     def open_stream(self, timeout: float = 10.0) -> MuxStream:
         with self._condition:
@@ -796,3 +838,8 @@ class CellMultiplexer:
             and self._cover_thread is not threading.current_thread()
         ):
             self._cover_thread.join(timeout=1.0)
+        if (
+            self._keepalive_thread is not None
+            and self._keepalive_thread is not threading.current_thread()
+        ):
+            self._keepalive_thread.join(timeout=1.0)

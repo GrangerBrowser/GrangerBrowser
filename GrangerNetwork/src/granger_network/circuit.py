@@ -131,11 +131,11 @@ class BuiltCircuit:
         if self._closed:
             return
         self._closed = True
-        self.endpoint.close()
         for stream in reversed(self.streams):
             stream.close()
         for multiplexer in reversed(self.multiplexers):
             multiplexer.close()
+        self.endpoint.close()
 
     def __enter__(self) -> "BuiltCircuit":
         return self
@@ -304,10 +304,10 @@ class CircuitBuilder:
                 tuple(hop_keys),
             )
         except Exception:
-            if peer is not None:
-                peer.close()
             for stream in reversed(streams):
                 stream.close()
             for multiplexer in reversed(multiplexers):
                 multiplexer.close()
+            if peer is not None:
+                peer.close()
             raise

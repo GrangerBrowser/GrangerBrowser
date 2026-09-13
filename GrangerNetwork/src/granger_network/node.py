@@ -71,6 +71,7 @@ from .wan_discovery import (
 )
 from .wan_control import (
     IntroductionRequest,
+    RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
     RendezvousGrant,
     RendezvousJoin,
     RendezvousRegistration,
@@ -1094,10 +1095,12 @@ class WanNodeServer:
                 registration.cell_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                keepalive_interval_seconds=RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
                 receive_budget=self.receive_memory_budget,
                 cover_profile=self.cover_profile,
             )
             slot.host_stream = slot.host_mux.accept_stream(self.policy.connection_timeout_seconds)
+            slot.host_stream.settimeout(None)
             slot.host_ready.set()
             remaining = max(0.0, registration.expires_at - time.time())
             if not slot.client_ready.wait(remaining):
@@ -1174,10 +1177,12 @@ class WanNodeServer:
                 joined.cell_circuit_id,
                 initiator=False,
                 max_streams=self.policy.max_streams,
+                keepalive_interval_seconds=RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
                 receive_budget=self.receive_memory_budget,
                 cover_profile=self.cover_profile,
             )
             slot.client_stream = slot.client_mux.accept_stream(self.policy.connection_timeout_seconds)
+            slot.client_stream.settimeout(None)
             slot.client_upstream = upstream
             slot.client_accounting_circuit_id = accounting_circuit_id
             slot.client_ready.set()
