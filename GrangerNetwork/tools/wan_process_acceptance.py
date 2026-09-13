@@ -69,6 +69,9 @@ class AcceptanceError(RuntimeError):
     pass
 
 
+_ALLOCATED_PORTS: set[int] = set()
+
+
 @dataclass
 class ChildProcess:
     name: str
@@ -84,9 +87,14 @@ class ChildProcess:
 
 
 def available_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+    for _attempt in range(256):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        if port not in _ALLOCATED_PORTS:
+            _ALLOCATED_PORTS.add(port)
+            return port
+    raise AcceptanceError("could not allocate a unique loopback port")
 
 
 def directory_manifest(root: Path) -> dict[str, tuple[int, str]]:
