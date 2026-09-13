@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
@@ -225,6 +226,33 @@ class OperatorCoordinatorTests(unittest.TestCase):
         self.assertNotIn('unread-private-key', kwargs['input'])
         self.assertNotIn('bootstrap-authority.json', kwargs['input'])
         self.assertNotIn('config-authority.json', kwargs['input'])
+
+    def test_null_remote_health_is_not_ready_instead_of_crashing_verification(self):
+        options = dict(
+            self.options,
+            sshExecutable='ssh.exe',
+            sshIdentity='unread-private-key',
+        )
+        fleet = renewal.SshFleet(options)
+        config = SimpleNamespace(generation=8, sha256='a' * 64)
+        report = {
+            'state': 'RUNNING',
+            'nodeId': self.nodes[0]['nodeId'],
+            'generation': config.generation,
+            'configSha256': config.sha256,
+            'network': {
+                'authenticatedPeers': None,
+                'dhtReady': None,
+                'state': 'RECOVERING',
+            },
+        }
+        with (
+            patch.object(fleet, 'collect', return_value=report),
+            patch.object(renewal.time, 'monotonic', side_effect=(0.0, 1.0, 46.0)),
+            patch.object(renewal.time, 'sleep'),
+            self.assertRaisesRegex(renewal.RenewalError, 'FLEET_HEALTH_NOT_READY'),
+        ):
+            fleet.verify(self.nodes[0], self.root, config)
 
 
 if __name__ == '__main__':

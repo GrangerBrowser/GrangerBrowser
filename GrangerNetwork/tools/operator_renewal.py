@@ -269,9 +269,11 @@ class SshFleet:
         while time.monotonic() < end:
             report = self.collect(node)
             network = report.get('network', {})
+            authenticated_peers = network.get('authenticatedPeers')
             if (report.get('state') == 'RUNNING' and report['nodeId'] == node['nodeId']
                     and report['generation'] == config.generation and report['configSha256'] == config.sha256
-                    and network.get('authenticatedPeers', 0) >= 4 and network.get('dhtReady')
+                    and type(authenticated_peers) is int and authenticated_peers >= 4
+                    and network.get('dhtReady') is True
                     and network.get('state') == 'CONNECTED'):
                 break
             time.sleep(5)
