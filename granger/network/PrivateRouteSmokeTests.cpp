@@ -25,8 +25,10 @@
 #include <QUrl>
 #include <QtConcurrent>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
+#include <vector>
 
 namespace granger {
 namespace {
@@ -390,6 +392,57 @@ int runPrivateRouteSmokeTests(const QString &outputPath)
     QString gatewayError;
     record(QStringLiteral("fail-closed gateway listens"), gateway.listen(&gatewayError), gatewayError);
     gateway.blockAll(QStringLiteral("No verified private route"));
+
+    std::vector<std::unique_ptr<QTcpSocket>> stalledClients;
+    stalledClients.reserve(PrivateRouteGateway::MaximumActiveConnections + 32);
+    for (int index = 0; index < PrivateRouteGateway::MaximumActiveConnections + 32; ++index) {
+        auto socket = std::make_unique<QTcpSocket>();
+        socket->setProxy(QNetworkProxy::NoProxy);
+        socket->connectToHost(QHostAddress::LocalHost, gateway.port());
+        socket->waitForConnected(250);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        stalledClients.push_back(std::move(socket));
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    const int rejectedClients = std::count_if(
+        stalledClients.cbegin(),
+        stalledClients.cend(),
+        [](const std::unique_ptr<QTcpSocket> &socket) {
+            return socket->state() == QAbstractSocket::UnconnectedState;
+        });
+    record(QStringLiteral("gateway caps concurrent loopback sessions"),
+           gateway.activeConnectionCount() == PrivateRouteGateway::MaximumActiveConnections
+               && rejectedClients > 0,
+           QStringLiteral("active=%1 rejected=%2")
+               .arg(gateway.activeConnectionCount())
+               .arg(rejectedClients));
+    for (const auto &socket : stalledClients) socket->abort();
+    stalledClients.clear();
+    QElapsedTimer releaseTimer;
+    releaseTimer.start();
+    while (gateway.activeConnectionCount() && releaseTimer.elapsed() < 2000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+
+    QTcpSocket oversizedHandshake;
+    oversizedHandshake.setProxy(QNetworkProxy::NoProxy);
+    oversizedHandshake.connectToHost(QHostAddress::LocalHost, gateway.port());
+    const bool oversizedConnected = oversizedHandshake.waitForConnected(1000);
+    if (oversizedConnected) {
+        oversizedHandshake.write(QByteArray(64 * 1024 + 1, 'x'));
+        oversizedHandshake.waitForBytesWritten(1000);
+    }
+    QElapsedTimer oversizedTimer;
+    oversizedTimer.start();
+    while (oversizedHandshake.state() != QAbstractSocket::UnconnectedState
+           && oversizedTimer.elapsed() < 2000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        oversizedHandshake.waitForReadyRead(20);
+    }
+    record(QStringLiteral("gateway rejects oversized pre-route handshake data"),
+           oversizedConnected
+               && oversizedHandshake.state() == QAbstractSocket::UnconnectedState);
+
     const GatewayAttempt initiallyBlocked = attempt(gateway.port(), QStringLiteral("example.com"));
     record(QStringLiteral("gateway starts blocked"),
            !initiallyBlocked.connected && initiallyBlocked.replyCode == 2

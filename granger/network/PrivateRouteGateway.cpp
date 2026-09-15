@@ -12,6 +12,9 @@
 namespace granger {
 namespace {
 
+constexpr qint64 MaximumHandshakeBufferBytes = 64 * 1024;
+constexpr qint64 MaximumRelayBufferBytes = 512 * 1024;
+
 struct GatewayRoute {
     PrivacyNetworkKind network = PrivacyNetworkKind::None;
     QString endpoint;
@@ -72,12 +75,14 @@ public:
           m_blockedHandler(std::move(blockedHandler))
     {
         m_client->setParent(this);
+        m_client->setReadBufferSize(MaximumHandshakeBufferBytes + 1);
         m_timeout.setSingleShot(true);
         m_timeout.setInterval(15000);
         connect(&m_timeout, &QTimer::timeout, this, [this] {
             fail(0x04, QStringLiteral("SOCKS gateway handshake timed out"), true);
         });
         connect(m_client, &QTcpSocket::readyRead, this, [this] { readClient(); });
+        connect(m_client, &QTcpSocket::bytesWritten, this, [this] { relayUpstream(); });
         connect(m_client, &QTcpSocket::disconnected, this, &QObject::deleteLater);
         connect(m_client, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
             if (m_state == State::Relaying) closeNow();
@@ -114,11 +119,34 @@ private:
     {
         if (!m_client || m_state == State::Closed) return;
         if (m_state == State::Relaying) {
-            if (m_upstream) m_upstream->write(m_client->readAll());
+            relayClient();
             return;
         }
-        m_clientBuffer += m_client->readAll();
+        const QByteArray incoming = m_client->readAll();
+        if (incoming.size() > MaximumHandshakeBufferBytes - m_clientBuffer.size()) {
+            fail(0x01, QStringLiteral("SOCKS client handshake exceeded its buffer limit"), false);
+            return;
+        }
+        m_clientBuffer += incoming;
         processClientHandshake();
+    }
+
+    void relayClient()
+    {
+        if (!m_client || !m_upstream || m_state != State::Relaying) return;
+        const qint64 allowance = MaximumRelayBufferBytes - m_upstream->bytesToWrite();
+        if (allowance <= 0) return;
+        const QByteArray payload = m_client->read(allowance);
+        if (!payload.isEmpty()) m_upstream->write(payload);
+    }
+
+    void relayUpstream()
+    {
+        if (!m_client || !m_upstream || m_state != State::Relaying) return;
+        const qint64 allowance = MaximumRelayBufferBytes - m_client->bytesToWrite();
+        if (allowance <= 0) return;
+        const QByteArray payload = m_upstream->read(allowance);
+        if (!payload.isEmpty()) m_client->write(payload);
     }
 
     void processClientHandshake()
@@ -193,12 +221,14 @@ private:
         }
         m_network = route.network;
         m_upstream = new QTcpSocket(this);
+        m_upstream->setReadBufferSize(MaximumHandshakeBufferBytes + 1);
         m_upstream->setProxy(QNetworkProxy::NoProxy);
         connect(m_upstream, &QTcpSocket::connected, this, [this] {
             m_state = State::UpstreamGreeting;
             m_upstream->write(QByteArray::fromHex("050100"));
         });
         connect(m_upstream, &QTcpSocket::readyRead, this, [this] { readUpstream(); });
+        connect(m_upstream, &QTcpSocket::bytesWritten, this, [this] { relayClient(); });
         connect(m_upstream, &QTcpSocket::disconnected, this, [this] {
             if (m_state != State::Closed) closeNow();
         });
@@ -217,10 +247,15 @@ private:
     {
         if (!m_upstream || m_state == State::Closed) return;
         if (m_state == State::Relaying) {
-            m_client->write(m_upstream->readAll());
+            relayUpstream();
             return;
         }
-        m_upstreamBuffer += m_upstream->readAll();
+        const QByteArray incoming = m_upstream->readAll();
+        if (incoming.size() > MaximumHandshakeBufferBytes - m_upstreamBuffer.size()) {
+            fail(0x01, QStringLiteral("SOCKS backend handshake exceeded its buffer limit"), true);
+            return;
+        }
+        m_upstreamBuffer += incoming;
         if (m_state == State::UpstreamGreeting) {
             if (m_upstreamBuffer.size() < 2) return;
             const QByteArray greeting = m_upstreamBuffer.left(2);
@@ -252,6 +287,8 @@ private:
         m_client->write(reply);
         m_state = State::Relaying;
         m_timeout.stop();
+        m_client->setReadBufferSize(MaximumRelayBufferBytes);
+        m_upstream->setReadBufferSize(MaximumRelayBufferBytes);
         if (m_connectedHandler) m_connectedHandler(m_network);
         if (!m_pendingClientPayload.isEmpty()) {
             m_upstream->write(m_pendingClientPayload);
@@ -261,6 +298,8 @@ private:
             m_client->write(m_upstreamBuffer);
             m_upstreamBuffer.clear();
         }
+        relayClient();
+        relayUpstream();
     }
 
     void fail(quint8 code, const QString &, bool backendFailure)
@@ -323,8 +362,14 @@ bool policiesEqual(const PrivateRoutePolicy &left, const PrivateRoutePolicy &rig
 PrivateRouteGateway::PrivateRouteGateway(QObject *parent)
     : QObject(parent), m_server(new QTcpServer(this))
 {
+    m_server->setMaxPendingConnections(MaximumActiveConnections);
     connect(m_server, &QTcpServer::newConnection, this, [this] {
         while (QTcpSocket *socket = m_server->nextPendingConnection()) {
+            if (m_sessions.size() >= MaximumActiveConnections) {
+                socket->abort();
+                socket->deleteLater();
+                continue;
+            }
             auto *session = new GatewaySession(
                 socket,
                 [this](const QString &host, quint16 port) {

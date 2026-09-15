@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1320" viewBox="0 0 1800 1320" role="img" aria-labelledby="title description">
+  <title id="title">Granger Network current architecture</title>
+  <desc id="description">Fail-closed namespace routing, existing authority trust, browser peer participation, authenticated multi-hop circuits, signed metadata, introduction and rendezvous, and host-local service storage.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#79a8ff"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57d6a3"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff7373"/>
+    </marker>
+    <style>
+      text { font-family: "Segoe UI", Arial, sans-serif; letter-spacing: 0; }
+      .title { fill: #f4f7fb; font-size: 30px; font-weight: 700; }
+      .subtitle { fill: #9eabbc; font-size: 15px; }
+      .band-title { fill: #cad4e1; font-size: 13px; font-weight: 700; }
+      .heading { fill: #f4f7fb; font-size: 17px; font-weight: 700; }
+      .label { fill: #e7edf5; font-size: 14px; font-weight: 600; }
+      .body { fill: #b6c1cf; font-size: 13px; }
+      .small { fill: #94a2b3; font-size: 12px; }
+      .tiny { fill: #8290a2; font-size: 11px; }
+      .box { fill: #151c25; stroke: #344151; stroke-width: 1.5; rx: 8; }
+      .box-blue { fill: #13233a; stroke: #4f82c9; stroke-width: 1.5; rx: 8; }
+      .box-green { fill: #112a24; stroke: #399a79; stroke-width: 1.5; rx: 8; }
+      .box-amber { fill: #2b2414; stroke: #ad8734; stroke-width: 1.5; rx: 8; }
+      .box-red { fill: #32191d; stroke: #bd565e; stroke-width: 1.5; rx: 8; }
+      .box-purple { fill: #241c35; stroke: #8263ba; stroke-width: 1.5; rx: 8; }
+      .boundary { fill: #10161e; stroke: #536174; stroke-width: 1.5; stroke-dasharray: 7 6; rx: 8; }
+      .future { fill: #10151b; stroke: #596371; stroke-width: 1.5; stroke-dasharray: 5 6; rx: 8; }
+      .line { fill: none; stroke: #79a8ff; stroke-width: 2; marker-end: url(#arrow); }
+      .line-green { fill: none; stroke: #57d6a3; stroke-width: 2; marker-end: url(#arrow-green); }
+      .line-red { fill: none; stroke: #ff7373; stroke-width: 2; marker-end: url(#arrow-red); }
+      .line-muted { fill: none; stroke: #607084; stroke-width: 1.5; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1320" fill="#0b1016"/>
+  <text x="48" y="48" class="title">Granger Network architecture</text>
+  <text x="48" y="73" class="subtitle">Current implementation after network/privacy hardening · Browser 0.4.5</text>
+
+  <!-- Namespace routing -->
+  <rect x="40" y="92" width="1720" height="132" class="boundary"/>
+  <text x="60" y="117" class="band-title">FAIL-CLOSED NAMESPACE ROUTING</text>
+  <rect x="60" y="135" width="230" height="66" class="box"/>
+  <text x="78" y="161" class="label">Browser navigation</text>
+  <text x="78" y="184" class="body">Classify destination before load</text>
+
+  <rect x="345" y="135" width="200" height="66" class="box"/>
+  <text x="363" y="161" class="label">Exclusive decision</text>
+  <text x="363" y="184" class="body">One namespace handler</text>
+  <path d="M290 168 H345" class="line"/>
+
+  <rect x="600" y="126" width="710" height="84" class="box"/>
+  <text x="618" y="146" class="tiny">ISOLATED HANDLERS</text>
+  <rect x="618" y="153" width="200" height="43" class="box-purple"/>
+  <text x="634" y="172" class="label">.onion</text>
+  <text x="634" y="190" class="tiny">Verified Tor only</text>
+  <rect x="837" y="153" width="200" height="43" class="box-amber"/>
+  <text x="853" y="172" class="label">.i2p</text>
+  <text x="853" y="190" class="tiny">Verified I2P only</text>
+  <rect x="1056" y="153" width="236" height="43" class="box-blue"/>
+  <text x="1072" y="172" class="label">.granger</text>
+  <text x="1072" y="190" class="tiny">Custom scheme / overlay only</text>
+  <path d="M545 168 H600" class="line"/>
+
+  <rect x="1370" y="135" width="365" height="66" class="box-red"/>
+  <text x="1388" y="158" class="label">Unavailable → error / fail closed</text>
+  <text x="1388" y="180" class="body">.granger: no DNS, direct, Tor or I2P fallback</text>
+  <path d="M1310 168 H1370" class="line-red"/>
+
+  <!-- Trust boundary -->
+  <rect x="40" y="244" width="1720" height="150" class="boundary"/>
+  <text x="60" y="269" class="band-title">EXISTING AUTHORITY TRUST BOUNDARY</text>
+  <rect x="60" y="286" width="370" height="82" class="box-amber"/>
+  <text x="78" y="311" class="label">Operator signing state · LOCAL PRIVATE</text>
+  <text x="78" y="334" class="body">Existing authority private material; never distributed</text>
+  <text x="78" y="354" class="small">No replacement trust root is created by runtime</text>
+
+  <rect x="495" y="286" width="345" height="82" class="box"/>
+  <text x="513" y="311" class="label">Authority public pins</text>
+  <text x="513" y="334" class="body">Client-visible trusted state</text>
+  <text x="513" y="354" class="small">Rollback/equivocation high-water persisted locally</text>
+  <path d="M430 327 H495" class="line-green"/>
+
+  <rect x="905" y="286" width="830" height="82" class="box-green"/>
+  <text x="923" y="311" class="label">SIGNED PUBLIC METADATA</text>
+  <text x="923" y="334" class="body">Network config · bootstrap/reseed · node descriptors · service descriptors</text>
+  <text x="923" y="354" class="small">Network/protocol binding, monotonic generation, bounded expiry, signature validation</text>
+  <path d="M840 327 H905" class="line-green"/>
+
+  <!-- Main current implementation boundaries -->
+  <rect x="40" y="420" width="390" height="640" class="boundary"/>
+  <text x="60" y="447" class="band-title">USER DEVICE · CURRENT</text>
+  <rect x="60" y="467" width="350" height="62" class="box"/>
+  <text x="78" y="493" class="heading">User / Granger Browser</text>
+  <text x="78" y="515" class="body">Qt WebEngine UI and navigation policy</text>
+
+  <rect x="60" y="555" width="350" height="92" class="box-blue"/>
+  <text x="78" y="581" class="label">Granger custom scheme gateway</text>
+  <text x="78" y="604" class="body">GET / HEAD / POST · bounded request/response</text>
+  <text x="78" y="625" class="small">App-local IPC worker; system DNS APIs denied</text>
+  <path d="M235 529 V555" class="line"/>
+
+  <rect x="60" y="673" width="350" height="126" class="box-blue"/>
+  <text x="78" y="699" class="label">Granger Browser Network Runtime</text>
+  <text x="78" y="722" class="body">Persistent browser peer identity</text>
+  <text x="78" y="743" class="body">Peer RPC · wire-v3 · discovery · circuit client</text>
+  <text x="78" y="764" class="small">Bounded workers, pending requests, caches and retries</text>
+  <text x="78" y="784" class="small">No direct application-network fallback</text>
+  <path d="M235 647 V673" class="line"/>
+
+  <rect x="60" y="825" width="350" height="93" class="box-purple"/>
+  <text x="78" y="851" class="label">Reachability / capability decision</text>
+  <text x="78" y="874" class="body">Independent observers verify public reachability</text>
+  <text x="78" y="896" class="small">No proof → restricted; explicit public opt-in required</text>
+  <path d="M235 799 V825" class="line"/>
+
+  <rect x="60" y="944" width="162" height="88" class="box-amber"/>
+  <text x="76" y="969" class="label">Restricted peer</text>
+  <text x="76" y="991" class="small">middle only</text>
+  <text x="76" y="1011" class="small">adjacent via anchor</text>
+  <rect x="248" y="944" width="162" height="88" class="box-green"/>
+  <text x="264" y="969" class="label">Reachable peer</text>
+  <text x="264" y="991" class="small">verified listener</text>
+  <text x="264" y="1011" class="small">policy-bound roles</text>
+  <path d="M190 918 V944" class="line"/>
+  <path d="M280 918 V944" class="line-green"/>
+
+  <!-- Overlay -->
+  <rect x="455" y="420" width="865" height="640" class="boundary"/>
+  <text x="475" y="447" class="band-title">AUTHENTICATED GRANGER OVERLAY · CURRENT</text>
+
+  <rect x="475" y="467" width="825" height="112" class="box"/>
+  <text x="493" y="492" class="label">Reachable infrastructure nodes</text>
+  <rect x="500" y="508" width="170" height="48" class="box-green"/>
+  <text x="585" y="538" text-anchor="middle" class="label">A</text>
+  <rect x="700" y="508" width="170" height="48" class="box-green"/>
+  <text x="785" y="538" text-anchor="middle" class="label">B</text>
+  <rect x="900" y="508" width="170" height="48" class="box-green"/>
+  <text x="985" y="538" text-anchor="middle" class="label">C</text>
+  <rect x="1100" y="508" width="170" height="48" class="box-green"/>
+  <text x="1185" y="538" text-anchor="middle" class="label">D</text>
+  <text x="887" y="571" text-anchor="middle" class="tiny">Relay / discovery / DHT / introduction / rendezvous infrastructure; not hosted-site storage</text>
+
+  <rect x="475" y="605" width="255" height="104" class="box-blue"/>
+  <text x="493" y="631" class="label">Authenticated peer sessions</text>
+  <text x="493" y="654" class="body">Ed25519 identity binding</text>
+  <text x="493" y="675" class="small">X25519 + ML-KEM 768 · AEAD</text>
+  <text x="493" y="695" class="small">Replay counters · lifetime limits</text>
+
+  <rect x="755" y="605" width="255" height="104" class="box-green"/>
+  <text x="773" y="631" class="label">Peer discovery + DHT</text>
+  <text x="773" y="654" class="body">Signed records, bounded storage</text>
+  <text x="773" y="675" class="small">Quorum lookup / write</text>
+  <text x="773" y="695" class="small">Expiry · rollback · equivocation checks</text>
+
+  <rect x="1035" y="605" width="265" height="104" class="box-amber"/>
+  <text x="1053" y="631" class="label">Bootstrap / reseed</text>
+  <text x="1053" y="654" class="body">Signed first-contact descriptors</text>
+  <text x="1053" y="675" class="small">Existing public authority pins</text>
+  <text x="1053" y="695" class="small">Cold-start availability dependency</text>
+
+  <rect x="475" y="735" width="825" height="112" class="box-purple"/>
+  <text x="493" y="761" class="label">Circuit builder</text>
+  <text x="493" y="784" class="body">Unique identities · role/capability checks · adjacent-peer constraints · directed-edge retry isolation</text>
+  <text x="493" y="806" class="small">Client: access → entry → middle</text>
+  <text x="875" y="806" class="small">Host: access → service-relay → middle → intro/rendezvous</text>
+  <text x="493" y="828" class="small">First hop sees its adjacent endpoint; service and client endpoints do not directly learn each other</text>
+  <path d="M602 709 V735" class="line"/>
+  <path d="M882 709 V735" class="line"/>
+  <path d="M1167 709 V735" class="line"/>
+
+  <rect x="475" y="873" width="390" height="126" class="box-blue"/>
+  <text x="493" y="899" class="label">Flow A · normal .granger request</text>
+  <text x="493" y="922" class="body">Browser → private client circuit</text>
+  <text x="493" y="943" class="body">→ signed service lookup → introduction</text>
+  <text x="493" y="964" class="body">→ rendezvous → authenticated service channel</text>
+  <text x="493" y="985" class="small">Response returns through overlay; no endpoint shortcut</text>
+
+  <rect x="890" y="873" width="410" height="126" class="box-amber"/>
+  <text x="908" y="899" class="label">Flow B · restricted / CGNAT browser peer</text>
+  <text x="908" y="922" class="body">Outbound authenticated session → reachable anchor</text>
+  <text x="908" y="943" class="body">Anchor reverse adjacency → restricted middle peer</text>
+  <text x="908" y="964" class="body">→ outbound next hop under circuit policy</text>
+  <text x="908" y="985" class="small">Not publicly dialable; cannot claim entry/intro/rendezvous roles</text>
+
+  <path d="M410 720 H455" class="line"/>
+  <path d="M410 987 C445 987 435 657 475 657" class="line-green"/>
+
+  <!-- Host boundary -->
+  <rect x="1345" y="420" width="415" height="640" class="boundary"/>
+  <text x="1365" y="447" class="band-title">SERVICE OWNER DEVICE · CURRENT</text>
+  <rect x="1365" y="467" width="375" height="83" class="box-amber"/>
+  <text x="1383" y="493" class="label">Service private identity · LOCAL PRIVATE</text>
+  <text x="1383" y="516" class="body">Persistent key remains on owner machine</text>
+  <text x="1383" y="537" class="small">Public service ID is stable protocol identity</text>
+
+  <rect x="1365" y="576" width="375" height="121" class="box-blue"/>
+  <text x="1383" y="602" class="heading">Hosting Runtime</text>
+  <text x="1383" y="625" class="body">Publishes signed descriptor metadata</text>
+  <text x="1383" y="646" class="body">Maintains intro points and rendezvous sessions</text>
+  <text x="1383" y="667" class="small">Per-service state, bounded workers and teardown</text>
+  <text x="1383" y="687" class="small">Strips client/relay transport metadata at HTTP bridge</text>
+  <path d="M1552 550 V576" class="line"/>
+
+  <rect x="1365" y="723" width="375" height="126" class="box-green"/>
+  <text x="1383" y="749" class="label">Local hosted application / files / database</text>
+  <text x="1383" y="772" class="body">Lives only on the host owner machine</text>
+  <text x="1383" y="793" class="body">Reached through numeric loopback HTTP bridge</text>
+  <text x="1383" y="814" class="small">Content is not stored on A/B/C/D or in DHT</text>
+  <text x="1383" y="835" class="small">Host runtime OFF → current service unavailable</text>
+  <path d="M1552 697 V723" class="line-green"/>
+
+  <rect x="1365" y="875" width="375" height="124" class="box"/>
+  <text x="1383" y="901" class="label">Signed service metadata · PUBLIC</text>
+  <text x="1383" y="924" class="body">Service ID/public key · rendezvous ID</text>
+  <text x="1383" y="945" class="body">Wire/transport · expiry · visibility</text>
+  <text x="1383" y="966" class="small">No host IP, local endpoint, profile path or machine ID</text>
+  <text x="1383" y="987" class="small">DHT stores metadata, never hosted payload/database</text>
+  <path d="M1345 936 H1300" class="line-green"/>
+
+  <path d="M1300 936 H1345" class="line"/>
+  <path d="M865 936 C1080 1060 1260 1060 1365 786" class="line-green"/>
+
+  <!-- Legend and limitations -->
+  <rect x="40" y="1085" width="1720" height="105" class="box"/>
+  <text x="60" y="1112" class="band-title">LEGEND</text>
+  <rect x="60" y="1130" width="20" height="20" class="box-blue"/><text x="91" y="1146" class="body">CURRENT</text>
+  <rect x="225" y="1130" width="20" height="20" class="boundary"/><text x="256" y="1146" class="body">TRUST BOUNDARY</text>
+  <rect x="440" y="1130" width="20" height="20" class="box-green"/><text x="471" y="1146" class="body">SIGNED METADATA</text>
+  <rect x="665" y="1130" width="20" height="20" class="box-amber"/><text x="696" y="1146" class="body">LOCAL PRIVATE STATE</text>
+  <path d="M920 1140 H965" class="line"/><text x="978" y="1146" class="body">OVERLAY TRANSIT</text>
+  <path d="M1165 1140 H1210" class="line-red"/><text x="1223" y="1146" class="body">FAIL-CLOSED PATH</text>
+  <text x="60" y="1174" class="small">Each relay learns only its adjacent transport endpoints and local circuit role; resistance to global timing/size correlation is not proven.</text>
+
+  <rect x="40" y="1212" width="1720" height="72" class="future"/>
+  <text x="60" y="1239" class="band-title">FUTURE / NOT IMPLEMENTED</text>
+  <text x="60" y="1263" class="body">Distributed hosted-content/database replication · offline site availability · proven global passive-adversary resistance</text>
+</svg>

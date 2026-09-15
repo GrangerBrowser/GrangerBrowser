@@ -25,6 +25,8 @@ class PrivateRouteGateway final : public QObject {
     Q_OBJECT
 
 public:
+    static constexpr int MaximumActiveConnections = 256;
+
     explicit PrivateRouteGateway(QObject *parent = nullptr);
 
     bool listen(QString *error = nullptr);
