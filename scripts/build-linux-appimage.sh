@@ -7,10 +7,10 @@ build_dir="$output_root/build"
 appdir="$output_root/AppDir"
 runtime_root="$project_root/output/linux-runtimes"
 tools_root="$project_root/output/linux-tools"
-version="0.4.5"
-artifact="$output_root/GrangerBrowser-${version}-x86_64.AppImage"
 qt_root="${QT_ROOT:-}"
-source_head="${GRANGER_SOURCE_HEAD:-$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)}"
+requested_source_head="${GRANGER_SOURCE_HEAD:-}"
+git_source_head="$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)"
+source_head="${requested_source_head:-$git_source_head}"
 wan_bundle="${GRANGER_NETWORK_RELEASE_BUNDLE:-}"
 
 fail() {
@@ -22,12 +22,27 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
 }
 
-for command_name in cmake ninja curl sha256sum file ldd readelf jq python3; do
+for command_name in awk cmake ninja curl sha256sum file ldd readelf jq python3; do
     require_command "$command_name"
 done
+version="$(awk '
+    /^[[:space:]]*project\(GrangerBrowser/ { in_project=1 }
+    in_project && $1 == "VERSION" { print $2; exit }
+    in_project && /\)/ { exit }
+' "$project_root/CMakeLists.txt")"
+artifact="$output_root/GrangerBrowser-${version}-x86_64.AppImage"
 [[ "$(uname -s)" == "Linux" ]] || fail "this script must run natively on Linux"
 [[ "$(uname -m)" == "x86_64" ]] || fail "only Linux x86_64 is supported"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CMake project version is invalid"
 [[ "$source_head" =~ ^[0-9a-f]{40}$ ]] || fail "GRANGER_SOURCE_HEAD must identify the committed source"
+if [[ -n "$git_source_head" ]]; then
+    [[ "$source_head" == "$git_source_head" ]] \
+        || fail "GRANGER_SOURCE_HEAD does not match the checked-out source"
+    [[ -z "$(git -C "$project_root" status --porcelain=v1 --untracked-files=all)" ]] \
+        || fail "AppImage release builds require a clean committed source tree"
+elif [[ -z "$requested_source_head" ]]; then
+    fail "an exported exact-commit source tree requires GRANGER_SOURCE_HEAD"
+fi
 [[ -n "$wan_bundle" ]] \
     || fail "GRANGER_NETWORK_RELEASE_BUNDLE must identify a signed production WAN bundle"
 wan_bundle="$(realpath -e "$wan_bundle")" \

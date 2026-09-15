@@ -28,6 +28,7 @@ from granger_network.wan_config_recovery import WanConfigRecovery, export_public
 
 PUBLIC_FILES = ('browser-wan.json', 'bootstrap-set.json', 'bootstrap-authority.pin', 'config-authority.pin')
 MAX_CONTROL_BYTES = 256 * 1024
+FLEET_HEALTH_TIMEOUT_SECONDS = 240
 
 
 class RenewalError(ValueError):
@@ -264,7 +265,7 @@ class SshFleet:
         self._run(node, request)
 
     def verify(self, node, root, config):
-        end = time.monotonic() + 45
+        end = time.monotonic() + FLEET_HEALTH_TIMEOUT_SECONDS
         report = None
         while time.monotonic() < end:
             report = self.collect(node)

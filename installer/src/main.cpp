@@ -352,6 +352,8 @@ struct Options {
     fs::path resultPath;
     fs::path selfTestPath;
     fs::path uiSmokePath;
+    UINT uiSmokeDpi = 0;
+    bool uiSmokeReducedMotion = false;
     std::wstring testId = L"default";
 };
 
@@ -391,6 +393,12 @@ Options ParseOptions()
     if (const auto value = ArgumentValue(arguments, L"--ui-smoke=")) options.uiSmokePath = *value;
 
     if (options.testMode) {
+        if (const auto value = ArgumentValue(arguments, L"--ui-smoke-dpi=")) {
+            const int dpi = std::stoi(*value);
+            if (dpi != 96 && dpi != 120 && dpi != 144 && dpi != 192) throw InstallerError("Unsupported preview DPI");
+            options.uiSmokeDpi = static_cast<UINT>(dpi);
+        }
+        options.uiSmokeReducedMotion = HasArgument(arguments, L"--ui-smoke-reduced-motion");
         options.skipRegistration = HasArgument(arguments, L"--skip-registration");
         if (const auto value = ArgumentValue(arguments, L"--manifest-path=")) options.manifestPath = *value;
         if (const auto value = ArgumentValue(arguments, L"--package-path=")) options.packagePath = *value;
@@ -1398,17 +1406,18 @@ public:
 
         constexpr DWORD windowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         window_ = CreateWindowExW(0, kWindowClass, kWindowTitle,
-                                  windowStyle, CW_USEDEFAULT, CW_USEDEFAULT, 560, 500,
+                                  windowStyle, CW_USEDEFAULT, CW_USEDEFAULT, 560, 580,
                                   nullptr, nullptr, instance, this);
         if (!window_) return 3;
-        dpi_ = GetDpiForWindow(window_);
-        RECT windowRect{0, 0, scale(560), scale(500)};
-        AdjustWindowRectExForDpi(&windowRect, windowStyle, FALSE, 0, dpi_);
-        const int width = windowRect.right - windowRect.left;
-        const int height = windowRect.bottom - windowRect.top;
+        dpi_ = options_.uiSmokeDpi ? options_.uiSmokeDpi : GetDpiForWindow(window_);
         MONITORINFO monitorInfo{};
         monitorInfo.cbSize = sizeof(monitorInfo);
         GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitorInfo);
+        logicalHeight_ = std::clamp(MulDiv(monitorInfo.rcWork.bottom - monitorInfo.rcWork.top, 96, dpi_) - 48, 440, 580);
+        RECT windowRect{0, 0, scale(560), scale(logicalHeight_)};
+        AdjustWindowRectExForDpi(&windowRect, windowStyle, FALSE, 0, dpi_);
+        const int width = windowRect.right - windowRect.left;
+        const int height = windowRect.bottom - windowRect.top;
         const int x = monitorInfo.rcWork.left + (monitorInfo.rcWork.right - monitorInfo.rcWork.left - width) / 2;
         const int y = monitorInfo.rcWork.top + (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
         SetWindowPos(window_, nullptr, x, y, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
@@ -1423,7 +1432,7 @@ public:
         }
         ShowWindow(window_, SW_SHOW);
         UpdateWindow(window_);
-        SetTimer(window_, kAnimationTimer, 16, nullptr);
+        syncAnimationTimer();
 
         if (!options_.uiSmokePath.empty()) {
             model_.update(Phase::Downloading, L"Preparing Granger Browser",
@@ -1469,24 +1478,63 @@ private:
             return 0;
         case WM_TIMER:
             if (wParam == kAnimationTimer) {
+                const ULONGLONG now = GetTickCount64();
+                const double step = std::min(1.0, static_cast<double>(now - controlFrameAt_) / 120.0);
+                controlFrameAt_ = now;
+                bool changed = false;
+                for (size_t i = 0; i < hoverWeights_.size(); ++i) {
+                    const double target = static_cast<int>(i) == hoveredAction_ && i > 0 ? 1.0 : 0.0;
+                    const double next = hoverWeights_[i] < target ? std::min(target, hoverWeights_[i] + step)
+                        : std::max(target, hoverWeights_[i] - step);
+                    changed = changed || next != hoverWeights_[i];
+                    hoverWeights_[i] = next;
+                }
+                if (changed) {
+                    RECT footer = scaledRect(24, 506, 536, 566);
+                    InvalidateRect(window_, &footer, FALSE);
+                }
                 if (IsBusy(model_.snapshot().phase) && gif_.advance()) {
-                    RECT gifRect = scaledRect(54, 22, 506, 324);
+                    RECT gifRect = scaledRect(32, 92, 528, 304);
                     InvalidateRect(window_, &gifRect, FALSE);
+                }
+                if (IsBusy(model_.snapshot().phase)) {
+                    RECT progressRect = scaledRect(32, 424, 528, 440);
+                    InvalidateRect(window_, &progressRect, FALSE);
+                }
+                if (!IsBusy(model_.snapshot().phase) && !controlMotionPending()) {
+                    KillTimer(window_, kAnimationTimer);
+                    animationTimerActive_ = false;
                 }
             } else if (wParam == kUiSmokeTimer) {
                 KillTimer(window_, kUiSmokeTimer);
+                previewCapturesOk_ = capturePreview() && previewCapturesOk_;
+                const Phase previews[]{Phase::Verifying, Phase::Installing, Phase::Finished, Phase::AlreadyInstalled, Phase::Failed};
+                const wchar_t *statuses[]{L"Verifying package", L"Installing Granger Browser", L"Granger Browser is ready", L"Granger Browser is already installed", L"Installation failed"};
+                const wchar_t *details[]{L"Checking SHA-256 integrity", L"Extracting verified browser files", L"Installation complete. You can launch the browser.", L"Launch your browser or manage this installation.", L"Package integrity check failed. No browser files were replaced."};
+                if (previewIndex_ < 5) {
+                    model_.update(previews[previewIndex_], statuses[previewIndex_], details[previewIndex_]);
+                    ++previewIndex_;
+                    SetTimer(window_, kUiSmokeTimer, 450, nullptr);
+                    return 0;
+                }
                 JsonObject result;
-                result.Insert(L"ok", JsonValue::CreateBooleanValue(gif_.advanceCount() > 0));
+                result.Insert(L"ok", JsonValue::CreateBooleanValue(previewCapturesOk_ && (reducedMotion_ || gif_.advanceCount() > 0)));
+                result.Insert(L"previewOnly", JsonValue::CreateBooleanValue(true));
+                result.Insert(L"screenshots", JsonValue::CreateNumberValue(6));
+                result.Insert(L"reducedMotion", JsonValue::CreateBooleanValue(reducedMotion_));
+                result.Insert(L"idleAnimationTimerStopped", JsonValue::CreateBooleanValue(!animationTimerActive_));
                 result.Insert(L"gifFrames", JsonValue::CreateNumberValue(gif_.frameCount()));
                 result.Insert(L"framesAdvanced", JsonValue::CreateNumberValue(
                     static_cast<double>(gif_.advanceCount())));
                 result.Insert(L"dpi", JsonValue::CreateNumberValue(dpi_));
+                result.Insert(L"clientLogicalHeight", JsonValue::CreateNumberValue(logicalHeight_));
                 result.Insert(L"externalGifRequired", JsonValue::CreateBooleanValue(false));
                 WriteFileUtf8(options_.uiSmokePath, winrt::to_string(result.Stringify()));
                 DestroyWindow(window_);
             }
             return 0;
         case kStateChangedMessage:
+            syncAnimationTimer();
             InvalidateRect(window_, nullptr, FALSE);
             if (options_.unattended && !IsBusy(model_.snapshot().phase)) DestroyWindow(window_);
             return 0;
@@ -1512,6 +1560,7 @@ private:
             const int action = actionAt(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
             if (action != hoveredAction_) {
                 hoveredAction_ = action;
+                syncAnimationTimer();
                 InvalidateRect(window_, nullptr, FALSE);
             }
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window_, 0};
@@ -1520,6 +1569,7 @@ private:
         }
         case WM_MOUSELEAVE:
             hoveredAction_ = 0;
+            syncAnimationTimer();
             pressedAction_ = 0;
             InvalidateRect(window_, nullptr, FALSE);
             return 0;
@@ -1528,17 +1578,39 @@ private:
                 requestClose();
                 return 0;
             }
-            if (wParam == VK_RETURN && !buttons_.empty()) {
-                performAction(buttons_.front().action);
+            if (wParam == VK_TAB) {
+                const int count = static_cast<int>(buttons_.size()) + (IsRectEmpty(&checkboxRect_) ? 0 : 1);
+                if (count > 0) {
+                    focusIndex_ = (focusIndex_ + ((GetKeyState(VK_SHIFT) & 0x8000) ? count - 1 : 1)) % count;
+                    InvalidateRect(window_, nullptr, FALSE);
+                }
+                return 0;
+            }
+            if ((wParam == VK_RETURN || wParam == VK_SPACE) && (!buttons_.empty() || !IsRectEmpty(&checkboxRect_))) {
+                if (focusIndex_ < static_cast<int>(buttons_.size())) performAction(buttons_[focusIndex_].action);
+                else if (model_.snapshot().phase == Phase::UninstallReady) model_.toggleDeleteUserData();
+                else model_.toggleDesktopShortcut();
+                InvalidateRect(window_, nullptr, FALSE);
                 return 0;
             }
             return 0;
+        case WM_SETTINGCHANGE:
+            syncAnimationTimer();
+            InvalidateRect(window_, nullptr, FALSE);
+            return 0;
+        case WM_SIZE:
+            syncAnimationTimer();
+            return 0;
         case WM_DPICHANGED: {
-            dpi_ = HIWORD(wParam);
+            dpi_ = options_.uiSmokeDpi ? options_.uiSmokeDpi : HIWORD(wParam);
             destroyFonts();
             createFonts();
             const RECT *suggested = reinterpret_cast<RECT *>(lParam);
-            RECT desired{0, 0, scale(560), scale(500)};
+            MONITORINFO monitor{};
+            monitor.cbSize = sizeof(monitor);
+            GetMonitorInfoW(MonitorFromRect(suggested, MONITOR_DEFAULTTONEAREST), &monitor);
+            logicalHeight_ = std::clamp(MulDiv(monitor.rcWork.bottom - monitor.rcWork.top, 96, dpi_) - 48, 440, 580);
+            RECT desired{0, 0, scale(560), scale(logicalHeight_)};
             AdjustWindowRectExForDpi(&desired,
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                      FALSE, 0, dpi_);
@@ -1563,9 +1635,65 @@ private:
 
     int scale(int value) const { return MulDiv(value, static_cast<int>(dpi_), 96); }
 
+    void syncAnimationTimer()
+    {
+        if (!window_) return;
+        BOOL enabled = TRUE;
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0);
+        reducedMotion_ = !enabled || options_.uiSmokeReducedMotion;
+        if (reducedMotion_) {
+            for (size_t i = 0; i < hoverWeights_.size(); ++i)
+                hoverWeights_[i] = static_cast<int>(i) == hoveredAction_ && i > 0 ? 1.0 : 0.0;
+        }
+        KillTimer(window_, kAnimationTimer);
+        animationTimerActive_ = !reducedMotion_ && !IsIconic(window_)
+            && (IsBusy(model_.snapshot().phase) || controlMotionPending());
+        controlFrameAt_ = GetTickCount64();
+        if (animationTimerActive_)
+            SetTimer(window_, kAnimationTimer, 33, nullptr);
+    }
+
+    bool controlMotionPending() const
+    {
+        for (size_t i = 0; i < hoverWeights_.size(); ++i)
+            if (hoverWeights_[i] != (static_cast<int>(i) == hoveredAction_ && i > 0 ? 1.0 : 0.0)) return true;
+        return false;
+    }
+
+    bool capturePreview()
+    {
+        previewCapturePending_ = true;
+        previewCaptured_ = false;
+        InvalidateRect(window_, nullptr, FALSE);
+        SendMessageW(window_, WM_PAINT, 0, 0);
+        return previewCaptured_;
+    }
+
+    bool savePreview(HBITMAP bitmap)
+    {
+        UINT count = 0, bytes = 0;
+        Gdiplus::GetImageEncodersSize(&count, &bytes);
+        std::vector<BYTE> codecs(bytes);
+        auto *info = reinterpret_cast<Gdiplus::ImageCodecInfo *>(codecs.data());
+        bool saved = false;
+        if (Gdiplus::GetImageEncoders(count, bytes, info) == Gdiplus::Ok) {
+            for (UINT i = 0; i < count; ++i) {
+                if (std::wstring(info[i].MimeType) != L"image/png") continue;
+                Gdiplus::Bitmap image(bitmap, nullptr);
+                const fs::path path = options_.uiSmokePath.parent_path()
+                    / (L"installer-stage-" + std::to_wstring(previewIndex_) + L".png");
+                fs::create_directories(path.parent_path());
+                saved = image.Save(path.c_str(), &info[i].Clsid, nullptr) == Gdiplus::Ok;
+                break;
+            }
+        }
+        return saved;
+    }
+
     RECT scaledRect(int left, int top, int right, int bottom) const
     {
-        return {scale(left), scale(top), scale(right), scale(bottom)};
+        const auto vertical = [this](int y) { return y >= 300 ? y - (580 - logicalHeight_) : y; };
+        return {scale(left), scale(vertical(top)), scale(right), scale(vertical(bottom))};
     }
 
     void createFonts()
@@ -1628,45 +1756,64 @@ private:
         FillRect(buffer, &client, background);
         DeleteObject(background);
 
-        const RECT imageSurface = scaledRect(50, 18, 510, 326);
-        drawRounded(buffer, imageSurface, RGB(24, 25, 31), RGB(52, 54, 64), 10);
+        RECT title = scaledRect(32, 22, 528, 58);
+        drawText(buffer, L"Granger Browser", title, titleFont_, RGB(242, 243, 245),
+                 DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        RECT subtitle = scaledRect(32, 58, 528, 80);
+        drawText(buffer, L"Setup  " GRANGER_SETUP_VERSION, subtitle, bodyFont_, RGB(181, 184, 194),
+                 DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        const RECT imageSurface = scaledRect(32, 96, 528, 300);
+        drawRounded(buffer, imageSurface, RGB(24, 26, 32), RGB(41, 43, 51), 8);
         RECT image = imageSurface;
         InflateRect(&image, -scale(5), -scale(5));
         gif_.draw(buffer, image);
 
-        RECT title = scaledRect(34, 336, 526, 369);
-        drawText(buffer, L"Granger Browser", title, titleFont_, RGB(246, 246, 249),
-                 DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-
         const Snapshot snapshot = model_.snapshot();
-        RECT status = scaledRect(34, 369, 526, 395);
+        const COLORREF stateColor = snapshot.phase == Phase::Failed ? RGB(242, 140, 121)
+            : snapshot.phase == Phase::Finished || snapshot.phase == Phase::Uninstalled ? RGB(80, 186, 138)
+            : RGB(217, 86, 97);
+        RECT mark = scaledRect(32, 329, 38, 350);
+        drawRounded(buffer, mark, stateColor, stateColor, 4);
+        RECT status = scaledRect(50, 320, 528, 362);
         drawText(buffer, snapshot.status, status, statusFont_, RGB(232, 232, 237),
-                 DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        RECT detail = scaledRect(34, 397, 526, 418);
+                 DT_LEFT | DT_WORDBREAK);
+        RECT detail = scaledRect(50, 370, 528, 414);
         drawText(buffer, snapshot.detail, detail, bodyFont_, RGB(157, 160, 172),
-                 DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                 DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
-        if (snapshot.phase == Phase::Downloading && snapshot.total > 0) {
-            RECT track = scaledRect(68, 425, 492, 437);
+        if (IsBusy(snapshot.phase)) {
+            RECT track = scaledRect(32, 428, 528, 434);
             drawRounded(buffer, track, RGB(40, 42, 50), RGB(40, 42, 50), 6);
             RECT progress = track;
-            progress.right = progress.left
-                + MulDiv(track.right - track.left, snapshot.percent, 100);
-            if (progress.right > progress.left) {
-                drawRounded(buffer, progress, RGB(186, 46, 66), RGB(186, 46, 66), 6);
+            const bool measured = snapshot.phase == Phase::Downloading && snapshot.total > 0;
+            if (measured) {
+                progress.right = progress.left + MulDiv(track.right - track.left, snapshot.percent, 100);
+            } else {
+                const int segment = (track.right - track.left) / 5;
+                const double phase = reducedMotion_ ? 0.5 : static_cast<double>(GetTickCount64() % 1800) / 1800.0;
+                const double position = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
+                progress.left += static_cast<int>((track.right - track.left - segment) * position);
+                progress.right = progress.left + segment;
             }
-            RECT percent = scaledRect(68, 439, 492, 458);
-            drawText(buffer, std::to_wstring(snapshot.percent) + L"%", percent, bodyFont_,
-                     RGB(187, 189, 199), DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+            if (progress.right > progress.left) {
+                drawRounded(buffer, progress, RGB(217, 86, 97), RGB(217, 86, 97), 6);
+            }
+            if (measured) {
+                RECT percent = scaledRect(440, 444, 528, 470);
+                drawText(buffer, std::to_wstring(snapshot.percent) + L"%", percent, bodyFont_,
+                         RGB(187, 189, 199), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+            }
         }
+
+        RECT divider = scaledRect(32, 494, 528, 495);
+        drawRounded(buffer, divider, RGB(41, 43, 51), RGB(41, 43, 51), 0);
 
         buttons_.clear();
         const bool showDesktop = IsBusy(snapshot.phase) && snapshot.phase != Phase::Verifying
             && snapshot.phase != Phase::Installing;
         const bool showDelete = snapshot.phase == Phase::UninstallReady;
         if (showDesktop || showDelete) {
-            const RECT box = showDelete ? scaledRect(68, 424, 84, 440)
-                                        : scaledRect(68, 466, 84, 482);
+            const RECT box = scaledRect(32, 450, 50, 468);
             const bool selected = showDelete ? snapshot.deleteUserData : snapshot.desktopShortcut;
             drawRounded(buffer, box, selected
                                      ? RGB(186, 46, 66) : RGB(26, 28, 34),
@@ -1675,18 +1822,16 @@ private:
             if ((showDesktop && snapshot.desktopShortcut) || (showDelete && snapshot.deleteUserData)) {
                 const HPEN pen = CreatePen(PS_SOLID, scale(2), RGB(255, 255, 255));
                 const auto oldPen = SelectObject(buffer, pen);
-                MoveToEx(buffer, scale(72), scale(474), nullptr);
-                LineTo(buffer, scale(76), scale(478));
-                LineTo(buffer, scale(82), scale(470));
+                MoveToEx(buffer, box.left + scale(4), box.top + scale(9), nullptr);
+                LineTo(buffer, box.left + scale(8), box.top + scale(13));
+                LineTo(buffer, box.left + scale(14), box.top + scale(5));
                 SelectObject(buffer, oldPen);
                 DeleteObject(pen);
             }
-            RECT label = showDelete ? scaledRect(92, 420, 350, 444)
-                                    : scaledRect(92, 462, 335, 486);
+            RECT label = scaledRect(60, 444, 432, 474);
             drawText(buffer, showDelete ? L"Also delete my browsing data" : L"Create desktop shortcut",
                      label, bodyFont_, RGB(196, 198, 207), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            checkboxRect_ = showDelete ? scaledRect(62, 416, 356, 448)
-                                       : scaledRect(62, 458, 340, 490);
+            checkboxRect_ = scaledRect(28, 442, 432, 478);
         } else {
             SetRectEmpty(&checkboxRect_);
         }
@@ -1704,8 +1849,19 @@ private:
             addButtons(buffer, {{L"Close", Close, true}});
         }
 
+        const int focusCount = static_cast<int>(buttons_.size()) + (IsRectEmpty(&checkboxRect_) ? 0 : 1);
+        if (focusIndex_ >= focusCount) focusIndex_ = 0;
+        if (focusCount > 0 && GetFocus() == window_) {
+            RECT focus = focusIndex_ < static_cast<int>(buttons_.size()) ? buttons_[focusIndex_].rect : checkboxRect_;
+            InflateRect(&focus, -scale(3), -scale(3));
+            DrawFocusRect(buffer, &focus);
+        }
         BitBlt(dc, 0, 0, client.right, client.bottom, buffer, 0, 0, SRCCOPY);
         SelectObject(buffer, oldBitmap);
+        if (previewCapturePending_) {
+            previewCaptured_ = savePreview(bitmap);
+            previewCapturePending_ = false;
+        }
         DeleteObject(bitmap);
         DeleteDC(buffer);
         EndPaint(window_, &paintStruct);
@@ -1716,21 +1872,25 @@ private:
     void addButtons(HDC dc, std::initializer_list<ButtonSpec> specs)
     {
         const int count = static_cast<int>(specs.size());
-        const int width = count == 3 ? 122 : 150;
+        const int width = count == 3 ? 136 : 154;
         const int gap = 10;
         const int total = count * width + (count - 1) * gap;
-        int x = (560 - total) / 2;
+        int x = 528 - total;
         for (const auto &spec : specs) {
-            Button button{scaledRect(x, 454, x + width, 488), spec.text, spec.action, spec.primary};
+            Button button{scaledRect(x, 516, x + width, 556), spec.text, spec.action, spec.primary};
             const bool hovered = hoveredAction_ == spec.action;
             const bool pressed = pressedAction_ == spec.action;
-            const COLORREF fill = spec.primary
-                ? (pressed ? RGB(142, 28, 46) : hovered ? RGB(194, 49, 70) : RGB(174, 39, 59))
-                : (pressed ? RGB(23, 25, 31) : hovered ? RGB(42, 44, 53) : RGB(31, 33, 40));
+            const COLORREF normal = spec.primary ? RGB(166, 59, 76) : RGB(31, 33, 40);
+            const COLORREF highlight = spec.primary ? RGB(189, 67, 84) : RGB(42, 44, 53);
+            const double weight = hoverWeights_[spec.action];
+            const auto blend = [weight](BYTE a, BYTE b) { return static_cast<BYTE>(a + (b - a) * weight); };
+            const COLORREF fill = pressed ? (spec.primary ? RGB(179, 62, 72) : RGB(23, 25, 31))
+                : RGB(blend(GetRValue(normal), GetRValue(highlight)), blend(GetGValue(normal), GetGValue(highlight)),
+                      blend(GetBValue(normal), GetBValue(highlight)));
             drawRounded(dc, button.rect,
                         fill,
-                        spec.primary ? RGB(209, 59, 80)
-                                     : (hovered ? RGB(103, 106, 120) : RGB(77, 79, 91)), 7);
+                        spec.primary ? RGB(217, 86, 97)
+                                     : (hovered ? RGB(77, 80, 91) : RGB(56, 58, 68)), 8);
             drawText(dc, button.text, button.rect, buttonFont_, RGB(247, 247, 249),
                      DT_CENTER | DT_SINGLELINE | DT_VCENTER);
             buttons_.push_back(std::move(button));
@@ -1823,6 +1983,7 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND window_ = nullptr;
     UINT dpi_ = 96;
+    int logicalHeight_ = 580;
     GifPlayer gif_;
     HFONT titleFont_ = nullptr;
     HFONT statusFont_ = nullptr;
@@ -1832,6 +1993,15 @@ private:
     RECT checkboxRect_{};
     int hoveredAction_ = 0;
     int pressedAction_ = 0;
+    int focusIndex_ = 0;
+    bool reducedMotion_ = false;
+    bool animationTimerActive_ = false;
+    int previewIndex_ = 0;
+    bool previewCapturesOk_ = true;
+    bool previewCapturePending_ = false;
+    bool previewCaptured_ = false;
+    std::array<double, 8> hoverWeights_{};
+    ULONGLONG controlFrameAt_ = 0;
 };
 
 bool PathStartsWith(const fs::path &path, const fs::path &parent)

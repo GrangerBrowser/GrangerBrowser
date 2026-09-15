@@ -64,6 +64,7 @@ MAX_PEER_SAMPLE_RESULTS = 32
 MAX_PUBLIC_SERVICE_SAMPLE = 16
 MAX_DISCOVERY_QUERIES = 32
 MAX_PARALLEL_DISCOVERY_REQUESTS = 4
+MAX_RECORD_CIRCUIT_REUSE_SECONDS = 60.0
 MAX_RECORD_REQUEST_ROUNDS = 2
 MAX_ROUTE_CANDIDATE_CACHE_ENTRIES = 128
 MAX_DISCOVERY_PEER_TRACKING_ENTRIES = 2048
@@ -395,9 +396,25 @@ class PersistentRecordStore:
 class _RecordCircuits:
     """Bounded circuits for one record transaction, never shared across records."""
 
-    def __init__(self, target: bytes, message: RpcType, payload: bytes, timeout: float):
+    def __init__(
+        self,
+        target: bytes,
+        message: RpcType,
+        payload: bytes,
+        timeout: float,
+        *,
+        response_target: int | None = None,
+    ):
         self.allowed = {RpcType.FIND_NODE: encode_find_node(target, "discovery"), message: payload}
-        self.timeout = min(timeout, 30.0)
+        self.response_target = response_target
+        # A slow quorum member must not force already-authenticated circuits to
+        # be rebuilt between FIND_NODE and the record RPC in the same bounded
+        # transaction. Remote idle policy and transport health still decide
+        # whether an older retained circuit can actually be reused.
+        self.timeout = min(
+            MAX_RECORD_CIRCUIT_REUSE_SECONDS,
+            max(30.0, timeout * 6.0),
+        )
         self.lock = threading.Lock()
         self.circuits = {}
         self.route_failures = {}
@@ -574,10 +591,11 @@ class WanDiscoveryClient:
         while len(self._exhausted_discovery_searches) > MAX_DISCOVERY_PEER_TRACKING_ENTRIES:
             self._exhausted_discovery_searches.popitem(last=False)
 
-    def _record_peer_success(self, node_id: str) -> None:
+    def _record_peer_success(self, node_id: str, *, direct_access: bool = False) -> None:
         with self._lock:
             self._prune_peer_tracking_unlocked(time.monotonic())
-            self._failed_until.pop(node_id, None)
+            if direct_access:
+                self._failed_until.pop(node_id, None)
             self._authenticated_nodes[node_id] = None
             self._authenticated_nodes.move_to_end(node_id)
             self._prune_peer_tracking_unlocked(time.monotonic())
@@ -872,6 +890,7 @@ class WanDiscoveryClient:
         direct_first_contact: bool = False,
         penalize_failure: bool = True,
         record_circuits: _RecordCircuits | None = None,
+        stop_event: threading.Event | None = None,
     ) -> bytes:
         connection = None
         started = time.monotonic()
@@ -935,6 +954,11 @@ class WanDiscoveryClient:
                             for (left, left_role), (right, right_role) in zip(candidate, candidate[1:])))
 
                 for _route_attempt in range(MAX_PRIVATE_ROUTE_ATTEMPTS - len(attempted_routes)):
+                    if stop_event is not None and stop_event.is_set():
+                        last_error = DiscoveryError(
+                            "discovery batch success target was reached"
+                        )
+                        break
                     circuit = (record_circuits.take(peer)
                                if record_circuits is not None and _route_attempt == 0 else None)
                     if circuit is not None:
@@ -957,6 +981,10 @@ class WanDiscoveryClient:
                                 PeerRole.CLIENT,
                                 timeout=self.timeout,
                             ).open(route)
+                        if stop_event is not None and stop_event.is_set():
+                            raise DiscoveryError(
+                                "discovery batch success target was reached"
+                            )
                         self.private_discovery_requests += 1
                         self.last_private_route = tuple(
                             descriptor.node_id for descriptor, _role in circuit.route
@@ -967,8 +995,11 @@ class WanDiscoveryClient:
                             payload,
                             expected=expected,
                         )
-                        for authenticated_peer, _role in circuit.route:
-                            self._record_peer_success(authenticated_peer.node_id)
+                        for index, (authenticated_peer, _role) in enumerate(circuit.route):
+                            self._record_peer_success(
+                                authenticated_peer.node_id,
+                                direct_access=index == 0,
+                            )
                         with self._lock:
                             if message is RpcType.FIND_NODE:
                                 self._exhausted_discovery_searches.pop(search_key, None)
@@ -1050,7 +1081,7 @@ class WanDiscoveryClient:
                     raise last_error
             if self.cache is not None:
                 self.cache.record_success(peer)
-            self._record_peer_success(peer.node_id)
+            self._record_peer_success(peer.node_id, direct_access=direct_first_contact)
             return response.payload
         except (GrangerNetworkError, OSError) as error:
             if direct_first_contact:
@@ -1118,7 +1149,8 @@ class WanDiscoveryClient:
             if previous is None or peer.issued_at > previous.issued_at:
                 selected[peer.node_id] = peer
         if discovered is None and (
-            not joined.dht_ready or len(selected) < self.replication_factor
+            len(selected) < self.replication_factor
+            or not joined.dht_ready
         ):
             try:
                 discovered = self.find_nodes(target, capability)
@@ -1174,13 +1206,24 @@ class WanDiscoveryClient:
         direct_first_contact: bool = False,
         penalize_failure: bool = True,
         record_circuits: _RecordCircuits | None = None,
+        stop_after_successes: int | None = None,
     ) -> tuple[tuple[NodeDescriptor, bytes | None], ...]:
         selected = peers[:MAX_PARALLEL_DISCOVERY_REQUESTS]
         if not selected:
             return ()
+        if stop_after_successes is not None and (
+            isinstance(stop_after_successes, bool)
+            or not isinstance(stop_after_successes, int)
+            or not 1 <= stop_after_successes <= len(selected)
+        ):
+            raise ValueError("discovery batch success target is invalid")
         outcomes: list[bytes | BaseException | None] = [None] * len(selected)
+        stop_event = threading.Event() if stop_after_successes is not None else None
+        success_lock = threading.Lock()
+        successes = 0
 
         def request_peer(index: int, peer: NodeDescriptor) -> None:
+            nonlocal successes
             try:
                 outcomes[index] = self._request(
                     peer,
@@ -1190,7 +1233,13 @@ class WanDiscoveryClient:
                     direct_first_contact=direct_first_contact,
                     penalize_failure=penalize_failure,
                     record_circuits=record_circuits,
+                    stop_event=stop_event,
                 )
+                if stop_event is not None:
+                    with success_lock:
+                        successes += 1
+                        if successes >= stop_after_successes:
+                            stop_event.set()
             except BaseException as error:
                 outcomes[index] = error
 
@@ -1635,13 +1684,21 @@ class WanDiscoveryClient:
         known = {peer.node_id: peer for peer in pending}
         queried: set[str] = set()
         responsive: set[str] = set()
+        response_target = self.replication_factor
+        if record_circuits is not None and record_circuits.response_target is not None:
+            response_target = record_circuits.response_target
+            if not 1 <= response_target <= self.replication_factor:
+                raise DiscoveryError("record discovery response target is invalid")
         while pending and len(queried) < MAX_DISCOVERY_QUERIES:
             pending.sort(key=lambda peer: int.from_bytes(_node_id_bytes(peer.node_id), "big") ^ int.from_bytes(target, "big"))
             batch: list[NodeDescriptor] = []
+            responses_needed = response_target - len(responsive)
             batch_limit = min(
                 MAX_PARALLEL_DISCOVERY_REQUESTS,
                 MAX_DISCOVERY_QUERIES - len(queried),
             )
+            if record_circuits is not None:
+                batch_limit = min(batch_limit, responses_needed + 1)
             while pending and len(batch) < batch_limit:
                 peer = pending.pop(0)
                 if peer.node_id in queried:
@@ -1654,6 +1711,11 @@ class WanDiscoveryClient:
                 encode_find_node(target, capability),
                 RpcType.FIND_NODE,
                 record_circuits=record_circuits,
+                stop_after_successes=(
+                    min(responses_needed, len(batch))
+                    if record_circuits is not None
+                    else None
+                ),
             )
             for peer, content in responses:
                 if content is None:
@@ -1684,6 +1746,8 @@ class WanDiscoveryClient:
                             and eligible
                         ):
                             pending.append(candidate)
+            if record_circuits is not None and len(responsive) >= response_target:
+                break
         with self._lock:
             current = time.monotonic()
             result = [
@@ -1721,7 +1785,13 @@ class WanDiscoveryClient:
         envelope = encode_record(record, now=now)
         target = wan_routing_key(envelope.kind, envelope.key)
         payload = encode_record_envelope(envelope)
-        with _RecordCircuits(target, RpcType.STORE_RECORD, payload, self.timeout) as circuits:
+        with _RecordCircuits(
+            target,
+            RpcType.STORE_RECORD,
+            payload,
+            self.timeout,
+            response_target=self.replication_factor,
+        ) as circuits:
             return self._publish_record(envelope, target, payload, now, circuits)
 
     def _publish_record(self, envelope, target, payload, now, circuits) -> int:
@@ -1795,20 +1865,51 @@ class WanDiscoveryClient:
     def lookup(self, kind: str, key: str, now: int | None = None) -> DistributedRecord:
         target = wan_routing_key(kind, key)
         payload = encode_find_record(kind, key)
-        with _RecordCircuits(target, RpcType.FIND_RECORD, payload, self.timeout) as circuits:
+        with _RecordCircuits(
+            target,
+            RpcType.FIND_RECORD,
+            payload,
+            self.timeout,
+            # Writer and reader each select responsive peers from one bounded
+            # hedge. Discovering the full replication set guarantees their
+            # sets retain the minimum signed-quorum overlap.
+            response_target=self.replication_factor,
+        ) as circuits:
             return self._lookup_record(kind, key, target, payload, now, circuits)
 
     def _lookup_record(self, kind, key, target, payload, now, circuits) -> DistributedRecord:
         peers = self.find_nodes(target, "discovery", record_circuits=circuits)
         candidates_by_peer: dict[str, RecordEnvelope] = {}
+
+        def replica_quorum() -> RecordEnvelope | None:
+            candidates = list(candidates_by_peer.values())
+            if len(candidates) < self.minimum_replicas:
+                return None
+            highest = max(candidate.sequence for candidate in candidates)
+            winners = [candidate for candidate in candidates if candidate.sequence == highest]
+            if (
+                len(winners) >= self.minimum_replicas
+                and len({candidate.payload for candidate in winners}) == 1
+            ):
+                return winners[0]
+            return None
+
+        winner = None
         for round_index in range(MAX_RECORD_REQUEST_ROUNDS):
             pending = [
                 peer for peer in peers
                 if peer.node_id not in candidates_by_peer
             ]
-            for offset in range(0, len(pending), MAX_PARALLEL_DISCOVERY_REQUESTS):
+            offset = 0
+            while offset < len(pending):
+                batch_limit = min(
+                    self.replication_factor,
+                    MAX_PARALLEL_DISCOVERY_REQUESTS,
+                )
+                batch = list(pending[offset : offset + batch_limit])
+                offset += len(batch)
                 responses = self._request_batch(
-                    list(pending[offset : offset + MAX_PARALLEL_DISCOVERY_REQUESTS]),
+                    batch,
                     RpcType.FIND_RECORD,
                     payload,
                     RpcType.FIND_RECORD,
@@ -1823,24 +1924,24 @@ class WanDiscoveryClient:
                         continue
                     if envelope is not None and envelope.kind == kind and envelope.key == key:
                         candidates_by_peer[peer.node_id] = envelope
-            if len(candidates_by_peer) >= self.minimum_replicas:
+                winner = replica_quorum()
+                if winner is not None:
+                    break
+            if winner is not None:
                 break
             if round_index + 1 < MAX_RECORD_REQUEST_ROUNDS:
                 time.sleep(0.1 * (round_index + 1))
         candidates = list(candidates_by_peer.values())
         if len(candidates) < self.minimum_replicas:
             raise RecordQuorumError(f"WAN record replica quorum is unavailable: {kind}:{key}")
-        highest = max(candidate.sequence for candidate in candidates)
-        winners = [candidate for candidate in candidates if candidate.sequence == highest]
-        payloads = {candidate.payload for candidate in winners}
-        if len(payloads) != 1 or len(winners) < self.minimum_replicas:
+        if winner is None:
             raise RecordQuorumError("WAN lookup did not obtain an unambiguous replica quorum")
-        result = decode_record(kind, key, winners[0].payload, now=now)
+        result = decode_record(kind, key, winner.payload, now=now)
         self._remember_record_sequence(
             kind,
             key,
-            highest,
-            winners[0].expires_at,
+            winner.sequence,
+            winner.expires_at,
             now=int(time.time()) if now is None else now,
         )
         return result

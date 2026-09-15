@@ -94,14 +94,16 @@ influencing the helper.
 ```powershell
 .\scripts\build-release.ps1 `
   -QtRoot "$env:USERPROFILE\Qt\6.11.2\msvc2022_64" `
-  -BuildDirectory build\desktop
+  -BuildDirectory build\desktop `
+  -WanBundleDirectory "<fresh-signed-production-bundle>"
 ```
 
 This explicit public packaging command removes the previous temporary compiler
 output, builds Release, packages reviewed public dependencies, runs the complete
 copied-package acceptance suite with Python absent from `PATH`, atomically
-replaces the canonical release, and creates the public portable ZIP. Do not use
-it as the routine local development completion step.
+replaces the canonical release, and verifies the promoted package. It does not
+create the public portable ZIP. Do not use it as the routine local development
+completion step.
 
 Canonical output:
 
@@ -128,11 +130,11 @@ assets, and shortcut creation, validates required files, and writes
 `deployment-metadata.json` plus `release-manifest.json` with SHA-256 hashes.
 
 `package-release.ps1` is staging-only and rejects the canonical
-`release\Granger Browser` path. It accepts `release\.staging` for public
-packaging, `release\.ui-stage` for focused visual checks, and
-`release\.local-staging` for the local orchestrator. Only an orchestrator may
-promote an accepted package to the canonical release; each removes its own
-staging directories after confirming that no process is running from them.
+`release\Granger Browser` path. It accepts only
+`build\package-work\<run>\candidate`; the release orchestrator owns that
+workspace. Only the orchestrator may promote an accepted package to the
+canonical release, and it removes its temporary candidate after confirming
+that no process is running from it.
 
 The optional NMEA positioning plugin is removed because it requires Qt SerialPort, which Granger Browser does not ship or use. The WinRT and polling positioning plugins remain.
 
@@ -225,9 +227,14 @@ SerialPort is packaged because Qt's NMEA positioning plugin depends on it.
 
 ```bash
 export QT_ROOT="$HOME/Qt/6.11.2/gcc_64"
+export GRANGER_NETWORK_RELEASE_BUNDLE="/path/to/fresh-signed-production-bundle"
 scripts/build-linux-appimage.sh
 scripts/test-linux-appimage.sh
 ```
+
+The AppImage release script requires a clean committed checkout. Exported
+exact-commit source trees without Git metadata must set `GRANGER_SOURCE_HEAD`
+to the commit from which they were produced.
 
 `scripts/fetch-linux-runtimes.sh` downloads only pinned official Tor and
 PurpleI2P artifacts, verifies their hashes, validates the Tor detached OpenPGP

@@ -1528,5 +1528,15 @@
   "updates.state.verifying": "Орнатқыш тексерілуде",
   "updates.state.staged": "Жаңарту тексерілді; қайта іске қосуды растау қажет",
   "updates.state.deferred": "Жаңарту кейінге қалдырылды; орнату жоспарланбаған",
-  "updates.state.blocked": "Жаңарту бұғатталды"
+  "updates.state.blocked": "Жаңарту бұғатталды",
+  "updates.ask_description": "Жаңартуды тек сіздің келісіміңізден кейін жүктеу және дайындау.",
+  "updates.auto_description": "Жаңартуларды автоматты жүктеу және тексеру. Қайта іске қосу растауды қажет етеді.",
+  "about.build_information": "Жинақ туралы ақпарат",
+  "about.platform": "Платформа / архитектура",
+  "reports.search_view": "Көрсетілген оқиғалардан іздеу",
+  "reports.snapshot": "Журнал көшірмесі",
+  "reports.clear_view": "Көріністі тазарту",
+  "reports.preferences": "Журнал параметрлері",
+  "network.discovering": "Желі қатысушылары ізделуде",
+  "status.configured_by_proxy": "Прокси бапталған"
 }

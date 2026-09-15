@@ -1,0 +1,95 @@
+/* Shared product surfaces consume the canonical DesignTokens stylesheet. */
+:root{--ds-font-mono:__FONT_MONO__;--ds-section-inset:__SECTION_PADDING__;--ds-section-radius:__SECTION_RADIUS__}
+.product-header{display:flex;align-items:center;gap:18px;padding:4px 0 28px;min-width:0}
+.product-header img{width:56px;height:56px;object-fit:contain;flex:none}
+.product-header h2{margin:0 0 6px;font-size:24px;line-height:1.3}
+.product-header p{margin:0;font-size:13px}
+.product-header p span{display:block;margin-top:4px;color:var(--ds-text-muted);font-size:12px}
+.settings-panel .updates-panel{padding:22px;border:1px solid var(--ds-border-subtle);border-radius:var(--ds-section-radius);background:var(--ds-bg-surface)}
+.updates-panel>h3{margin:0 0 20px;font-size:13px;color:var(--ds-text-secondary)}
+.update-state{display:flex;align-items:center;gap:14px;min-height:66px;padding:4px 0;animation:surface-in 150ms ease-out}
+.update-state strong{display:block;font-size:18px;font-weight:600;line-height:1.45}
+.update-state p{margin:6px 0 0;font-size:12px}
+.state-mark{display:inline-block;flex:0 0 10px;width:10px;height:10px;border:2px solid var(--ds-text-muted);border-radius:50%}
+[data-update-state=AVAILABLE] .state-mark,[data-update-state=STAGED] .state-mark{background:var(--ds-success);border-color:var(--ds-success)}
+[data-update-state=BLOCKED] .state-mark{border-color:var(--ds-warning);background:var(--ds-warning)}
+[data-update-state=CHECKING] .state-mark,[data-update-state=DOWNLOADING] .state-mark,[data-update-state=VERIFYING] .state-mark{flex-basis:18px;width:18px;height:18px;border-color:var(--ds-border);border-top-color:var(--ds-accent-hover);animation:stage-spin 900ms linear infinite}
+.update-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+.update-details{margin:12px 0 0;padding:12px 0 0}
+.update-details code,.build-information strong{font-family:var(--ds-font-mono);font-size:12px;overflow-wrap:anywhere}
+.update-details pre{border:0;padding:12px 0;margin:0}
+.settings-page .settings-panel>form.update-policy{margin-top:24px;border:0;border-radius:0;background:transparent;padding:0}
+.settings-page .settings-panel>form.update-policy>h3{margin:0 0 10px;padding:0;border:0;font-size:15px}
+.policy-option{display:flex;align-items:flex-start;gap:12px;padding:12px 0;cursor:pointer}
+.policy-option input{flex:none;width:18px;height:18px;margin:2px 0 0;accent-color:var(--ds-accent)}
+.policy-option span{min-width:0;display:grid;gap:4px}
+.policy-option strong{font-size:13px;line-height:1.5;font-weight:550}
+.policy-option small{font-size:12px;line-height:1.5;color:var(--ds-text-muted)}
+.settings-page .settings-panel>form.update-policy>p:last-child{margin:12px 0 0;padding:0;border:0;background:none}
+.build-information{margin-top:28px}
+.build-information>.info-list{margin-top:12px}
+.reports-page>.log-viewer{border-radius:var(--ds-section-radius);overflow:hidden}
+.log-viewer .section-heading{padding:var(--ds-section-inset);align-items:center}
+.log-viewer .section-heading p{font-size:12px;margin:5px 0 0;max-width:460px}
+.log-viewer .log-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0;padding:16px 18px;border-bottom:1px solid var(--ds-border-subtle)}
+.log-viewer .log-filters input,.log-viewer .log-filters select{min-width:0;width:100%}
+.log-viewer .log-filters button{justify-self:start}
+.console-toolbar{display:flex;gap:12px;align-items:center;padding:12px 18px;background:var(--ds-bg-surface);border-bottom:1px solid var(--ds-border-subtle)}
+.console-toolbar .console-search{flex:1;min-width:0;width:100%;height:40px;padding:8px 12px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-md);background:var(--ds-bg-control);color:var(--ds-text);font:inherit}
+.console-snapshot{font-size:11px;color:var(--ds-text-muted);white-space:nowrap}
+.console-lines{max-height:520px;min-height:180px;overflow:auto;overscroll-behavior:contain;background:var(--ds-bg-app);scrollbar-gutter:stable}
+.console-lines:focus-visible{outline:2px solid var(--ds-focus);outline-offset:-2px}
+.console-lines .console-entry{padding:0;border:0;border-bottom:1px solid color-mix(in srgb,var(--ds-border-subtle) 60%,transparent)}
+.console-entry>summary{display:grid;grid-template-columns:92px 60px 90px minmax(0,1fr);gap:12px;align-items:start;min-height:38px;margin:0;padding:10px 32px 10px 18px;font:12px/1.6 var(--ds-font-mono);font-weight:400}
+.console-entry>summary:hover,.console-entry[open]>summary{background:var(--ds-bg-hover)}
+.console-entry>summary::after{top:16px;right:13px;width:5px;height:5px}
+.console-entry time,.console-source{color:var(--ds-text-muted)}
+.console-source{text-transform:uppercase;overflow:hidden;text-overflow:ellipsis}
+.console-message{overflow-wrap:anywhere;color:var(--ds-text-secondary)}
+.console-severity{font-size:11px;font-weight:600;color:var(--ds-info)}
+.console-severity.debug{color:var(--ds-text-muted)}
+.console-severity.warning{border:0;border-radius:0;padding:0;background:none;color:var(--ds-warning)}
+.console-severity.error,.console-severity.critical{color:var(--ds-danger)}
+.console-detail{padding:0 18px 14px 30px;border-left:2px solid var(--ds-border);margin-left:18px;font:12px/1.6 var(--ds-font-mono)}
+.console-detail pre{padding:12px 0;border:0;margin:0;background:none;color:var(--ds-text-secondary)}
+.console-detail dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:6px 12px;margin:0}
+.console-detail dt{color:var(--ds-text-muted)}
+.console-detail dd{margin:0;overflow-wrap:anywhere}
+.console-empty,.console-no-results{margin:0;padding:40px 18px;text-align:center;color:var(--ds-text-muted)}
+.console-entry[hidden],.console-no-results[hidden]{display:none}
+.ui-notice{position:fixed;z-index:100;right:24px;bottom:20px;max-width:min(460px,calc(100% - 48px));margin:0;display:flex;align-items:start;gap:18px;padding:14px 16px;box-shadow:var(--ds-shadow-popup);animation:surface-in 170ms ease-out}
+.ui-notice>span{min-width:0;overflow-wrap:anywhere;line-height:1.5}
+.ui-notice-dismiss{padding:0;min-height:24px;width:24px;flex:0 0 24px;border:0;background:none;font-size:20px;font-weight:400;line-height:1}
+.settings-page .settings-panel .hosting-service-card{grid-template-columns:minmax(0,1fr);overflow:visible}
+.settings-page .settings-panel .hosting-service-main{gap:12px;padding:18px}
+.settings-page .settings-panel .hosting-service-actions{display:flex;flex-direction:row;flex-wrap:wrap;padding:12px 18px;border-left:0;border-top:1px solid var(--ds-border-subtle);gap:8px}
+.settings-page .hosting-service-actions>.button{width:auto;min-height:36px;font-size:12px}
+.settings-page .hosting-service-actions>.service-menu{margin-left:auto;padding:0;border:0}
+.service-menu{position:relative}
+.service-menu>summary{width:36px;height:36px;min-height:36px;display:grid;place-content:center;padding:0;border:1px solid var(--ds-border);border-radius:var(--ds-radius-md)}
+.service-menu>summary::after{display:none}
+.service-menu>summary img{width:18px;height:18px}
+.service-menu-items{position:absolute;right:0;bottom:44px;z-index:5;width:210px;max-width:calc(100vw - 48px);padding:6px;border:1px solid var(--ds-border);border-radius:8px;background:var(--ds-bg-elevated);box-shadow:var(--ds-shadow-popup);animation:surface-in 150ms ease-out}
+.settings-page .service-menu-items .button{border:0;min-height:36px;padding:9px 12px;width:100%;font-size:12px}
+.settings-page .settings-panel .hosting-address{border:0;background:none;padding:0}
+.settings-page .settings-panel .hosting-meta{background:transparent;border:0;padding:0;gap:18px}
+.settings-page .settings-panel .hosting-visibility{border:0;padding:0;max-width:400px}
+.settings-page .settings-panel .hosting-status{padding:0;border:0;background:none;font-size:12px;white-space:normal;text-align:right}
+.log-viewer .log-filters{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}
+.console-extra-filters{grid-column:1/-1;padding:0;border:0}
+.console-extra-filters>summary{font-size:12px;color:var(--ds-text-muted);min-height:24px}
+.console-extra-filters>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:10px}
+.log-settings-disclosure{margin:0}
+.log-settings-disclosure>.section{padding:18px 0 0;border-top:1px solid var(--ds-border-subtle)}
+.log-settings-disclosure>.section>h3{margin-top:0}
+.network-state-list{margin:0 0 24px;padding:0 0 8px}
+.network-state-row{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:54px;padding:14px 0;border-bottom:1px solid var(--ds-border-subtle)}
+.network-state-row strong{font-size:14px;font-weight:600}
+.network-state-row span{font-size:12px;color:var(--ds-text-secondary);text-align:right}
+.settings-page .settings-panel .hosting-service-actions>.button{width:auto}
+@keyframes surface-in{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
+@keyframes stage-spin{to{transform:rotate(360deg)}}
+body[data-document-hidden=true] .state-mark{animation-play-state:paused}
+@media(max-width:650px){.console-entry>summary{grid-template-columns:85px 54px minmax(0,1fr);gap:8px;padding-left:12px}.console-message{grid-column:1/-1}.console-snapshot{display:none}.log-viewer .log-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.console-toolbar{flex-wrap:wrap}.console-toolbar .console-search{flex-basis:100%}.product-header h2{font-size:22px}.update-actions{align-items:stretch;flex-direction:column}}
+@media(prefers-reduced-motion:reduce){.update-state,.state-mark,.ui-notice,.service-menu-items{animation:none!important}}
+.reduced-motion .update-state,.reduced-motion .state-mark,.reduced-motion .ui-notice,.reduced-motion .service-menu-items{animation:none!important}

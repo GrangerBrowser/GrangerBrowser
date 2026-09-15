@@ -1,4 +1,8 @@
 <RCC>
+    <qresource prefix="/ui">
+        <file alias="product-surfaces.css">ui/product-surfaces.css</file>
+        <file alias="product-surfaces.js">ui/product-surfaces.js</file>
+    </qresource>
     <qresource prefix="/icons">
         <file alias="back.svg">icons/back.svg</file>
         <file alias="app-icon.png">app-icon.png</file>

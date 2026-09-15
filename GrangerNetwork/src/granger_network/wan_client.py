@@ -10,7 +10,13 @@ from pathlib import Path
 
 from .descriptor import ServiceDescriptor
 from ._codec import atomic_write_text
-from .errors import GrangerNetworkError, IntroductionOfflineError, OverlayRoutingError, ReplayError
+from .errors import (
+    GrangerNetworkError,
+    IntroductionOfflineError,
+    OverlayRoutingError,
+    PeerRpcError,
+    ReplayError,
+)
 from .peer import NodeDescriptor
 from .wan_config import WanDiscoveryRuntime
 from .wan_config import load_discovery_runtime
@@ -26,6 +32,17 @@ class WanClientConnection:
     route: WanRouteSelection
     introduction_node: NodeDescriptor
     attempts: int
+
+
+def _remote_peer_error_code(error: BaseException) -> str:
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, PeerRpcError):
+            return current.code
+        current = current.__cause__ or current.__context__
+    return ""
 
 
 def connect_service(
@@ -77,6 +94,7 @@ def connect_service(
                 candidate_sets.append((introduction_node, list(candidates)))
 
         changed = False
+        deferred_introduction_refresh = False
         offline_endpoints: set[str] = set()
         candidate_count = max(
             (len(candidates) for _, candidates in candidate_sets),
@@ -158,6 +176,17 @@ def connect_service(
                         "rendezvous stage failed during stream",
                         "rendezvous stage failed during handshake",
                     ))
+                    remote_error_code = _remote_peer_error_code(error)
+                    if remote_error_code in {
+                        "INTRODUCTION_BUSY",
+                        "INTRODUCTION_FAILED",
+                        "INTRODUCTION_TIMEOUT",
+                    }:
+                        # The signed token was accepted by a live introduction
+                        # node. Try the other signed point before paying for a
+                        # second quorum lookup; refresh once after that set.
+                        deferred_introduction_refresh = True
+                        continue
                     if (attempts < route_attempts
                             and isinstance(error, OverlayRoutingError)
                             and refreshable_failure):
@@ -177,6 +206,17 @@ def connect_service(
                             introduction = latest
                             changed = True
                             break
+            if deferred_introduction_refresh and attempts < route_attempts:
+                latest = resolver.resolve_introduction(service)
+                if (latest.sequence < introduction.sequence
+                        or (latest.sequence == introduction.sequence
+                            and latest != introduction)):
+                    raise ReplayError(
+                        "introduction refresh rejected rollback or equivocation"
+                    )
+                if latest.sequence > introduction.sequence:
+                    introduction = latest
+                    changed = True
             if changed or attempts >= route_attempts:
                 break
         if not changed and offline_endpoints and attempts < route_attempts:

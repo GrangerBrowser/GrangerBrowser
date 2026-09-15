@@ -50,7 +50,7 @@ QString ThemeManager::styleSheet() const
         QWidget {
             background: __WINDOW_BG__;
             color: __TEXT__;
-            font-family: "Inter", "Segoe UI", sans-serif;
+            font-family: __FONT_UI__;
             font-size: 13px;
             letter-spacing: 0;
         }
@@ -1375,8 +1375,8 @@ QString ThemeManager::styleSheet() const
 
         QDialog#ContainerDialogOverlay QPushButton#PrimaryButton {
             color: #ffffff;
-            background: __ACCENT__;
-            border-color: __ACCENT__;
+            background: __PRIMARY_FILL__;
+            border-color: __PRIMARY_FILL__;
         }
 
         QDialog#ContainerDialogOverlay QPushButton#PrimaryButton:hover {

@@ -11,9 +11,11 @@ $cacheRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "build/dependency-ca
 $version = "2.61.0"
 $sourceTag = "2.61.0"
 $sourceCommit = "635b013a612ff47278ef02acf8580a28e10e26c5"
+# Preserve the timestamp of the first attested source build so its pinned hash is reproducible.
+$sourceDateEpoch = "1789135418"
 $sourceUrl = "https://github.com/PurpleI2P/i2pd/archive/refs/tags/2.61.0.zip"
 $expectedSourceSha256 = "AFEA2C34A8FDBE36DF5AFAAACE79CEB0B45898B9EF9011946E3A692F8F318099"
-$expectedSourceTreeSha256 = "6D9DC6E53E98F7548B07A82F5607D02988A82FA8885F04607B5F646328B406A4"
+$expectedSourceTreeSha256 = "394EDC11F17FC6C00CF24B981A00DB843D6834C66162F2E44D34931EA9994740"
 $expectedExecutableSha256 = "96C6DF64F8003384EB5ABC2F7210BF04E5D75F91A3D822F2E7A62D41D8AE2591"
 $vcpkgUrl = "https://github.com/microsoft/vcpkg.git"
 $vcpkgTag = "2026.07.29"
@@ -182,6 +184,7 @@ set(VCPKG_BUILD_TYPE release)
 set(VCPKG_C_FLAGS "/experimental:deterministic /Brepro /pathmap:${escapedProjectRoot}=Z:\\granger-src")
 set(VCPKG_CXX_FLAGS "/experimental:deterministic /Brepro /pathmap:${escapedProjectRoot}=Z:\\granger-src")
 set(VCPKG_LINKER_FLAGS "/Brepro")
+set(VCPKG_ENV_PASSTHROUGH SOURCE_DATE_EPOCH)
 "@
 [IO.File]::WriteAllText($overlayTriplet, $tripletContents.Replace("`r`n", "`n"),
     [Text.UTF8Encoding]::new($false))
@@ -197,10 +200,12 @@ New-Item -ItemType Directory -Path $downloadCache -Force | Out-Null
 $previousDisableMetrics = $env:VCPKG_DISABLE_METRICS
 $previousBinarySources = $env:VCPKG_BINARY_SOURCES
 $previousDownloads = $env:VCPKG_DOWNLOADS
+$previousSourceDateEpoch = $env:SOURCE_DATE_EPOCH
 try {
     $env:VCPKG_DISABLE_METRICS = "1"
     $env:VCPKG_BINARY_SOURCES = "clear;files,$binaryCache,readwrite"
     $env:VCPKG_DOWNLOADS = $downloadCache
+    $env:SOURCE_DATE_EPOCH = $sourceDateEpoch
     $ports = @(
         "boost-filesystem",
         "boost-program-options",
@@ -219,6 +224,7 @@ try {
     $env:VCPKG_DISABLE_METRICS = $previousDisableMetrics
     $env:VCPKG_BINARY_SOURCES = $previousBinarySources
     $env:VCPKG_DOWNLOADS = $previousDownloads
+    $env:SOURCE_DATE_EPOCH = $previousSourceDateEpoch
 }
 
 $installedPackages = (& $vcpkg list --triplet=$triplet 2>&1 | Out-String)
@@ -250,36 +256,42 @@ if (-not $buildRequired) {
 if ($buildRequired) {
     $cmake = Get-CMakeExecutable
     $toolchain = Join-Path $resolvedVcpkgRoot "scripts/buildsystems/vcpkg.cmake"
-    Invoke-NativeCommand -FilePath $cmake -Arguments @(
-        "-S", (Join-Path $sourceRoot "build"),
-        "-B", $buildRoot,
-        "-G", "Visual Studio 17 2022",
-        "-A", "x64",
-        "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
-        "-DVCPKG_TARGET_TRIPLET=$triplet",
-        "-DVCPKG_OVERLAY_TRIPLETS=$overlayTriplets",
-        "-DWITH_STATIC=ON",
-        "-DWITH_UPNP=OFF",
-        "-DWITH_GIT_VERSION=OFF",
-        "-DBUILD_TESTING=OFF",
-        "-DCMAKE_INSTALL_PREFIX=$installRoot",
-        "-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /experimental:deterministic /Brepro /pathmap:$projectRoot=Z:\granger-src",
-        "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /experimental:deterministic /Brepro /pathmap:$projectRoot=Z:\granger-src",
-        "-DCMAKE_EXE_LINKER_FLAGS=/machine:x64 /Brepro",
-        "-DCMAKE_STATIC_LINKER_FLAGS=/machine:x64 /Brepro"
-    ) -Description "i2pd CMake configuration"
+    $previousSourceDateEpoch = $env:SOURCE_DATE_EPOCH
+    try {
+        $env:SOURCE_DATE_EPOCH = $sourceDateEpoch
+        Invoke-NativeCommand -FilePath $cmake -Arguments @(
+            "-S", (Join-Path $sourceRoot "build"),
+            "-B", $buildRoot,
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DCMAKE_TOOLCHAIN_FILE=$toolchain",
+            "-DVCPKG_TARGET_TRIPLET=$triplet",
+            "-DVCPKG_OVERLAY_TRIPLETS=$overlayTriplets",
+            "-DWITH_STATIC=ON",
+            "-DWITH_UPNP=OFF",
+            "-DWITH_GIT_VERSION=OFF",
+            "-DBUILD_TESTING=OFF",
+            "-DCMAKE_INSTALL_PREFIX=$installRoot",
+            "-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /experimental:deterministic /Brepro /pathmap:$projectRoot=Z:\granger-src",
+            "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /experimental:deterministic /Brepro /pathmap:$projectRoot=Z:\granger-src",
+            "-DCMAKE_EXE_LINKER_FLAGS=/machine:x64 /Brepro",
+            "-DCMAKE_STATIC_LINKER_FLAGS=/machine:x64 /Brepro"
+        ) -Description "i2pd CMake configuration"
 
-    $compilerConfig = Get-ChildItem -LiteralPath (Join-Path $buildRoot "CMakeFiles") `
-        -Recurse -File -Filter "CMakeCXXCompiler.cmake" | Select-Object -First 1
-    $compilerText = if ($compilerConfig) { Get-Content -LiteralPath $compilerConfig.FullName -Raw } else { "" }
-    if ($compilerText -notmatch "CMAKE_CXX_COMPILER_VERSION `"$([regex]::Escape($compilerVersion))`"" -or
-        $compilerText -notmatch "MSVC/$([regex]::Escape($toolsetVersion))/bin/Hostx64/x64/cl\.exe") {
-        throw "The installed MSVC compiler does not match the pinned i2pd release toolchain."
+        $compilerConfig = Get-ChildItem -LiteralPath (Join-Path $buildRoot "CMakeFiles") `
+            -Recurse -File -Filter "CMakeCXXCompiler.cmake" | Select-Object -First 1
+        $compilerText = if ($compilerConfig) { Get-Content -LiteralPath $compilerConfig.FullName -Raw } else { "" }
+        if ($compilerText -notmatch "CMAKE_CXX_COMPILER_VERSION `"$([regex]::Escape($compilerVersion))`"" -or
+            $compilerText -notmatch "MSVC/$([regex]::Escape($toolsetVersion))/bin/Hostx64/x64/cl\.exe") {
+            throw "The installed MSVC compiler does not match the pinned i2pd release toolchain."
+        }
+
+        Invoke-NativeCommand -FilePath $cmake `
+            -Arguments @("--build", $buildRoot, "--config", "Release", "--target", "install", "--parallel", "6") `
+            -Description "i2pd Release build"
+    } finally {
+        $env:SOURCE_DATE_EPOCH = $previousSourceDateEpoch
     }
-
-    Invoke-NativeCommand -FilePath $cmake `
-        -Arguments @("--build", $buildRoot, "--config", "Release", "--target", "install", "--parallel", "6") `
-        -Description "i2pd Release build"
 }
 
 if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
@@ -318,6 +330,7 @@ if ($certificateCount -ne 22) { throw "The staged i2pd certificate bundle is inc
     Source = $sourceUrl
     SourceTag = $sourceTag
     SourceCommit = $sourceCommit
+    SourceDateEpoch = $sourceDateEpoch
     SourceArchive = $archive
     SourceArchiveSHA256 = $actualSourceSha256
     SourceTreeSHA256 = $expectedSourceTreeSha256

@@ -1445,11 +1445,7 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
                     : pending.error;
             }
         }
-        BrowserTab *tab = currentTab();
-        if (tab && tab->displayAddress().startsWith(
-                QStringLiteral("about:settings?category=hosting"))) {
-            loadInternalPage(tab, QStringLiteral("about:settings?category=hosting"));
-        }
+        refreshHostingSettings();
     }, Qt::QueuedConnection);
     if (PrivacyNetworkManager *routes = PrivacyNetworkManager::instance();
         routes && qApp->property("granger.usePrivacyGateway").toBool()) {
@@ -5778,6 +5774,23 @@ void MainWindow::refreshHostingSettings(const QString &message)
     BrowserTab *tab = currentTab();
     if (tab && tab->displayAddress().startsWith(
             QStringLiteral("about:settings?category=hosting"))) {
+        if (message.isEmpty() && m_settingsUi.hostingWizard.isEmpty()) {
+            const QString payload = QString::fromUtf8(
+                QJsonDocument(QJsonArray{hostingSettingsHtml()}).toJson(QJsonDocument::Compact));
+            const QPointer<MainWindow> window(this);
+            const QPointer<BrowserTab> target(tab);
+            const QPointer<QWebEnginePage> page(tab->page());
+            tab->page()->runJavaScript(
+                QStringLiteral("Boolean(window.grangerUpdateHosting && window.grangerUpdateHosting(%1[0]))").arg(payload),
+                [window, target, page](const QVariant &updated) {
+                    if (!updated.toBool() && window && target && page
+                        && target->page() == page && target->displayAddress()
+                            == QStringLiteral("about:settings?category=hosting")) {
+                        window->loadInternalPage(target, QStringLiteral("about:settings?category=hosting"));
+                    }
+                });
+            return;
+        }
         loadInternalPage(tab, QStringLiteral("about:settings?category=hosting"),
                          QString(), message);
     }
@@ -8576,26 +8589,36 @@ QString MainWindow::localLogsHtml(const QUrlQuery *query)
         + option(QStringLiteral("blocked"), blockedFilter, text("reports.blocked"))
         + option(QStringLiteral("allowed"), blockedFilter, text("reports.allowed"));
 
+    const QString logSettings = query ? html : QString();
+    if (query) html.clear();
+    const QString viewerAction = query
+        ? QStringLiteral("<a class=\"button secondary compact\" href=\"%1\" aria-label=\"%2\" title=\"%2\"><img src=\"%3\" alt=\"\" width=\"18\" height=\"18\"></a>")
+              .arg(actionUrl(QStringLiteral("logs/filter"), *query), text("common.refresh"),
+                   embeddedImageDataUrl(QStringLiteral(":/icons/refresh.svg"), QByteArrayLiteral("image/svg+xml")))
+        : QStringLiteral("<a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:reports\">%1</a>")
+              .arg(text("reports.open_full"));
+
     html += QStringLiteral(
-        "<section class=\"section\"><div class=\"section-heading\"><div><h3>%1</h3><p>%2</p></div>"
-        "<a class=\"button secondary\" href=\"https://granger.local/__action/open?page=about:reports\">%3</a></div>"
+        "<section class=\"section log-viewer\"><div class=\"section-heading\"><div><h3>%1</h3><p>%2</p></div>"
+        "%3</div>"
         "<form class=\"log-filters\" action=\"https://granger.local/__action/logs/filter\" method=\"get\">"
         "<select name=\"category\" aria-label=\"%4\">%5</select>"
         "<select name=\"severity\" aria-label=\"%6\">%7</select>"
+        "<button type=\"submit\">%16</button><details class=\"console-extra-filters\"><summary>%17</summary><div>"
         "<select name=\"blocked\" aria-label=\"%8\">%9</select>"
         "<input name=\"origin\" value=\"%10\" placeholder=\"%11\" aria-label=\"%11\">"
         "<input name=\"tab\" value=\"%12\" placeholder=\"%13\" aria-label=\"%13\">"
         "<input type=\"number\" min=\"0\" max=\"168\" name=\"hours\" value=\"%14\" aria-label=\"%15\">"
-        "<button type=\"submit\">%16</button></form>")
+        "</div></details></form>")
         .arg(text("reports.events"), text("reports.viewer_note"),
-             text("reports.open_full"),
+             viewerAction,
              text("reports.category"), categoryOptions,
              text("reports.severity"), severityOptions,
              text("reports.result"), blockedOptions,
              originFilter.toHtmlEscaped(), text("reports.origin_filter"),
              tabFilter.toHtmlEscaped(), text("reports.tab_filter"))
         .arg(sinceHours)
-        .arg(text("reports.hours"), text("common.filter"));
+        .arg(text("reports.hours"), text("common.filter"), text("reports.details"));
 
     QString rows;
     const QJsonArray events = m_eventLogger.recentEvents(500);
@@ -8627,36 +8650,40 @@ QString MainWindow::localLogsHtml(const QUrlQuery *query)
                 event.value(QStringLiteral("details")).toObject()).toJson(QJsonDocument::Compact));
         }
         rows += QStringLiteral(
-            "<tr><td>%1</td><td><span class=\"log-severity %2\">%3</span></td>"
-            "<td>%4</td><td><strong>%5</strong>%6</td><td>%7</td><td>%8</td></tr>")
+            "<details class=\"console-entry\" data-severity=\"%2\"><summary>"
+            "<time>%1</time><span class=\"console-severity %2\">%3</span>"
+            "<span class=\"console-source\">%4</span><span class=\"console-message\">%5</span></summary>"
+            "<div class=\"console-detail\">%6<dl><dt>%9</dt><dd>%7</dd><dt>%10</dt><dd>%8</dd></dl></div></details>")
             .arg(timestamp.isValid()
-                     ? QLocale().toString(timestamp.toLocalTime(), QLocale::ShortFormat).toHtmlEscaped()
+                     ? timestamp.toLocalTime().toString(QStringLiteral("HH:mm:ss.zzz"))
                      : QStringLiteral("—"),
-                 severity.toHtmlEscaped(), severity.toHtmlEscaped(),
+                 severity.toHtmlEscaped(), (severity == QStringLiteral("warning") ? QStringLiteral("WARN") : severity.toUpper()).toHtmlEscaped(),
                  eventCategory.toHtmlEscaped(),
                  event.value(QStringLiteral("event")).toString().toHtmlEscaped(),
                  details.isEmpty()
                      ? QString()
-                     : QStringLiteral("<details><summary>%1</summary><code>%2</code></details>")
-                           .arg(text("reports.details"), details.toHtmlEscaped()),
+                     : QStringLiteral("<pre>%1</pre>").arg(details.toHtmlEscaped()),
                  origin.isEmpty() ? QStringLiteral("—") : origin.toHtmlEscaped(),
-                 result.toHtmlEscaped());
+                 result.toHtmlEscaped(), text("reports.origin"), text("reports.result"));
         if (++shown >= 250) break;
     }
     if (rows.isEmpty()) {
-        rows = QStringLiteral("<tr><td colspan=\"6\" class=\"empty\">%1</td></tr>")
+        rows = QStringLiteral("<p class=\"console-empty\">%1</p>")
                    .arg(text("reports.no_events"));
     }
     html += QStringLiteral(
-        "<div class=\"log-table-wrap\"><table class=\"log-table\"><thead><tr>"
-        "<th>%1</th><th>%2</th><th>%3</th><th>%4</th><th>%5</th><th>%6</th>"
-        "</tr></thead><tbody>%7</tbody></table></div>"
-        "<div class=\"row\"><a class=\"button secondary\" href=\"https://granger.local/__action/logs/export?format=json\">%8</a>"
-        "<a class=\"button secondary\" href=\"https://granger.local/__action/logs/export?format=text&excludeOrigins=1\">%9</a>"
+        "<div class=\"console-toolbar\"><input type=\"search\" class=\"console-search\" placeholder=\"%1\" aria-label=\"%1\">"
+        "<span class=\"console-snapshot\">%2</span><button type=\"button\" class=\"secondary console-clear\" aria-label=\"%3\" title=\"%3\"><img src=\"%9\" alt=\"\" width=\"18\" height=\"18\"></button></div>"
+        "<div class=\"console-lines\" tabindex=\"0\" aria-label=\"%4\">%5</div>"
+        "<p class=\"console-no-results\" hidden>%6</p>"
+        "<div class=\"ds-card-footer\"><a class=\"button secondary\" href=\"https://granger.local/__action/logs/export?format=json\">%7</a>"
+        "<a class=\"button secondary\" href=\"https://granger.local/__action/logs/export?format=text&excludeOrigins=1\">%8</a>"
         "</div></section>")
-        .arg(text("reports.time"), text("reports.severity"), text("reports.category"),
-             text("reports.event"), text("reports.origin"), text("reports.result"), rows,
-             text("reports.export_json"), text("reports.export_text_private"));
+        .arg(text("reports.search_view"), text("reports.snapshot"), text("reports.clear_view"), text("reports.events"), rows, text("reports.no_events"),
+             text("reports.export_json"), text("reports.export_text_private"),
+             embeddedImageDataUrl(QStringLiteral(":/icons/close.svg"), QByteArrayLiteral("image/svg+xml")));
+    if (query) html += QStringLiteral("<details class=\"log-settings-disclosure\"><summary>%1</summary>%2</details>")
+                           .arg(text("reports.preferences"), logSettings);
     return html;
 }
 
@@ -9009,35 +9036,62 @@ InternalPageContext MainWindow::pageContext(const QString &message,
     context.dataRoot = AppPaths::dataRoot();
     context.profileRoot = AppPaths::webEngineProfileRoot();
     context.applicationVersion = QCoreApplication::applicationVersion();
+    if (context.settingsCategory == QStringLiteral("connection")) {
+        const QString state = m_grangerNetwork.diagnostics().value(QStringLiteral("networkHealth"))
+                                  .toObject().value(QStringLiteral("state")).toString();
+        const QHash<QString, QString> labels{
+            {QStringLiteral("CONNECTED"), QStringLiteral("status.connected")},
+            {QStringLiteral("BOOTSTRAPPING"), QStringLiteral("status.bootstrapping")},
+            {QStringLiteral("JOINING"), QStringLiteral("network.discovering")},
+            {QStringLiteral("DEGRADED"), QStringLiteral("hosting.status.degraded")},
+            {QStringLiteral("RESEEDING"), QStringLiteral("hosting.status.recovering")},
+            {QStringLiteral("RECOVERING"), QStringLiteral("hosting.status.recovering")}
+        };
+        context.grangerState = Localization::text(labels.value(state, QStringLiteral("network.unavailable")));
+    }
     if (context.settingsCategory == QStringLiteral("about")) {
         const QJsonObject update = m_updates.snapshot();
         const auto tx = [](const char *key) { return Localization::text(QString::fromLatin1(key)).toHtmlEscaped(); };
         const QString state = update.value(QStringLiteral("state")).toString();
         const QString policy = update.value(QStringLiteral("policy")).toString();
         const auto command = [&tx](const QString &name, const char *label, bool enabled = true) {
-            return enabled ? QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
-                                 .arg(actionUrl(QStringLiteral("updates/") + name), tx(label))
+            return enabled ? QStringLiteral("<a class=\"button %3\" href=\"%1\">%2</a>")
+                                 .arg(actionUrl(QStringLiteral("updates/") + name), tx(label),
+                                      name == QStringLiteral("now") || name == QStringLiteral("apply") ? QStringLiteral("primary") : QStringLiteral("secondary"))
                            : QStringLiteral("<button type=\"button\" disabled>%1</button>").arg(tx(label));
         };
+        const bool busy = state == QStringLiteral("CHECKING") || state == QStringLiteral("DOWNLOADING")
+            || state == QStringLiteral("VERIFYING");
+        const QString available = update.value(QStringLiteral("availableVersion")).toString();
+        const QString code = update.value(QStringLiteral("code")).toString();
+        const QString notes = update.value(QStringLiteral("releaseNotes")).toString();
+        QString actions = command(QStringLiteral("check"), "updates.check", !busy);
+        if (state == QStringLiteral("AVAILABLE")) actions += command(QStringLiteral("now"), "updates.now");
+        if (state == QStringLiteral("STAGED")) actions += command(QStringLiteral("apply"), "updates.apply");
+        if (busy || state == QStringLiteral("AVAILABLE") || state == QStringLiteral("STAGED") || state == QStringLiteral("BLOCKED"))
+            actions += command(QStringLiteral("later"), "updates.later");
         context.updatesHtml = QStringLiteral(
-            "<section class=\"ds-card updates-panel\"><div class=\"ds-card-header\"><h3>%1</h3></div>"
-            "<div class=\"ds-card-body\"><dl><dt>%2</dt><dd>%3</dd><dt>%4</dt><dd>%5</dd></dl>"
-            "<p role=\"status\" data-update-state=\"%6\">%7</p><p>%8</p>"
-            "<details><summary>%9</summary><pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">%10</pre></details>"
-            "<form action=\"%11\" method=\"get\"><label class=\"field\"><span>%12</span>"
-            "<select name=\"policy\"><option value=\"ask\"%13>%14</option><option value=\"auto\"%15>%16</option></select>"
-            "</label><button type=\"submit\">%17</button></form></div><div class=\"ds-card-footer\">%18</div></section>")
-                .arg(tx("updates.title"), tx("updates.current"), context.applicationVersion.toHtmlEscaped(),
-                     tx("updates.available"), update.value(QStringLiteral("availableVersion")).toString(QStringLiteral("--")).toHtmlEscaped(),
-                     state.toHtmlEscaped(), Localization::text(QStringLiteral("updates.state.") + state.toLower()).toHtmlEscaped(),
-                     update.value(QStringLiteral("code")).toString().toHtmlEscaped(), tx("updates.changes"),
-                     update.value(QStringLiteral("releaseNotes")).toString().toHtmlEscaped(), actionUrl(QStringLiteral("updates/policy")),
-                     tx("updates.policy"), policy == QStringLiteral("ask") ? QStringLiteral(" selected") : QString(), tx("updates.ask"),
-                     policy == QStringLiteral("auto") ? QStringLiteral(" selected") : QString(), tx("updates.auto"), tx("common.save"),
-                     command(QStringLiteral("check"), "updates.check")
-                     + command(QStringLiteral("now"), "updates.now", state == QStringLiteral("AVAILABLE"))
-                     + command(QStringLiteral("later"), "updates.later")
-                     + command(QStringLiteral("apply"), "updates.apply", state == QStringLiteral("STAGED")));
+            "<section class=\"updates-panel\" aria-labelledby=\"updates-heading\">"
+            "<h3 id=\"updates-heading\">%1</h3><div class=\"update-state\" data-update-state=\"%2\" role=\"status\" aria-live=\"polite\">"
+            "<span class=\"state-mark\" aria-hidden=\"true\"></span><div><strong>%3</strong>%4</div></div>%5%6"
+            "<div class=\"update-actions\">%7</div></section>")
+                .arg(tx("updates.title"), state.toHtmlEscaped(),
+                     Localization::text(QStringLiteral("updates.state.") + state.toLower()).toHtmlEscaped(),
+                     available.isEmpty() ? QString() : QStringLiteral("<p>%1 <b>%2</b></p>").arg(tx("updates.available"), available.toHtmlEscaped()),
+                     code.isEmpty() ? QString() : QStringLiteral("<details class=\"update-details\"><summary>%1</summary><code>%2</code></details>")
+                         .arg(tx("reports.details"), code.toHtmlEscaped()),
+                     notes.isEmpty() ? QString() : QStringLiteral("<details class=\"update-details\"><summary>%1</summary><pre>%2</pre></details>")
+                         .arg(tx("updates.changes"), notes.toHtmlEscaped()), actions);
+        context.updatesHtml += QStringLiteral(
+            "<form class=\"update-policy\" action=\"%1\" method=\"get\"><h3>%2</h3>"
+            "<label class=\"policy-option\"><input type=\"radio\" name=\"policy\" value=\"ask\"%3>"
+            "<span><strong>%4</strong><small>%5</small></span></label>"
+            "<label class=\"policy-option\"><input type=\"radio\" name=\"policy\" value=\"auto\"%6>"
+            "<span><strong>%7</strong><small>%8</small></span></label>"
+            "<p><button class=\"secondary\" type=\"submit\">%9</button></p></form>")
+                .arg(actionUrl(QStringLiteral("updates/policy")), tx("updates.policy"),
+                     policy == QStringLiteral("ask") ? QStringLiteral(" checked") : QString(), tx("updates.ask"), tx("updates.ask_description"),
+                     policy == QStringLiteral("auto") ? QStringLiteral(" checked") : QString(), tx("updates.auto"), tx("updates.auto_description"), tx("common.save"));
     }
     if (page == QStringLiteral("about:settings") && settingsCategory == QStringLiteral("search")) {
         const QStringList enabledEngines = m_settings.enabledSearchEngines();
@@ -11845,6 +11899,9 @@ QString MainWindow::hostingSettingsHtml() const
             actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
                            .arg(serviceAction(QStringLiteral("hosting/copy")),
                                 text("common.copy").toHtmlEscaped());
+            actions += QStringLiteral("<details class=\"service-menu\"><summary aria-label=\"%1\" title=\"%1\"><img src=\"%2\" alt=\"\"></summary><div class=\"service-menu-items\">")
+                           .arg(text("hosting.details").toHtmlEscaped(),
+                                embeddedImageDataUrl(QStringLiteral(":/icons/overflow.svg"), QByteArrayLiteral("image/svg+xml")));
             actions += QStringLiteral("<a class=\"button secondary\" href=\"%1\">%2</a>")
                            .arg(serviceAction(QStringLiteral("hosting/restart")),
                                 text("hosting.restart").toHtmlEscaped());
@@ -11864,6 +11921,7 @@ QString MainWindow::hostingSettingsHtml() const
             actions += QStringLiteral("<a class=\"button danger\" href=\"%1\">%2</a>")
                            .arg(serviceAction(QStringLiteral("hosting/delete")),
                                 text("common.delete").toHtmlEscaped());
+            actions += QStringLiteral("</div></details>");
             const QString visibilityForm = QStringLiteral(
                 "<form class=\"hosting-visibility\" action=\"%1\" method=\"get\">"
                 "<input type=\"hidden\" name=\"id\" value=\"%2\">"
@@ -11884,7 +11942,7 @@ QString MainWindow::hostingSettingsHtml() const
                          text("hosting.payload_bytes").toHtmlEscaped(),
                          QStringLiteral("%1 / %2").arg(service.receivedBytes).arg(service.sentBytes));
             html += QStringLiteral(
-                "<article class=\"hosting-service-card ds-card\" role=\"listitem\"><div class=\"hosting-service-main\">"
+                "<article class=\"hosting-service-card ds-card\" role=\"listitem\" data-service-id=\"%19\"><div class=\"hosting-service-main\">"
                 "<div class=\"hosting-service-title\"><div><h3>%1</h3><span>%2</span></div>"
                 "<span class=\"hosting-status %3\"><i></i>%4</span></div>"
                 "<div class=\"hosting-address\"><code>%5</code><a href=\"%6\" title=\"%7\">%8</a></div>"
@@ -11898,7 +11956,7 @@ QString MainWindow::hostingSettingsHtml() const
                          text("hosting.copy_address").toHtmlEscaped(),
                          text("common.copy").toHtmlEscaped(),
                          text("hosting.traffic").toHtmlEscaped(),
-                         QLocale().formattedDataSize(service.sentBytes).toHtmlEscaped(),
+                         QLocale(Localization::language()).formattedDataSize(service.sentBytes).toHtmlEscaped(),
                          text("hosting.uptime").toHtmlEscaped(),
                          running ? uptimeText(service.uptimeSeconds).toHtmlEscaped() : QStringLiteral("--"),
                          text("hosting.requests").toHtmlEscaped(),
@@ -11906,7 +11964,7 @@ QString MainWindow::hostingSettingsHtml() const
                          service.error.isEmpty()
                              ? QString() : QStringLiteral("<p class=\"hosting-error\">%1</p>")
                                                    .arg(service.error.toHtmlEscaped()),
-                         actions, visibilityForm, details);
+                         actions, visibilityForm, details, service.id.toHtmlEscaped());
         }
         html += QStringLiteral("</div>");
     }

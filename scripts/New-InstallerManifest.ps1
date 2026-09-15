@@ -38,8 +38,10 @@ try {
 }
 
 $version = ([string]$metadata.ProductVersion).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+$' -or [string]$metadata.Architecture -ne 'x64') {
-    throw "Portable deployment metadata has an unsupported version or architecture."
+$sourceCommit = ([string]$metadata.SourceCommit).Trim().ToLowerInvariant()
+if ($version -notmatch '^\d+\.\d+\.\d+$' -or [string]$metadata.Architecture -ne 'x64' -or
+    $sourceCommit -notmatch '^[0-9a-f]{40}$') {
+    throw "Portable deployment metadata has an unsupported version, architecture, or source identity."
 }
 if ([int]$metadata.SchemaVersion -ne 2 -or
     [string]$metadata.TorBundleVersion -ne '15.0.20' -or
@@ -65,6 +67,7 @@ $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.T
     schemaVersion = 2
     version = $version
     architecture = 'x64'
+    sourceCommit = $sourceCommit
     minimumWindowsVersion = $MinimumWindowsVersion
     packageSize = (Get-Item -LiteralPath $archivePath).Length
     sha256 = $archiveHash
@@ -73,6 +76,7 @@ $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.T
 [pscustomobject]@{
     OK = $true
     Version = $version
+    SourceCommit = $sourceCommit
     Manifest = $manifestPath
     Package = $archivePath
     PackageSize = (Get-Item -LiteralPath $archivePath).Length

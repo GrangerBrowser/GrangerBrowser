@@ -14,6 +14,7 @@ import stat
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote_to_bytes, urlsplit
@@ -1331,6 +1332,7 @@ def serve_hosted_service(
         access_exclusions: set[str] = set()
         service_relay_exclusions: set[str] = set()
         middle_exclusions: set[str] = set()
+        route_edge_exclusions: set[tuple[str, str]] = set()
         try:
             _write_status(
                 root, "recovering" if generation else "starting", service,
@@ -1362,75 +1364,87 @@ def serve_hosted_service(
             )
             atomic_write_text(root / INTRODUCTION_DESCRIPTOR_FILE, introduction.to_json(), mode=0o644)
             runtime.discovery.publish(service)
-            _write_status(
-                root, "starting", service, stage="building-private-routes",
-                networkHealth=runtime.discovery.health().to_document(),
-            )
-            for attempt in range(MAX_SERVICE_ROUTE_ATTEMPTS):
-                candidate: WanServiceHost | None = None
-                try:
-                    _write_status(
-                        root,
-                        "starting",
-                        service,
-                        stage="building-private-routes",
-                        routeAttempt=attempt + 1,
-                        routeAttempts=MAX_SERVICE_ROUTE_ATTEMPTS,
-                        networkHealth=runtime.discovery.health().to_document(),
-                    )
-                    intro_routes, rendezvous_route, reused_required_route = (
-                        select_service_route_set(
-                            selector,
-                            service.service_id,
-                            selected_introductions,
-                            rendezvous_node,
-                            failed_access_ids=access_exclusions,
-                            failed_service_relay_ids=service_relay_exclusions,
-                            failed_middle_ids=middle_exclusions,
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="granger-host-publication",
+            ) as publication_worker:
+                introduction_publication = publication_worker.submit(
+                    runtime.discovery.publish,
+                    introduction,
+                )
+                _write_status(
+                    root, "starting", service, stage="building-private-routes",
+                    networkHealth=runtime.discovery.health().to_document(),
+                )
+                for attempt in range(MAX_SERVICE_ROUTE_ATTEMPTS):
+                    candidate: WanServiceHost | None = None
+                    try:
+                        _write_status(
+                            root,
+                            "starting",
+                            service,
+                            stage="building-private-routes",
+                            routeAttempt=attempt + 1,
+                            routeAttempts=MAX_SERVICE_ROUTE_ATTEMPTS,
+                            networkHealth=runtime.discovery.health().to_document(),
                         )
-                    )
-                    if reused_required_route:
-                        access_exclusions.clear()
-                        service_relay_exclusions.clear()
-                        middle_exclusions.clear()
-                    candidate = WanServiceHost(
-                        identity,
-                        service,
-                        introduction,
-                        tuple(route.route for route in intro_routes),
-                        rendezvous_route.route,
-                        bridge,
-                        timeout=browser_config.timeout,
-                        rendezvous_lifetime=600,
-                    )
-                    candidate.start_background()
-                    candidate.wait_ready(
-                        _service_route_startup_timeout(
-                            browser_config.timeout,
-                            len(intro_routes) + 1,
-                        )
-                    )
-                    host = candidate
-                    break
-                except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
-                    failure_context = ""
-                    if candidate is not None:
-                        access_exclusions.update(candidate.startup_failed_access_ids)
-                        service_relay_exclusions.update(
-                            candidate.startup_failed_service_relay_ids
-                        )
-                        middle_exclusions.update(candidate.startup_failed_middle_ids)
-                        if candidate.startup_failed_role or candidate.startup_failure_stage:
-                            failure_context = (
-                                f":route-role={candidate.startup_failed_role or 'unknown'}"
-                                f":route-stage={candidate.startup_failure_stage or 'unknown'}"
+                        intro_routes, rendezvous_route, reused_required_route = (
+                            select_service_route_set(
+                                selector,
+                                service.service_id,
+                                selected_introductions,
+                                rendezvous_node,
+                                failed_access_ids=access_exclusions,
+                                failed_service_relay_ids=service_relay_exclusions,
+                                failed_middle_ids=middle_exclusions,
+                                failed_route_edges=route_edge_exclusions,
                             )
-                        candidate.stop()
-                    failures.append(
-                        f"{type(error).__name__}:{str(error)[:160]}{failure_context}"
-                    )
-                    if attempt + 1 < MAX_SERVICE_ROUTE_ATTEMPTS:
-                        time.sleep(0.2 * (attempt + 1))
+                        )
+                        if reused_required_route:
+                            access_exclusions.clear()
+                            service_relay_exclusions.clear()
+                            middle_exclusions.clear()
+                            route_edge_exclusions.clear()
+                        candidate = WanServiceHost(
+                            identity,
+                            service,
+                            introduction,
+                            tuple(route.route for route in intro_routes),
+                            rendezvous_route.route,
+                            bridge,
+                            timeout=browser_config.timeout,
+                            rendezvous_lifetime=600,
+                        )
+                        candidate.start_background()
+                        candidate.wait_ready(
+                            _service_route_startup_timeout(
+                                browser_config.timeout,
+                                len(intro_routes) + 1,
+                            )
+                        )
+                        host = candidate
+                        break
+                    except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                        failure_context = ""
+                        if candidate is not None:
+                            access_exclusions.update(candidate.startup_failed_access_ids)
+                            service_relay_exclusions.update(
+                                candidate.startup_failed_service_relay_ids
+                            )
+                            middle_exclusions.update(candidate.startup_failed_middle_ids)
+                            route_edge_exclusions.update(candidate.startup_failed_route_edges)
+                            if candidate.startup_failed_role or candidate.startup_failure_stage:
+                                failure_context = (
+                                    f":route-role={candidate.startup_failed_role or 'unknown'}"
+                                    f":route-stage={candidate.startup_failure_stage or 'unknown'}"
+                                )
+                            candidate.stop()
+                        failures.append(
+                            f"{type(error).__name__}:{str(error)[:160]}{failure_context}"
+                        )
+                        if attempt + 1 < MAX_SERVICE_ROUTE_ATTEMPTS:
+                            time.sleep(0.2 * (attempt + 1))
+                introduction_publication.result()
             if host is None:
                 if generation == 0:
                     raise OverlayRoutingError(
@@ -1449,7 +1463,6 @@ def serve_hosted_service(
                 )
                 time.sleep(min(2.0, 0.25 * recovery_cycles))
                 continue
-            runtime.discovery.publish(introduction)
             recovery_cycles = 0
             generation += 1
             refresh_at = introduction.expires_at - 2 * 60

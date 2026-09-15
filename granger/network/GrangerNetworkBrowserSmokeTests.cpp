@@ -552,9 +552,10 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
     Q_UNUSED(app)
     const QString phase = qEnvironmentVariable("GRANGER_SMOKE_DASHBOARD_PHASE", QStringLiteral("all"));
     if (phase != QStringLiteral("all") && phase != QStringLiteral("visibility")
-        && phase != QStringLiteral("multi-service")) return 2;
+        && phase != QStringLiteral("multi-service") && phase != QStringLiteral("presentation")) return 2;
     const bool visibilityOnly = phase == QStringLiteral("visibility");
     const bool multiServiceOnly = phase == QStringLiteral("multi-service");
+    const bool presentationOnly = phase == QStringLiteral("presentation");
     QJsonObject checks;
     QJsonArray navigations;
     QElapsedTimer budget;
@@ -592,13 +593,14 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
             loop.exec();
         }
         bool online = created == serviceCount;
-        if (!visibilityOnly) {
+        if (!visibilityOnly && !presentationOnly) {
             for (const auto &record : records) {
                 if (record.id.isEmpty()) { online = false; continue; }
                 online = waitForHostedStatus(window, record.id, QStringLiteral("online"), remaining()) && online;
             }
         }
-        checks.insert(visibilityOnly ? QStringLiteral("visibilityServiceCreated")
+        checks.insert(presentationOnly ? QStringLiteral("threeServicesCreated")
+                      : visibilityOnly ? QStringLiteral("visibilityServiceCreated")
                                      : QStringLiteral("threeSimultaneouslyOnline"), online);
         trace.end(online, QStringLiteral("THREE_SERVICE_START_FAILED"));
         BrowserTab *tab = window.currentTabForDiagnostics();
@@ -610,10 +612,28 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
             const auto load = waitForLoad(tab,
                 [&] { window.openAddressForDiagnostics(record.address); }, remaining());
             const QString heading = evaluateJavaScript(tab->page(), QStringLiteral("document.querySelector('h1')?.textContent || ''")).toString();
+            bool assets = false;
+            QElapsedTimer assetWait;
+            assetWait.start();
+            while (load.loaded && assetWait.elapsed() < qMin(10000, remaining()) && !assets) {
+                assets = evaluateJavaScript(tab->page(), QStringLiteral(R"JS(
+                    document.documentElement.dataset.granger === 'hosted'
+                        && document.documentElement.dataset.hostingJson === 'ok'
+                        && getComputedStyle(document.body).backgroundColor === 'rgb(16, 18, 22)'
+                        && Boolean(document.querySelector('img')?.complete)
+                        && document.querySelector('img').naturalWidth > 0
+                )JS")).toBool();
+                if (!assets) {
+                    QEventLoop loop;
+                    QTimer::singleShot(50, &loop, &QEventLoop::quit);
+                    loop.exec();
+                }
+            }
             const QJsonObject runtime = window.grangerNetworkDiagnosticsForDiagnostics();
             navigations.append(QJsonObject{{QStringLiteral("loaded"), load.loaded},
                 {QStringLiteral("expected"), record.address}, {QStringLiteral("actual"), load.address},
                 {QStringLiteral("heading"), heading},
+                {QStringLiteral("assets"), assets},
                 {QStringLiteral("durationMs"), navigationTimer.elapsed()},
                 {QStringLiteral("visibility"), window.hostedServiceForDiagnostics(record.id).visibility},
                 {QStringLiteral("requestError"), runtime.value(QStringLiteral("lastRequestError"))},
@@ -622,10 +642,18 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
                 {QStringLiteral("phase"), phase},
                 {QStringLiteral("checks"), checks}, {QStringLiteral("navigations"), navigations},
                 {QStringLiteral("durationMs"), budget.elapsed()}});
-            return load.loaded && load.address == record.address && heading == QStringLiteral("Granger hosted site");
+            return load.loaded && load.address == record.address
+                && heading == QStringLiteral("Granger hosted site") && assets;
         };
         QString error;
-        if (online && !multiServiceOnly) {
+        if (presentationOnly && online) {
+            const bool stopped = window.stopHostedServiceForDiagnostics(records[1].id, &error);
+            checks.insert(QStringLiteral("publicAndHiddenRecords"), stopped
+                && window.setHostedVisibilityForDiagnostics(records[1].id, QStringLiteral("public"), &error)
+                && window.hostedServiceForDiagnostics(records[1].id).visibility == QStringLiteral("public")
+                && window.hostedServiceForDiagnostics(records[0].id).visibility == QStringLiteral("unlisted"));
+        }
+        if (online && !multiServiceOnly && !presentationOnly) {
             trace.begin(QStringLiteral("public-hidden-public"));
             bool transitions = true;
             for (const auto &visibility : {QStringLiteral("public"), QStringLiteral("unlisted"), QStringLiteral("public")}) {
@@ -673,7 +701,9 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
             QElapsedTimer renderWait;
             renderWait.start();
             while (renderWait.elapsed() < 10000
-                && evaluateJavaScript(settingsTab->page(), QStringLiteral("document.querySelectorAll('.hosting-service-card').length")).toInt() != 3) {
+                && !evaluateJavaScript(settingsTab->page(), QStringLiteral(
+                    "document.querySelectorAll('.hosting-service-card').length === 3 && typeof window.grangerUpdateHosting === 'function'"
+                )).toBool()) {
                 QEventLoop loop;
                 QTimer::singleShot(50, &loop, &QEventLoop::quit);
                 loop.exec();
@@ -708,15 +738,99 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
             checks.insert(QStringLiteral("dashboardPainted"), painted);
             checks.insert(QStringLiteral("screenshot"), painted && window.grab().save(outputPath + QStringLiteral(".png")));
             trace.end(checks.value(QStringLiteral("dashboardCardsAndControls")).toBool(), QStringLiteral("DASHBOARD_GEOMETRY_FAILED"));
-            trace.begin(QStringLiteral("delete-one-preserves-others"));
-            const qint64 second = window.hostedServiceForDiagnostics(records[1].id).pid;
-            const qint64 third = window.hostedServiceForDiagnostics(records[2].id).pid;
-            bool isolated = window.removeHostedServiceForDiagnostics(records[0].id, &error);
-            isolated = window.hostedServiceForDiagnostics(records[1].id).pid == second && isolated;
-            isolated = window.hostedServiceForDiagnostics(records[2].id).pid == third && isolated;
-            isolated = open(records[1]) && open(records[2]) && isolated;
-            checks.insert(QStringLiteral("deleteADoesNotAffectBC"), isolated);
-            trace.end(isolated, QStringLiteral("SERVICE_ISOLATION_FAILED"));
+            if (presentationOnly) {
+                checks.insert(QStringLiteral("publicAndHiddenControls"),
+                    evaluateJavaScript(settingsTab->page(), QStringLiteral(R"JS(
+                    (() => {
+                        const values=[...document.querySelectorAll('.hosting-service-card select[name=visibility]')].map(select=>select.value);
+                        return values.filter(value=>value==='public').length===1
+                            && values.filter(value=>value==='unlisted').length===2;
+                    })()
+                    )JS")).toBool());
+                evaluateJavaScript(settingsTab->page(), QStringLiteral(
+                    "document.querySelector('.service-menu')?.scrollIntoView({block:'center'});"));
+                QEventLoop settle;
+                QTimer::singleShot(200, &settle, &QEventLoop::quit);
+                settle.exec();
+                checks.insert(QStringLiteral("dashboardMenuKeyboardAndBounds"),
+                    evaluateJavaScript(settingsTab->page(), QStringLiteral(R"JS(
+                    (() => {
+                        const menu=document.querySelector('.service-menu');
+                        if(!menu)return false;
+                        window.__hostingDocumentRetained=true;
+                        const trigger=menu.querySelector('summary');
+                        trigger.focus();
+                        const key=k=>menu.dispatchEvent(new KeyboardEvent('keydown',{key:k,bubbles:true}));
+                        key('ArrowDown');
+                        const popup=menu.querySelector('.service-menu-items');
+                        const links=[...popup.querySelectorAll('a')];
+                        const r=popup.getBoundingClientRect();
+                        const opened=menu.open && document.activeElement===links[0]
+                            && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight;
+                        key('End');
+                        const last=document.activeElement===links.at(-1);
+                        key('Escape');
+                        const closed=!menu.open && document.activeElement===trigger;
+                        key('ArrowDown');
+                        return opened && last && closed && menu.open;
+                    })()
+                    )JS")).toBool());
+                const bool stopped = window.stopHostedServiceForDiagnostics(records[0].id, &error);
+                QEventLoop menuPaint;
+                QTimer::singleShot(200, &menuPaint, &QEventLoop::quit);
+                menuPaint.exec();
+                checks.insert(QStringLiteral("statusUpdatePreservesMenuAndDocument"), stopped
+                    && evaluateJavaScript(settingsTab->page(), QStringLiteral(
+                        "window.__hostingDocumentRetained === true && Boolean(document.querySelector('.service-menu[open]'))"
+                    )).toBool());
+                checks.insert(QStringLiteral("menuScreenshot"),
+                    window.grab().save(outputPath + QStringLiteral(".menu.png")));
+            } else {
+                trace.begin(QStringLiteral("delete-one-preserves-others"));
+                const qint64 second = window.hostedServiceForDiagnostics(records[1].id).pid;
+                const qint64 third = window.hostedServiceForDiagnostics(records[2].id).pid;
+                bool isolated = window.removeHostedServiceForDiagnostics(records[0].id, &error);
+                isolated = window.hostedServiceForDiagnostics(records[1].id).pid == second && isolated;
+                isolated = window.hostedServiceForDiagnostics(records[2].id).pid == third && isolated;
+                isolated = open(records[1]) && open(records[2]) && isolated;
+                checks.insert(QStringLiteral("deleteADoesNotAffectBC"), isolated);
+                trace.end(isolated, QStringLiteral("SERVICE_ISOLATION_FAILED"));
+                if (multiServiceOnly) {
+                    trace.begin(QStringLiteral("create-after-delete"));
+                    HostedServiceRecord replacement;
+                    bool replacementDone = false;
+                    bool replacementCreated = false;
+                    window.createHostedStaticAsyncForDiagnostics(
+                        QStringLiteral("Dashboard 4"), source,
+                        [&](bool ok, const HostedServiceRecord &record, const QString &) {
+                            replacementDone = true;
+                            replacementCreated = ok;
+                            if (ok) replacement = record;
+                        });
+                    QElapsedTimer replacementWait;
+                    replacementWait.start();
+                    const int replacementTimeout = remaining();
+                    while (!replacementDone && replacementWait.elapsed() < replacementTimeout) {
+                        QEventLoop loop;
+                        QTimer::singleShot(25, &loop, &QEventLoop::quit);
+                        loop.exec();
+                    }
+                    const bool replacementOnline = replacementCreated
+                        && waitForHostedStatus(window, replacement.id, QStringLiteral("online"), remaining());
+                    const bool survivorsOnline = window.hostedServiceForDiagnostics(records[1].id).pid == second
+                        && window.hostedServiceForDiagnostics(records[2].id).pid == third
+                        && window.hostedServiceForDiagnostics(records[1].id).status == QStringLiteral("online")
+                        && window.hostedServiceForDiagnostics(records[2].id).status == QStringLiteral("online");
+                    const bool replacementReachable = replacementOnline && open(replacement);
+                    checks.insert(QStringLiteral("createNewAfterDelete"), replacementReachable);
+                    checks.insert(QStringLiteral("survivorsHealthyAfterCreate"), survivorsOnline);
+                    trace.end(replacementReachable && survivorsOnline,
+                              QStringLiteral("CREATE_AFTER_DELETE_FAILED"));
+                    if (!replacement.id.isEmpty()) {
+                        window.removeHostedServiceForDiagnostics(replacement.id, &error);
+                    }
+                }
+            }
         }
         for (const auto &record : records) {
             if (!record.id.isEmpty()) window.removeHostedServiceForDiagnostics(record.id, &error);
@@ -724,11 +838,12 @@ int runGrangerHostingDashboardSmoke(QApplication &app, const QString &outputPath
         window.close();
         trace.probe({});
     }
-    const int expectedChecks = visibilityOnly ? 4 : 6;
+    const int expectedChecks = visibilityOnly ? 4 : multiServiceOnly ? 8 : 6;
     bool passed = checks.size() >= expectedChecks;
     for (const auto &check : checks) passed = passed && check.toBool();
     return writeResult(outputPath, {{QStringLiteral("ok"), passed}, {QStringLiteral("checks"), checks},
                                    {QStringLiteral("phase"), phase},
+                                   {QStringLiteral("presentationOnly"), presentationOnly},
                                    {QStringLiteral("durationMs"), budget.elapsed()}, {QStringLiteral("navigations"), navigations}}) ? (passed ? 0 : 1) : 2;
 }
 

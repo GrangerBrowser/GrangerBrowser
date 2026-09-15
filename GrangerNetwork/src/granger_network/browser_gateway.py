@@ -424,13 +424,20 @@ class _WanGateway:
                     response.body,
                     slot.connected.service.canonical_name,
                 )
-            except (GrangerNetworkError, OSError, TimeoutError, ValueError):
-                failed = True
+            except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
+                request_timeout = (
+                    isinstance(error, TimeoutError)
+                    and not slot.connected.session.application_mux.failed
+                )
+                failed = not request_timeout
                 retry_with_fresh_session = (
                     attempt + 1 < maximum_attempts
                     and slot.connected.session.application_mux.failed
                 )
-                if not retry_with_fresh_session:
+                retry_on_healthy_session = (
+                    attempt + 1 < maximum_attempts and request_timeout
+                )
+                if not retry_with_fresh_session and not retry_on_healthy_session:
                     raise
             finally:
                 ready_to_close = self._release_session(
@@ -441,7 +448,7 @@ class _WanGateway:
                 )
                 if ready_to_close is not None:
                     ready_to_close.connected.session.close()
-            if retry_with_fresh_session:
+            if retry_with_fresh_session or retry_on_healthy_session:
                 continue
         raise RendezvousError("idempotent service request retry was exhausted")
 

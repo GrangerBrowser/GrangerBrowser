@@ -1528,5 +1528,15 @@
   "updates.state.verifying": "Проверка установщика",
   "updates.state.staged": "Обновление проверено; требуется подтверждение перезапуска",
   "updates.state.deferred": "Обновление отложено; установка не запланирована",
-  "updates.state.blocked": "Обновление заблокировано"
+  "updates.state.blocked": "Обновление заблокировано",
+  "updates.ask_description": "Загрузка и подготовка обновления только после вашего согласия.",
+  "updates.auto_description": "Загружать и проверять обновления автоматически. Перезапуск требует подтверждения.",
+  "about.build_information": "Информация о сборке",
+  "about.platform": "Платформа / архитектура",
+  "reports.search_view": "Поиск в показанных событиях",
+  "reports.snapshot": "Снимок журнала",
+  "reports.clear_view": "Очистить вид",
+  "reports.preferences": "Параметры журналирования",
+  "network.discovering": "Поиск участников сети",
+  "status.configured_by_proxy": "Прокси настроен"
 }

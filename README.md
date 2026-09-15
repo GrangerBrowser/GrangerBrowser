@@ -247,13 +247,13 @@ The installer and portable download use the same complete Qt, WebEngine, ICU, Vi
 | Windows 10 x64 | Supported target, testing coverage may vary |
 | Windows ARM64 | Not currently provided |
 | Windows x86 | Not supported |
-| Linux x86_64 | Native local RC in development; no public download |
+| Linux x86_64 | Release target; public artifact pending final acceptance |
 | macOS | Not currently supported |
 | Windows 7 / 8 / 8.1 | Not supported |
 
-Granger currently ships publicly as a **Windows x64 browser**. The Linux target
-is native C++/Qt code, not Wine, but still requires independent physical-host
-acceptance before any public release.
+The next release targets **Windows 10/11 x64** and **Linux x86_64**. Linux uses
+native C++/Qt code, not Wine. No artifact is public until its release acceptance
+and checksum verification are complete.
 
 ---
 
@@ -540,7 +540,8 @@ Build and package:
 
 ```powershell
 .\scripts\build-release.ps1 `
-    -QtRoot "$env:USERPROFILE\Qt\6.11.2\msvc2022_64"
+    -QtRoot "$env:USERPROFILE\Qt\6.11.2\msvc2022_64" `
+    -WanBundleDirectory "<fresh-signed-production-bundle>"
 ```
 
 For complete instructions, see:

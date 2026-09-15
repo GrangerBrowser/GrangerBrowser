@@ -18,7 +18,7 @@ from granger_network.descriptor import ServiceDescriptor
 from granger_network.errors import (
     GrangerNetworkError, IntroductionOfflineError, OverlayRoutingError, PeerRpcError, ProtocolError,
 )
-from granger_network.http_bridge import LoopbackHttpBridge, LoopbackHttpTarget
+from granger_network.http_bridge import HttpResult, LoopbackHttpBridge, LoopbackHttpTarget
 from granger_network.hosting import StaticSiteBridge
 from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
@@ -203,7 +203,7 @@ class WanOperationTimeoutTests(unittest.TestCase):
                 host._serve_rendezvous_session(Mock(), initial_circuit=prepared)
         prepared.close.assert_called_once()
 
-    def test_introduction_request_uses_the_configured_operation_timeout(self) -> None:
+    def test_introduction_request_covers_a_serialized_heartbeat_round_trip(self) -> None:
         identities = [ServiceIdentity.generate() for _ in range(4)]
         capabilities = (("access",), ("entry",), ("middle",), ("introduction",))
         descriptors = tuple(
@@ -245,8 +245,8 @@ class WanOperationTimeoutTests(unittest.TestCase):
 
             @staticmethod
             def assert_timeout() -> None:
-                if connection.timeout != 0.25:
-                    raise AssertionError("WAN control request was left unbounded")
+                if connection.timeout != 0.5:
+                    raise AssertionError("WAN introduction delivery budget was not applied")
 
         class FakeCircuit:
             endpoint = SimpleNamespace(
@@ -375,6 +375,62 @@ class WanOperationTimeoutTests(unittest.TestCase):
             self.assertEqual(host.startup_failure_stage, "authentication")
         finally:
             host.stop()
+
+    def test_extension_failure_is_scoped_to_directed_route_edge(self) -> None:
+        identities = [ServiceIdentity.generate() for _ in range(5)]
+        capabilities = (
+            ("access",),
+            ("service-relay",),
+            ("middle",),
+            ("introduction",),
+            ("rendezvous",),
+        )
+        descriptors = tuple(
+            NodeDescriptor.create(
+                identity,
+                RendezvousEndpoint("127.0.0.1", available_port()),
+                capability,
+                RelayPolicy(enabled=True, max_bandwidth_kib_per_second=64 * 1024),
+                lifetime=3600,
+            )
+            for identity, capability in zip(identities, capabilities, strict=True)
+        )
+        service_identity = ServiceIdentity.generate()
+        service = ServiceDescriptor.create_remote(
+            service_identity, "wan-service", lifetime=1800,
+        )
+        introduction = IntroductionDescriptor.create(
+            service_identity, service, [descriptors[3].node_id],
+            sequence=1, lifetime=900,
+        )
+        route = tuple(zip(
+            descriptors[:4],
+            ("access", "service-relay", "middle", "introduction"),
+            strict=True,
+        ))
+        host = WanServiceHost(
+            service_identity,
+            service,
+            introduction,
+            route,
+            tuple(zip(
+                (*descriptors[:3], descriptors[4]),
+                ("access", "service-relay", "middle", "rendezvous"),
+                strict=True,
+            )),
+            SimpleNamespace(), timeout=0.25,
+        )
+        error = TimeoutError("simulated directed transport failure")
+        error.circuit_failure_hop_index = 2
+        error.circuit_failure_stage = "extension"
+
+        host._record_startup_failure(route, error)
+
+        self.assertEqual(
+            host.startup_failed_route_edges,
+            frozenset({(descriptors[1].node_id, descriptors[2].node_id)}),
+        )
+        self.assertEqual(host.startup_failed_middle_ids, frozenset())
 
 
 class WanServiceTests(unittest.TestCase):
@@ -801,6 +857,61 @@ class WanServiceTests(unittest.TestCase):
             if replacement is not None:
                 replacement.stop()
             host.stop()
+
+    def test_gateway_retries_get_timeout_on_the_same_healthy_session(self) -> None:
+        gateway = _WanGateway.__new__(_WanGateway)
+        gateway._runtime = object()
+        gateway._resolver = object()
+        gateway._route_attempts = 1
+        gateway._timeout = 3.0
+        gateway._sessions = {}
+        gateway._session_locks = tuple(threading.Lock() for _ in range(4))
+        gateway._rotation_policy = CircuitRotationPolicy()
+        gateway._rotation_count = 0
+        gateway._closed = False
+        gateway._lock = threading.Lock()
+
+        session = Mock()
+        session.application_mux.failed = False
+        session.fetch.side_effect = [
+            TimeoutError("one application stream expired"),
+            HttpResult(200, "OK", {"content-type": "text/css"}, CSS),
+        ]
+        connected = SimpleNamespace(service=SimpleNamespace(canonical_name="asset.granger"), session=session)
+        with patch("granger_network.browser_gateway.connect_service", return_value=connected) as connect:
+            response = gateway.fetch_gateway("asset.granger", "/style.css", "GET", {}, b"")
+
+        self.assertEqual(response.body, CSS)
+        self.assertEqual(session.fetch.call_count, 2)
+        connect.assert_called_once()
+        session.close.assert_not_called()
+        self.assertIs(gateway._sessions["asset.granger"].connected, connected)
+
+    def test_gateway_does_not_retry_post_timeout_or_discard_a_healthy_session(self) -> None:
+        gateway = _WanGateway.__new__(_WanGateway)
+        gateway._runtime = object()
+        gateway._resolver = object()
+        gateway._route_attempts = 1
+        gateway._timeout = 3.0
+        gateway._sessions = {}
+        gateway._session_locks = tuple(threading.Lock() for _ in range(4))
+        gateway._rotation_policy = CircuitRotationPolicy()
+        gateway._rotation_count = 0
+        gateway._closed = False
+        gateway._lock = threading.Lock()
+
+        session = Mock()
+        session.application_mux.failed = False
+        session.fetch.side_effect = TimeoutError("one application stream expired")
+        connected = SimpleNamespace(service=SimpleNamespace(canonical_name="post.granger"), session=session)
+        with patch("granger_network.browser_gateway.connect_service", return_value=connected) as connect:
+            with self.assertRaises(TimeoutError):
+                gateway.fetch_gateway("post.granger", "/message", "POST", {}, b"payload")
+
+        session.fetch.assert_called_once()
+        connect.assert_called_once()
+        session.close.assert_not_called()
+        self.assertIs(gateway._sessions["post.granger"].connected, connected)
 
     def test_static_dynamic_and_concurrent_requests_stay_inside_overlay(self) -> None:
         (

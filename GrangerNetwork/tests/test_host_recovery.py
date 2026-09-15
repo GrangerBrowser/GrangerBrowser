@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import ExitStack
@@ -18,6 +19,7 @@ from granger_network.errors import (
     ProtocolError,
 )
 from granger_network.identity import ServiceIdentity
+from granger_network.introduction import IntroductionDescriptor
 from granger_network.peer import node_id_from_public_key
 
 
@@ -167,6 +169,97 @@ class HostRecoveryTests(unittest.TestCase):
                 self.assertEqual(result["hosts"], [])
                 self.assertEqual(result["sleeps"], [])
 
+    def test_browser_introduction_publication_overlaps_route_startup(self):
+        with tempfile.TemporaryDirectory(prefix="granger-host-pipeline-") as temporary:
+            root = Path(temporary)
+            identity = ServiceIdentity.generate()
+            service = ServiceDescriptor.create_remote(
+                identity,
+                "pipeline-test",
+                lifetime=86400,
+            )
+            peers = tuple(
+                SimpleNamespace(
+                    node_id=node_id_from_public_key(
+                        ServiceIdentity.generate().public_key_bytes
+                    )
+                )
+                for _ in range(3)
+            )
+            route = SimpleNamespace(route=tuple((peer, "middle") for peer in peers))
+            introduction_started = threading.Event()
+            route_ready = threading.Event()
+            discovery = Mock()
+            discovery.route_candidates.return_value = peers
+            discovery.health.return_value.to_document.return_value = {
+                "state": "CONNECTED",
+                "dhtReady": True,
+            }
+
+            def publish(record):
+                if isinstance(record, IntroductionDescriptor):
+                    introduction_started.set()
+                    if not route_ready.wait(1):
+                        raise AssertionError("route startup did not overlap introduction publication")
+                return 3
+
+            discovery.publish.side_effect = publish
+            runtime = SimpleNamespace(identity=identity, discovery=discovery)
+            host = Mock()
+            host.recovery_requested = False
+            host.errors = []
+
+            def wait_ready(_timeout):
+                if not introduction_started.wait(1):
+                    raise AssertionError("introduction publication was not started")
+                route_ready.set()
+
+            host.wait_ready.side_effect = wait_ready
+            host.wait.side_effect = Finished()
+            config = SimpleNamespace(
+                kind="static",
+                visibility="unlisted",
+                entry_page="index.html",
+                max_file_bytes=1024,
+            )
+            browser_config = SimpleNamespace(
+                version=2,
+                generation=1,
+                issued_at=int(time.time()),
+                expires_at=int(time.time()) + 3600,
+                bootstrap_path=root / "bootstrap.json",
+                authority_pin_path=root / "pin",
+                timeout=8,
+                replication_factor=3,
+                minimum_replicas=2,
+            )
+
+            with ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(hosting, "load_hosted_service", return_value=(config, identity, service))
+                )
+                stack.enter_context(
+                    patch.object(hosting, "load_browser_wan_config", return_value=browser_config)
+                )
+                stack.enter_context(patch.object(hosting, "load_discovery_runtime", return_value=runtime))
+                stack.enter_context(patch.object(hosting, "_ensure_publication_snapshot"))
+                stack.enter_context(patch.object(hosting, "StaticSiteBridge"))
+                stack.enter_context(patch.object(hosting, "WanRouteSelector"))
+                stack.enter_context(
+                    patch.object(
+                        hosting,
+                        "select_service_route_set",
+                        return_value=((route, route), route, False),
+                    )
+                )
+                stack.enter_context(patch.object(hosting, "WanServiceHost", return_value=host))
+                with self.assertRaises(Finished):
+                    hosting.serve_hosted_service(root, root / "wan.json")
+
+            self.assertTrue(introduction_started.is_set())
+            self.assertTrue(route_ready.is_set())
+            host.stop.assert_called_once_with()
+
     def test_identity_failure_is_not_retried(self):
         for kind in ("cli", "browser"):
             with self.subTest(kind=kind):
@@ -215,6 +308,7 @@ class HostRecoveryTests(unittest.TestCase):
             failed_host.startup_failed_access_ids = frozenset({peers[0].node_id})
             failed_host.startup_failed_service_relay_ids = frozenset()
             failed_host.startup_failed_middle_ids = frozenset()
+            failed_host.startup_failed_route_edges = frozenset()
             failed_host.startup_failed_role = "access"
             failed_host.startup_failure_stage = "authentication"
             select = Mock(side_effect=[((route, route), route, False), Finished()])

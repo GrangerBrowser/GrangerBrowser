@@ -29,8 +29,14 @@ Build the local AppImage from the repository root:
 
 ```bash
 export QT_ROOT="$HOME/Qt/6.11.2/gcc_64"
+export GRANGER_NETWORK_RELEASE_BUNDLE="/path/to/fresh-signed-production-bundle"
 scripts/build-linux-appimage.sh
 ```
+
+Release AppImages must be built from a clean committed checkout. An exported
+exact-commit source tree without Git metadata must provide its commit through
+`GRANGER_SOURCE_HEAD`; the build records that identity in its report and
+deployment metadata.
 
 Generated files remain below ignored `output/` storage:
 

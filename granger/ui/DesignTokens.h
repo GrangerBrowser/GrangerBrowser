@@ -25,8 +25,10 @@ public:
     inline static constexpr const char *accentColor = "#d95661";
     inline static constexpr const char *accentHoverColor = "#e96872";
     inline static constexpr const char *accentSoftColor = "rgba(217,86,97,0.14)";
+    inline static constexpr const char *primaryFillColor = "#a63b4c";
+    inline static constexpr const char *primaryFillHoverColor = "#bd4354";
     inline static constexpr const char *warningColor = "#e0ab55";
-    inline static constexpr const char *errorColor = "#e45d68";
+    inline static constexpr const char *errorColor = "#f28c79";
     inline static constexpr const char *successColor = "#50ba8a";
     inline static constexpr const char *infoColor = "#68a7d8";
     inline static constexpr const char *scrollbarThumbColor = "#626671";
@@ -36,7 +38,9 @@ public:
     inline static constexpr const char *cardShadow = "0 8px 24px rgba(0,0,0,0.24)";
 
     inline static constexpr const char *uiFontFamily =
-        "\"Segoe UI Variable\", \"Segoe UI\", sans-serif";
+        "\"Segoe UI Variable\", \"Segoe UI\", \"Noto Sans\", sans-serif";
+    inline static constexpr const char *monoFontFamily =
+        "\"Cascadia Mono\", \"Consolas\", \"DejaVu Sans Mono\", monospace";
     inline static constexpr int fontSizeCaption = 11;
     inline static constexpr int fontSizeBody = 13;
     inline static constexpr int fontSizeControl = 13;
@@ -94,7 +98,7 @@ public:
     inline static constexpr int controlHeight = 40;
     inline static constexpr int controlHeightLg = 44;
     inline static constexpr int radiusSm = 6;
-    inline static constexpr int controlRadius = 9;
+    inline static constexpr int controlRadius = 8;
     inline static constexpr int radiusLg = 12;
     inline static constexpr int popupRadius = 14;
     inline static constexpr int scrollbarWidth = 8;
@@ -148,6 +152,8 @@ public:
             {"__ACCENT__", accentColor},
             {"__ACCENT_HOVER__", accentHoverColor},
             {"__ACCENT_SOFT__", accentSoftColor},
+            {"__PRIMARY_FILL__", primaryFillColor},
+            {"__PRIMARY_FILL_HOVER__", primaryFillHoverColor},
             {"__WARNING__", warningColor},
             {"__ERROR__", errorColor},
             {"__SUCCESS__", successColor},
@@ -157,10 +163,12 @@ public:
             {"__SCROLLBAR_THUMB_ACTIVE__", scrollbarThumbActiveColor},
             {"__POPUP_SHADOW__", popupShadow}, {"__CARD_SHADOW__", cardShadow},
             {"__FONT_UI__", uiFontFamily},
+            {"__FONT_MONO__", monoFontFamily},
             {"__FONT_CAPTION__", "11px"}, {"__FONT_BODY__", "13px"},
             {"__FONT_CONTROL__", "13px"}, {"__FONT_SECTION__", "18px"},
             {"__FONT_PAGE_TITLE__", "32px"},
-            {"__RADIUS_SM__", "6px"}, {"__CONTROL_RADIUS__", "9px"},
+            {"__RADIUS_SM__", "6px"}, {"__CONTROL_RADIUS__", "8px"},
+            {"__SECTION_PADDING__", "18px"}, {"__SECTION_RADIUS__", "8px"},
             {"__RADIUS_LG__", "12px"}, {"__POPUP_RADIUS__", "14px"},
             {"__ADDRESS_BAR_HEIGHT__", "42px"},
             {"__ADDRESS_BAR_CONTENT_HEIGHT__", "40px"},

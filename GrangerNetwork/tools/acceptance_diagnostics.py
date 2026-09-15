@@ -1,4 +1,5 @@
 """Bounded, opt-in process diagnostics collected before acceptance termination."""
+import argparse
 from datetime import datetime, timezone
 import json
 import os
@@ -115,3 +116,35 @@ def run_traced(command, *, cwd, env, directory, qt_path, timeout=300):
             stream.seek(max(0, stream.tell() - 4000))
             tails.append(stream.read(4000).decode("utf-8", errors="replace"))
         return subprocess.CompletedProcess(command, process.returncode, *tails)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run one acceptance process with bounded pre-termination evidence",
+    )
+    parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--qt-trace", type=Path, required=True)
+    parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    options = parser.parse_args(argv)
+    command = list(options.command)
+    if command[:1] == ["--"]:
+        command.pop(0)
+    if not command:
+        parser.error("acceptance command is required")
+    try:
+        result = run_traced(
+            command,
+            cwd=Path.cwd(),
+            env=os.environ.copy(),
+            directory=options.directory,
+            qt_path=options.qt_trace,
+            timeout=options.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return 124
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

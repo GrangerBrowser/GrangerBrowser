@@ -1528,5 +1528,15 @@
   "updates.state.verifying": "Verifying installer",
   "updates.state.staged": "Verified update staged; restart confirmation required",
   "updates.state.deferred": "Update postponed; no installation scheduled",
-  "updates.state.blocked": "Update blocked"
+  "updates.state.blocked": "Update blocked",
+  "updates.ask_description": "Download and prepare an update only after your approval.",
+  "updates.auto_description": "Automatically download and verify updates. Restart still requires confirmation.",
+  "about.build_information": "Build information",
+  "about.platform": "Platform / architecture",
+  "reports.search_view": "Search displayed events",
+  "reports.snapshot": "Snapshot",
+  "reports.clear_view": "Clear view",
+  "reports.preferences": "Logging preferences",
+  "network.discovering": "Discovering peers",
+  "status.configured_by_proxy": "Proxy configured"
 }

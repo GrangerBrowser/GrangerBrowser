@@ -241,6 +241,7 @@ class WanRouteSelector:
         excluded_access_ids: set[str] | None = None,
         excluded_service_relay_ids: set[str] | None = None,
         excluded_middle_ids: set[str] | None = None,
+        excluded_route_edges: set[tuple[str, str]] | None = None,
     ) -> WanRouteSelection:
         if final_role not in {"introduction", "rendezvous"}:
             raise OverlayRoutingError("service route final role is invalid")
@@ -262,6 +263,10 @@ class WanRouteSelector:
         }
         blocked_middles = used | {
             validate_node_id(node_id) for node_id in (excluded_middle_ids or ())
+        }
+        blocked_edges = {
+            (validate_node_id(left), validate_node_id(right))
+            for left, right in (excluded_route_edges or ())
         }
         accesses = [
             node
@@ -297,6 +302,11 @@ class WanRouteSelector:
                         continue
                     nodes = (access, guard, middle, final_node)
                     if len({node.node_id for node in nodes}) != len(nodes):
+                        continue
+                    if any(
+                        (left.node_id, right.node_id) in blocked_edges
+                        for left, right in zip(nodes, nodes[1:])
+                    ):
                         continue
                     groups = {_network_group(node) for node in nodes}
                     choices.append(
@@ -336,12 +346,14 @@ def select_service_route_set(
     failed_access_ids: set[str] | None = None,
     failed_service_relay_ids: set[str] | None = None,
     failed_middle_ids: set[str] | None = None,
+    failed_route_edges: set[tuple[str, str]] | None = None,
 ) -> tuple[tuple[WanRouteSelection, ...], WanRouteSelection, bool]:
     """Retry transient failure hints without relaxing the selector's route policy."""
     blocked_ids = set(failed_route_ids or ())
     blocked_accesses = set(failed_access_ids or ())
     blocked_service_relays = set(failed_service_relay_ids or ())
     blocked_middles = set(failed_middle_ids or ())
+    blocked_edges = set(failed_route_edges or ())
     if blocked_ids and (blocked_accesses or blocked_service_relays or blocked_middles):
         raise OverlayRoutingError("service route exclusions are ambiguous")
 
@@ -350,6 +362,7 @@ def select_service_route_set(
         access_ids: set[str] | None,
         service_relay_ids: set[str] | None,
         middle_ids: set[str] | None,
+        route_edges: set[tuple[str, str]] | None,
     ) -> tuple[tuple[WanRouteSelection, ...], WanRouteSelection]:
         introductions = tuple(
             selector.service_route(
@@ -360,6 +373,7 @@ def select_service_route_set(
                 excluded_access_ids=access_ids,
                 excluded_service_relay_ids=service_relay_ids,
                 excluded_middle_ids=middle_ids,
+                excluded_route_edges=route_edges,
             )
             for node in introduction_nodes
         )
@@ -371,6 +385,7 @@ def select_service_route_set(
             excluded_access_ids=access_ids,
             excluded_service_relay_ids=service_relay_ids,
             excluded_middle_ids=middle_ids,
+            excluded_route_edges=route_edges,
         )
         return introductions, rendezvous
 
@@ -380,6 +395,7 @@ def select_service_route_set(
             blocked_accesses,
             blocked_service_relays,
             blocked_middles,
+            blocked_edges,
         )
         return introductions, rendezvous, False
     except OverlayRoutingError:
@@ -388,7 +404,8 @@ def select_service_route_set(
             or blocked_accesses
             or blocked_service_relays
             or blocked_middles
+            or blocked_edges
         ):
             raise
-    introductions, rendezvous = select(None, None, None, None)
+    introductions, rendezvous = select(None, None, None, None, None)
     return introductions, rendezvous, True

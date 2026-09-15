@@ -34,13 +34,30 @@ foreach ($artifact in @($installerPath, $appImagePath)) {
     }
 }
 
-$trackedChanges = & git -C $projectRoot status --porcelain --untracked-files=no
-if ($LASTEXITCODE -ne 0 -or $trackedChanges) {
-    throw 'Commit tracked source changes before creating the combined release.'
+$sourceChanges = & git -C $projectRoot status --porcelain=v1 --untracked-files=all
+if ($LASTEXITCODE -ne 0 -or $sourceChanges) {
+    throw 'Commit all source changes before creating the combined release.'
 }
 $head = (& git -C $projectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
     throw 'Unable to resolve the source revision.'
+}
+$installerManifestPath = Join-Path ([IO.Path]::GetDirectoryName($installerPath)) 'granger-installer-manifest.json'
+$linuxBuildReportPath = Join-Path ([IO.Path]::GetDirectoryName($appImagePath)) 'linux-build-report.json'
+if (-not (Test-Path -LiteralPath $installerManifestPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $linuxBuildReportPath -PathType Leaf)) {
+    throw 'Release provenance metadata is missing beside an input artifact.'
+}
+$installerManifest = Get-Content -LiteralPath $installerManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$linuxBuildReport = Get-Content -LiteralPath $linuxBuildReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([string]$installerManifest.sourceCommit -ne $head -or
+    [string]$linuxBuildReport.sourceHead -ne $head -or
+    [string]$installerManifest.version -ne $Version -or
+    [string]$linuxBuildReport.artifact -ne [IO.Path]::GetFileName($appImagePath) -or
+    -not ([string]$linuxBuildReport.sha256).Equals(
+        (Get-FileHash -LiteralPath $appImagePath -Algorithm SHA256).Hash,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Release artifacts do not match the exact source commit and requested version.'
 }
 
 $rootName = "GrangerBrowser-v$Version"

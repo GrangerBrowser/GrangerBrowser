@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$GifPath = "Banner_Installer/Emma.gif",
-    [string]$PackageArchive,
+    [Parameter(Mandatory)][string]$PackageArchive,
     [string]$BuildDirectory = "build/installer",
     [string]$OutputDirectory = "output/distribution",
     [switch]$Clean
@@ -24,16 +24,21 @@ if ($gifBytes.Length -lt 6 -or [Text.Encoding]::ASCII.GetString($gifBytes, 0, 6)
     throw "Installer branding asset is not a valid GIF."
 }
 
-if ([string]::IsNullOrWhiteSpace($PackageArchive)) {
-    $candidate = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'output/distribution') `
-        -Filter 'Granger-Browser-v*-windows-x64.zip' -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $candidate) { throw "Pass -PackageArchive for the canonical portable ZIP." }
-    $PackageArchive = $candidate.FullName
+$sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
+    throw "Unable to resolve the installer source revision."
+}
+$sourceChanges = @(& git -C $projectRoot status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect the installer source tree." }
+if ($sourceChanges.Count -ne 0) {
+    throw "Installer release builds require a clean committed source tree."
 }
 $manifest = & (Join-Path $PSScriptRoot 'New-InstallerManifest.ps1') `
     -PackageArchive $PackageArchive -OutputDirectory $OutputDirectory
 if (-not $manifest.OK) { throw "Installer manifest generation failed." }
+if ([string]$manifest.SourceCommit -ne $sourceHead) {
+    throw "Portable archive source does not match installer source HEAD $sourceHead."
+}
 
 $cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrWhiteSpace($cmake)) {

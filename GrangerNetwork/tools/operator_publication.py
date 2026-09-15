@@ -2,6 +2,8 @@
 
 No authority or node private identity is loaded by this tool. Runtime, systemd,
 firewall and persistent peer state are never replaced by a publication update.
+The existing service is restarted only when a newer verified generation must be
+loaded into its in-memory discovery pool.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -23,6 +26,7 @@ from granger_network.wan_config import _ProvisionLock, load_authority_pin, load_
 from granger_network.wan_config_recovery import export_public_config
 
 FILES = frozenset({'browser-wan.json', 'bootstrap-set.json', 'bootstrap-authority.pin', 'config-authority.pin'})
+ACTIVATION_TIMEOUT_SECONDS = 12
 
 
 def _load(path):
@@ -55,6 +59,54 @@ def _pins(root, expected):
     for name in ('bootstrap-authority.pin', 'config-authority.pin'):
         if load_authority_pin(root / name) != decode_base64url(expected[name]):
             raise ValueError('public trust mismatch')
+
+
+def _activation_ready(node, node_id, generation, state, status_path):
+    try:
+        status = _load(status_path)
+        reseed = _load(state / 'reseed' / 'state.json')
+        accepted = any(
+            record.get('generation') == generation
+            for record in reseed.get('authorities', {}).values()
+            if isinstance(record, dict)
+        )
+        active = subprocess.run(
+            ['systemctl', 'is-active', '--quiet', f'granger-node@{node}.service'],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        ).returncode == 0
+        return (
+            active
+            and accepted
+            and status.get('nodeId') == node_id
+            and 0 <= time.time() - status_path.stat().st_mtime <= 30
+        )
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+        return False
+
+
+def _activate(node, node_id, generation, state, status_path):
+    if _activation_ready(node, node_id, generation, state, status_path):
+        return False
+    result = subprocess.run(
+        ['systemctl', 'restart', f'granger-node@{node}.service'],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=ACTIVATION_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode:
+        raise OSError('operator generation activation failed')
+    deadline = time.monotonic() + ACTIVATION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if _activation_ready(node, node_id, generation, state, status_path):
+            return True
+        time.sleep(0.25)
+    raise OSError('operator generation activation timed out')
 
 
 def handle(request):
@@ -99,13 +151,14 @@ def _handle(request):
         if request['configSha256'] != old.sha256:
             raise ValueError('generation equivocation')
         export_public_config(public / 'browser-wan.json', public / 'config-authority.pin')
-        return dict(ok=True, generation=old.generation, reused=True)
+        activated = _activate(node, descriptor.node_id, old.generation, state, status_path)
+        return dict(ok=True, generation=old.generation, reused=True, activated=activated)
     decoded = {name: decode_base64url(data) for name, data in request['files'].items()}
     if any(len(data) > 256 * 1024 or b'privateKey' in data for data in decoded.values()):
         raise ValueError('public member bounds')
     if hashlib.sha256(decoded['browser-wan.json']).hexdigest() != request['configSha256']:
         raise ValueError('public digest')
-    # Stable lock inode survives exchange and process death. No node process is stopped.
+    # Stable lock inode survives exchange and process death.
     with _ProvisionLock(public.parent / '.publication.lock', timeout=0):
         with tempfile.TemporaryDirectory(prefix='.public-staged-', dir=public.parent) as temporary:
             staged = Path(temporary) / 'bundle'
@@ -137,4 +190,5 @@ def _handle(request):
                 raise ValueError('concurrent publication changed')
             _sync_directory(staged)
             _exchange(staged, public)
-    return dict(ok=True, generation=new.generation, reused=False)
+        activated = _activate(node, descriptor.node_id, new.generation, state, status_path)
+    return dict(ok=True, generation=new.generation, reused=False, activated=activated)

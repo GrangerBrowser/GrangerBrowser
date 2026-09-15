@@ -5,9 +5,9 @@ grant permission to copy, modify, or distribute Granger Browser.
 
 ## Current Status
 
-The repository and its GitHub Release assets are public. No project-wide source
-license has been selected, so public access must not be interpreted as a grant
-to copy, modify, or redistribute project-authored code. The repository owner
+Public access to the repository or separately published Release assets must not
+be interpreted as a grant to copy, modify, or redistribute project-authored
+code. No project-wide source license has been selected. The repository owner
 remains responsible for the source, asset, Qt, Tor, I2P, and other third-party
 distribution obligations listed below.
 
@@ -32,9 +32,9 @@ distribution obligations listed below.
 4. Use the pinned official PurpleI2P i2pd archive described in `BUILDING.md`,
    verify its checksum, and retain the BSD-3-Clause notice.
 5. Run `scripts/build-release.ps1` from a clean tree. Publish only the canonical
-   `Granger-Browser-<version>-windows-x64.zip` asset accepted by that script,
-   together with its `.sha256` checksum. GitHub-generated source archives are
-   not portable packages and may contain Git LFS pointer files.
+   `Granger-Browser-v<version>-windows-x64.zip` asset created from the accepted
+   canonical package, together with its `.sha256` checksum. GitHub-generated
+   source archives are not portable packages and may contain Git LFS pointer files.
 6. Review the generated package manifest and confirm that it contains no user
    profile, credentials, bridge data, logs, crash dumps, or machine-specific
    paths.

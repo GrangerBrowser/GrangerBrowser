@@ -6,8 +6,10 @@
 #include <QFile>
 #include <QHash>
 #include <QPair>
+#include <QSysInfo>
 #include <QUrl>
 #include <QVector>
+#include <QtWebEngineCore/qtwebenginecoreglobal.h>
 
 namespace granger {
 namespace {
@@ -28,7 +30,9 @@ QString s(const QString &value)
 
 QString messageBlock(const QString &message)
 {
-    return message.trimmed().isEmpty() ? QString() : QStringLiteral("<div class=\"msg\">%1</div>").arg(e(message));
+    return message.trimmed().isEmpty() ? QString() : QStringLiteral(
+        "<div class=\"msg ui-notice\" role=\"status\"><span>%1</span><button class=\"ui-notice-dismiss\" type=\"button\" aria-label=\"%2\" title=\"%2\">&times;</button></div>")
+            .arg(e(message), e(t("common.close")));
 }
 
 QString infoRow(const QString &label, const QString &value, const QString &valueId = QString())
@@ -84,6 +88,7 @@ button:active,.button:active{transform:translateY(1px)}button:focus-visible,.but
 --ds-focus:__FOCUS__;--ds-text:__TEXT__;--ds-text-secondary:__SECONDARY__;
 --ds-text-muted:__MUTED__;--ds-accent:__ACCENT__;--ds-accent-hover:__ACCENT_HOVER__;
 --ds-accent-soft:__ACCENT_SOFT__;--ds-danger:__ERROR__;--ds-warning:__WARNING__;
+--ds-primary-fill:__PRIMARY_FILL__;--ds-primary-hover:__PRIMARY_FILL_HOVER__;
 --ds-success:__SUCCESS__;--ds-info:__INFO__;--ds-radius-sm:__RADIUS_SM__;
 --ds-radius-md:__CONTROL_RADIUS__;--ds-radius-lg:__RADIUS_LG__;
 --ds-radius-popup:__POPUP_RADIUS__;--ds-control-height:__CONTROL_HEIGHT__;
@@ -121,7 +126,7 @@ input:hover,select:hover,textarea:hover{border-color:#4d505b;background:var(--ds
 input:focus-visible,select:focus-visible,textarea:focus-visible{
 outline:0;border-color:var(--ds-focus);box-shadow:0 0 0 3px rgba(237,116,125,.16)
 }
-input:disabled,select:disabled,textarea:disabled{cursor:not-allowed;opacity:.58}
+input:disabled,select:disabled,textarea:disabled{cursor:not-allowed;color:var(--ds-text-muted);opacity:.85}
 button,.button{
 display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:var(--ds-control-height);
 padding:8px 14px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-md);
@@ -132,11 +137,11 @@ color var(--ds-fast) ease,box-shadow var(--ds-fast) ease,transform __PRESSED_DUR
 button:hover,.button:hover{border-color:#4d505b;background:var(--ds-bg-hover)}
 button:active,.button:active{transform:translateY(1px);background:var(--ds-bg-active)}
 button:focus-visible,.button:focus-visible{outline:2px solid var(--ds-focus);outline-offset:2px}
-button:disabled,.button[aria-disabled=true]{cursor:not-allowed;opacity:.46;transform:none}
-button.primary,.button.primary{border-color:var(--ds-accent);background:var(--ds-accent);color:#fff}
-button.primary:hover,.button.primary:hover{border-color:var(--ds-accent-hover);background:var(--ds-accent-hover)}
+button:disabled,.button[aria-disabled=true]{cursor:not-allowed;color:var(--ds-text-muted);opacity:.8;transform:none}
+button.primary,.button.primary{border-color:var(--ds-primary-fill);background:var(--ds-primary-fill);color:#fff}
+button.primary:hover,.button.primary:hover{border-color:var(--ds-primary-hover);background:var(--ds-primary-hover)}
 button.secondary,.button.secondary{background:transparent}
-button.danger,.button.danger{color:#ff9ba4}
+button.danger,.button.danger{color:var(--ds-danger)}
 button.danger-fill,.button.danger-fill{border-color:var(--ds-danger);background:var(--ds-danger);color:#fff}
 .compact{min-height:var(--ds-control-height-sm);padding:5px 10px}
 input[type=checkbox]{
@@ -166,7 +171,7 @@ summary:hover{color:#fff}
 summary:focus-visible{outline:2px solid var(--ds-focus);outline-offset:3px;border-radius:var(--ds-radius-sm)}
 .msg,.warning,.cookie-confirm{border-radius:var(--ds-radius-sm);background:var(--ds-bg-surface)}
 .msg{border:1px solid var(--ds-border);border-left:3px solid var(--ds-accent)}
-.warning{border:1px solid var(--ds-border);border-left:3px solid var(--ds-warning)}
+.warning{border:0;border-left:2px solid var(--ds-warning);background:color-mix(in srgb,var(--ds-warning) 5%,var(--ds-bg-surface))}
 .warning.error{border-left-color:var(--ds-danger)}
 .danger-confirm-form{display:grid;gap:0;max-width:100%;margin-top:14px}
 .danger-form-message{min-height:40px;margin:10px 0 0;padding:9px 11px;border:1px solid var(--ds-border);border-left:3px solid var(--ds-danger);border-radius:var(--ds-radius-sm);background:var(--ds-bg-surface);color:var(--ds-text)}
@@ -175,12 +180,13 @@ summary:focus-visible{outline:2px solid var(--ds-focus);outline-offset:3px;borde
 .empty-state{justify-items:center;padding:46px 24px;text-align:center;border-color:var(--ds-border-subtle)}
 .empty-state-icon{border-radius:var(--ds-radius-md);background:var(--ds-accent-soft)}
 pre{border-color:var(--ds-border);border-radius:var(--ds-radius-md);background:var(--ds-bg-surface)}
+)CSS") + QStringLiteral(R"CSS(
 .ds-page-stack{display:grid;gap:20px;min-width:0}
 .ds-card,
 .privacy-page>.section,.site-info-page>.section,.reports-page>.section,.reports-page>form,
 .bookmark-page>.hero{
 min-width:0;margin:0;overflow:hidden;border:1px solid var(--ds-border-subtle);
-border-radius:var(--ds-radius-lg);background:var(--ds-bg-surface)
+border-radius:__SECTION_RADIUS__;background:var(--ds-bg-surface)
 }
 .ds-card--compact{border-radius:var(--ds-radius-md)}
 .ds-card--elevated{border-color:var(--ds-border);background:var(--ds-bg-elevated);box-shadow:var(--ds-shadow-popup)}
@@ -192,11 +198,11 @@ transition:background-color var(--ds-fast) ease,border-color var(--ds-fast) ease
 .ds-card-header,
 .privacy-page>.section>h2,.site-info-page>.section>h2,
 .reports-page>.section>h3,.reports-page>.section>.section-heading{
-margin:0;padding:15px 17px;border-bottom:1px solid var(--ds-border-subtle)
+margin:0;padding:__SECTION_PADDING__;border-bottom:1px solid var(--ds-border-subtle);line-height:1.5
 }
 .ds-card-header h2,.ds-card-header h3,
 .privacy-page>.section>h2,.site-info-page>.section>h2,.reports-page>.section>h3{margin:0;font-size:16px}
-.ds-card-body{min-width:0;padding:17px}
+.ds-card-body{min-width:0;padding:__SECTION_PADDING__}
 .ds-card-footer{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 17px;border-top:1px solid var(--ds-border-subtle);background:rgba(255,255,255,.012)}
 .ds-action-bar{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap;min-width:0}
 .ds-card-list{display:grid;gap:10px;min-width:0}
@@ -322,6 +328,12 @@ border-left:3px solid var(--ds-warning);border-radius:var(--ds-radius-md);backgr
     addEventListener('scroll',markActive,{capture:true,passive:true});
 })();
 </script></body>)HTML"));
+    QFile surfacesCss(QStringLiteral(":/ui/product-surfaces.css"));
+    if (surfacesCss.open(QIODevice::ReadOnly))
+        html.replace(QStringLiteral("</style>"), QString::fromUtf8(surfacesCss.readAll()) + QStringLiteral("</style>"));
+    QFile surfacesScript(QStringLiteral(":/ui/product-surfaces.js"));
+    if (surfacesScript.open(QIODevice::ReadOnly))
+        html.replace(QStringLiteral("</body>"), QStringLiteral("<script>") + QString::fromUtf8(surfacesScript.readAll()) + QStringLiteral("</script></body>"));
     return DesignTokens::apply(html);
 }
 
@@ -386,9 +398,9 @@ content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:2px;border-rad
 .settings-page .settings-panel>form+h3,.settings-page .settings-panel>form+form,
 .settings-page .settings-panel>details,.settings-page .settings-panel>.settings-subsection{margin-top:32px}
 .settings-page .settings-panel form>h3{margin:30px 0 4px;padding-top:22px;border-top:1px solid var(--ds-border-subtle)}
-.settings-page .settings-panel form>h3:first-child{margin-top:0;padding-top:0;border-top:0}
+.settings-page .settings-panel form>h3:first-child{margin-top:0;border-top:0}
 .settings-page .settings-panel>form{
-min-width:0;padding:2px var(--settings-card-inset) var(--settings-card-inset);border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);
+min-width:0;padding:0 var(--settings-card-inset) var(--settings-card-inset);border:1px solid var(--ds-border-subtle);border-radius:var(--settings-card-radius);
 background:var(--ds-bg-surface)
 }
 .settings-page .settings-panel>form+form{margin-top:var(--settings-section-gap)}
@@ -435,7 +447,7 @@ background:rgba(255,255,255,.012)
 margin:0 calc(-1 * var(--settings-card-inset)) 4px;padding:17px var(--settings-card-inset) 14px;border-top:1px solid var(--ds-border-subtle);
 border-bottom:1px solid var(--ds-border-subtle);color:var(--ds-text);font-size:15px
 }
-.settings-page .settings-panel>form>h3:first-child{border-top:0}
+.settings-page .settings-panel>form>h3:first-child{padding-top:18px;padding-bottom:18px;border-top:0;line-height:1.5}
 .settings-page .settings-panel>form>h3:not(:first-child){margin-top:16px}
 .settings-page .settings-panel>form>h3+p{margin:10px 0 13px}
 .settings-page .settings-panel>form>.setting-row:first-child{border-top:0}
@@ -800,7 +812,7 @@ body.settings-page.reduced-motion *,body.settings-page.reduced-motion *::before,
 <script>
 (()=>{
     'use strict';
-    const nativeSelects=[...document.querySelectorAll('.settings-shell select')];
+    const nativeSelects=[...document.querySelectorAll('.settings-shell select,.reports-page select')];
     if(!nativeSelects.length)return;
     let openControl=null;
     let typeBuffer='';
@@ -1623,6 +1635,13 @@ QString InternalPages::settings(const InternalPageContext &context)
                          e(t("pamp.passive_only.description")), e(t("pamp.analyze_current")));
     } else if (category == QStringLiteral("connection")) {
         panel = QStringLiteral("<h2>%1</h2>").arg(e(t("settings.category.connection")));
+        panel += QStringLiteral(
+            "<div class=\"network-state-list\" aria-label=\"%1\">"
+            "<div class=\"network-state-row\"><strong>Granger Network</strong><span>%2</span></div>"
+            "<div class=\"network-state-row\"><strong>Tor</strong><span>%3</span></div>"
+            "<div class=\"network-state-row\"><strong>I2P</strong><span>%4</span></div></div>")
+                .arg(e(t("label.status")), e(context.grangerState.isEmpty() ? t("network.unavailable") : context.grangerState),
+                     e(s(context.torState)), e(s(context.i2pState)));
         const bool preferI2p = context.preferredPrivacyNetwork == QStringLiteral("i2p");
         panel += QStringLiteral(
             "<section class=\"settings-surface settings-private-network\">"
@@ -1919,11 +1938,18 @@ QString InternalPages::settings(const InternalPageContext &context)
         panel.replace(QStringLiteral("__QR_ALT__"), e(t("support.cryptobot_qr_alt")));
         panel.replace(QStringLiteral("__VOLUNTARY__"), e(t("support.voluntary")));
     } else if (category == QStringLiteral("about")) {
-        panel = QStringLiteral("<h2>%1</h2><div class=\"info-list\">%2%3%4</div><p>%5</p>")
-                    .arg(e(t("settings.about_title")), infoRow(t("label.version"), context.applicationVersion),
-                         infoRow(t("label.browser_engine"), QStringLiteral("Qt WebEngine / Chromium")),
-                         infoRow(t("label.user_agent_mode"), context.userAgentProfile), e(t("settings.about_description")));
+        panel = QStringLiteral(
+            "<div class=\"product-header\"><img src=\"%1\" alt=\"\" width=\"56\" height=\"56\">"
+            "<div><h2>Granger Browser</h2><p>%2 %3 <span>Qt WebEngine / Chromium</span></p></div></div>")
+                .arg(localImageDataUrl(QStringLiteral(":/icons/app-icon.png")),
+                     e(t("label.version")), e(context.applicationVersion));
         panel += context.updatesHtml;
+        panel += QStringLiteral("<details class=\"build-information\"><summary>%1</summary><div class=\"info-list\">%2%3%4%5%6</div></details>")
+                     .arg(e(t("about.build_information")), infoRow(t("label.version"), context.applicationVersion),
+                          infoRow(QStringLiteral("Qt"), QString::fromLatin1(qVersion())),
+                          infoRow(QStringLiteral("Chromium"), QString::fromLatin1(qWebEngineChromiumVersion())),
+                          infoRow(t("about.platform"), QSysInfo::productType() + QStringLiteral(" / ") + QSysInfo::buildCpuArchitecture()),
+                          infoRow(t("label.user_agent_mode"), context.userAgentProfile));
     } else {
         const QString englishSelected = context.language == QStringLiteral("en") ? QStringLiteral(" selected") : QString();
         const QString russianSelected = context.language == QStringLiteral("ru") ? QStringLiteral(" selected") : QString();
@@ -2002,10 +2028,10 @@ QString InternalPages::reports(const InternalPageContext &context)
              infoRow(t("label.module"), context.searchImplementation),
              infoRow(t("label.results"), context.resultsPath),
              infoRow(t("label.report"), context.reportPath));
-    return chrome(t("page.reports.title"), t("page.reports.subtitle"),
+    return settingsPage(chrome(t("page.reports.title"), t("page.reports.subtitle"),
                   messageBlock(context.message)
                       + QStringLiteral("<div class=\"reports-page ds-page-stack\">%1%2</div>")
-                            .arg(context.reportsLogsHtml, legacy));
+                            .arg(context.reportsLogsHtml, legacy)), context.reducedMotion);
 }
 
 QString InternalPages::downloads(const InternalPageContext &context)

@@ -248,7 +248,9 @@ class OperatorCoordinatorTests(unittest.TestCase):
         }
         with (
             patch.object(fleet, 'collect', return_value=report),
-            patch.object(renewal.time, 'monotonic', side_effect=(0.0, 1.0, 46.0)),
+            patch.object(renewal.time, 'monotonic', side_effect=(
+                0.0, 1.0, renewal.FLEET_HEALTH_TIMEOUT_SECONDS + 1.0,
+            )),
             patch.object(renewal.time, 'sleep'),
             self.assertRaisesRegex(renewal.RenewalError, 'FLEET_HEALTH_NOT_READY'),
         ):

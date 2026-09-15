@@ -18,6 +18,7 @@ struct InternalPageContext {
     QString privacyRouteStatus;
     QString torState;
     QString i2pState;
+    QString grangerState;
     QString i2pMessage;
     QString i2pError;
     QString i2pExecutable;

@@ -636,6 +636,8 @@ class OperatorTests(unittest.TestCase):
         self.assertIn("TimeoutStopSec=120s", service)
         self.assertIn("RuntimeDirectory=granger-node/%i", service)
         self.assertIn("/run/granger-node/%i/status.json", service)
+        self.assertIn("EnvironmentFile=-/etc/granger-node/%i-runtime.env", service)
+        self.assertIn("$GRANGER_WAN_CONFIG_ARGUMENTS", service)
         self.assertNotIn("203.0.113.122", service)
         self.assertNotIn("203.0.113.122", installer)
         self.assertIn("--public-ip", installer)
@@ -647,6 +649,18 @@ class OperatorTests(unittest.TestCase):
         self.assertIn('STATE_ROOT="/var/lib/granger-node"', distributed_installer)
         self.assertIn('CONFIG_ROOT="/etc/granger-node"', distributed_installer)
         self.assertIn("operator_bundle.py\" verify", distributed_installer)
+        self.assertIn(
+            "GRANGER_WAN_CONFIG_ARGUMENTS=--wan-config-publication=$BOOTSTRAP_ROOT/browser-wan.json",
+            distributed_installer,
+        )
+        self.assertIn(
+            "--wan-config-trust-anchor=$BOOTSTRAP_ROOT/config-authority.pin",
+            distributed_installer,
+        )
+        self.assertIn(
+            "GRANGER_WAN_CONFIG_ARGUMENTS=--wan-config-publication=$STATE_ROOT/public-bundle/browser-wan.json",
+            installer,
+        )
         self.assertIn('systemctl enable "granger-node@$NODE_NAME.service"', distributed_installer)
         self.assertNotIn("203.0.113.122", distributed_installer)
         self.assertNotIn('operator_bundle.py" create', distributed_installer)

@@ -165,6 +165,13 @@ runuser -u granger -- env \
     PYTHONPATH="$INSTALL_ROOT/runtime/src" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
     "${BUNDLE_ARGS[@]}" >/dev/null
 write_configs yes
+for node in "${NODE_NAMES[@]}"; do
+    printf '%s\n' \
+        "GRANGER_WAN_CONFIG_ARGUMENTS=--wan-config-publication=$STATE_ROOT/public-bundle/browser-wan.json --wan-config-trust-anchor=$STATE_ROOT/public-bundle/config-authority.pin" \
+        >"$CONFIG_ROOT/$node-runtime.env"
+done
+chown root:granger "$CONFIG_ROOT"/node-*-runtime.env
+chmod 0640 "$CONFIG_ROOT"/node-*-runtime.env
 
 install -o root -g root -m 0644 \
     "$INSTALL_ROOT/systemd/granger-node@.service" \

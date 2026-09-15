@@ -5,6 +5,7 @@
 #include "granger/browser/BrowserTab.h"
 #include "granger/bridges/QrBridgeDecoder.h"
 #include "granger/core/AppPaths.h"
+#include "granger/core/LocalEventLogger.h"
 #include "granger/i18n/Localization.h"
 #include "granger/search/SearchManager.h"
 #include "granger/settings/SettingsManager.h"
@@ -2884,6 +2885,11 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             item.insert(QStringLiteral("category"), settingsCategory);
             item.insert(QStringLiteral("passed"), layoutPassed);
             settingsResponsiveCases.append(item);
+            if (requestedWidth == 1440 && categoryReady) {
+                settle(250);
+                capture(QStringLiteral("product-%1").arg(settingsCategory),
+                        QStringLiteral("product-%1-kk.png").arg(settingsCategory), window);
+            }
         }
     }
     results.record(QStringLiteral("Every Settings category remains usable from wide desktop to minimum width"),
@@ -3048,7 +3054,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             && evaluate(reportsTab->page(), QStringLiteral(
                    "!!document.querySelector('.settings-nav a.active[href*=\"id=reports\"]')"
                    "&&!!document.querySelector('form[action$=\"/__action/settings/logs\"]')"
-                   "&&!!document.querySelector('.log-table')"),
+                   "&&!!document.querySelector('.console-lines')"),
                         QWebEngineScript::MainWorld, 1000).toBool();
     }, 6000);
     BrowserTab *reportsSettingsTab = window->currentTabForDiagnostics();
@@ -3112,7 +3118,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                 temporaryActions:temporary.length,
                 filterControls:filterForm?.querySelectorAll('select,input').length||0,
                 filterSubmit:!!filterForm?.querySelector('button[type="submit"]'),
-                table:!!document.querySelector('.log-table-wrap>.log-table'),
+                table:!!document.querySelector('.console-lines')&&!document.querySelector('.log-table'),
                 exports:exports.length,
                 privateExport:exports.some(link=>link.href.includes('excludeOrigins=1')),
                 noAbsolutePaths:!source.includes('C:\\\\Users\\\\')
@@ -3347,13 +3353,26 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                        == QStringLiteral("https://t.me/send?start=IVw0NCEQJkCx"));
     capture(QStringLiteral("settingsSupport"), QStringLiteral("12c-settings-support-ru.png"), window);
 
+    {
+        LocalEventLogger fixtureLogs(settings);
+        fixtureLogs.enableTemporaryEnhanced(1);
+        for (const auto severity : {LocalLogSeverity::Info, LocalLogSeverity::Warning, LocalLogSeverity::Error}) {
+            LocalLogEvent event;
+            event.category = QStringLiteral("browser");
+            event.severity = severity;
+            event.event = QStringLiteral("ui.console.fixture.%1").arg(localLogSeverityId(severity));
+            event.details.insert(QStringLiteral("summary"), QStringLiteral("Local display fixture <script>not executable</script>"));
+            fixtureLogs.record(event);
+        }
+        fixtureLogs.shutdown();
+    }
     window->openAddressForDiagnostics(QStringLiteral("about:reports"));
     const bool logViewerReady = waitFor([&] {
         BrowserTab *reportsTab = window->currentTabForDiagnostics();
         return reportsTab && !reportsTab->isLoading()
             && evaluate(reportsTab->page(), QStringLiteral(
                    "!!document.querySelector('.log-filters')"
-                   "&&!!document.querySelector('.log-table tbody')"
+                   "&&!!document.querySelector('.console-lines')"
                    "&&document.querySelectorAll('a[href*=\"/__action/logs/export?\"]').length===2"),
                         QWebEngineScript::MainWorld, 1000).toBool();
     }, 6000);
@@ -3362,14 +3381,14 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
         logViewerTab ? logViewerTab->page() : nullptr,
         QStringLiteral(R"JS((()=>{
             const root=document.scrollingElement;
-            const rows=[...document.querySelectorAll('.log-table tbody tr')];
+            const rows=[...document.querySelectorAll('.console-entry')];
             const scripts=[...document.scripts].map(script=>script.src).filter(Boolean);
             return {
                 title:document.querySelector('h1')?.textContent.trim()||'',
                 subtitle:document.querySelector('header p')?.textContent.trim()||'',
                 filters:document.querySelectorAll('.log-filters select,.log-filters input').length,
                 rows:rows.length,
-                columns:document.querySelectorAll('.log-table thead th').length,
+                console:!document.querySelector('.log-table')&&!!document.querySelector('.console-search'),
                 detailsEscaped:rows.every(row=>!row.querySelector('script,iframe,object,embed')),
                 localScripts:scripts.every(src=>new URL(src).hostname==='granger.local'),
                 verticalScroll:root.scrollHeight>=root.clientHeight,
@@ -3383,7 +3402,7 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
             == Localization::text(QStringLiteral("page.reports.subtitle"))
         && logViewerState.value(QStringLiteral("filters")).toInt() == 6
         && logViewerState.value(QStringLiteral("rows")).toInt() >= 1
-        && logViewerState.value(QStringLiteral("columns")).toInt() == 6
+        && logViewerState.value(QStringLiteral("console")).toBool()
         && logViewerState.value(QStringLiteral("detailsEscaped")).toBool()
         && logViewerState.value(QStringLiteral("localScripts")).toBool()
         && logViewerState.value(QStringLiteral("verticalScroll")).toBool()
@@ -3392,7 +3411,33 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                    logViewerPassed,
                    QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(logViewerState))
                                          .toJson(QJsonDocument::Compact)));
+    settle(250);
     capture(QStringLiteral("logViewer"), QStringLiteral("13-log-viewer-ru.png"), window);
+    const bool consoleDropdown = evaluate(logViewerTab->page(), QStringLiteral(R"JS((()=>{
+        const selects=[...document.querySelectorAll('.log-filters select')];
+        if(!selects.length || !selects.every(select=>select.dataset.dsEnhanced==='true'))return false;
+        const trigger=document.querySelector('.log-filters .ds-select-trigger');
+        trigger.focus();trigger.click();
+        const popup=document.getElementById(trigger.getAttribute('aria-controls'));
+        const r=popup.getBoundingClientRect();
+        const open=trigger.getAttribute('aria-expanded')==='true'
+            &&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;
+        trigger.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+        return open&&trigger.getAttribute('aria-expanded')==='false'&&document.activeElement===trigger;
+    })())JS")).toBool();
+    results.record(QStringLiteral("Standalone log filters use the shared accessible dropdown"), consoleDropdown);
+    const bool consoleInteractions = evaluate(logViewerTab->page(), QStringLiteral(R"JS((()=>{
+        const search=document.querySelector('.console-search');
+        const count=document.querySelectorAll('.console-entry').length;
+        search.value='no-matching-event-7ab345';search.dispatchEvent(new Event('input'));
+        const filtered=document.querySelectorAll('.console-entry:not([hidden])').length===0;
+        search.value='';search.dispatchEvent(new Event('input'));
+        const restored=document.querySelectorAll('.console-entry:not([hidden])').length===count;
+        document.querySelector('.console-clear').click();
+        return count>0&&filtered&&restored&&!document.querySelector('.console-entry')
+            &&!document.querySelector('.console-no-results').hidden;
+    })())JS")).toBool();
+    results.record(QStringLiteral("Console search and clear only affect displayed events"), consoleInteractions);
 
     bool temporaryWarningSeen = false;
     bool temporaryWarningCaptured = false;
@@ -3527,7 +3572,8 @@ body{display:grid;place-items:center;font:16px system-ui,sans-serif}</style>
                     return rect.width>0&&rect.height>0
                         &&rect.bottom>=0&&rect.top<=innerHeight;
                 };
-                const surfaces=[...root.querySelectorAll('.ds-card,.section,.hero')];
+                const surfaces=[...root.querySelectorAll('.ds-card,.section,.hero')]
+                    .filter(surface=>!surface.closest('.log-settings-disclosure'));
                 const controls=[...root.querySelectorAll('a,button,input,select,textarea,summary')]
                     .filter(visibleInViewport);
                 const resourceAttributes=[

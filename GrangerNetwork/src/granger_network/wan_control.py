@@ -21,8 +21,22 @@ MAX_RENDEZVOUS_GRANT_LIFETIME = 5 * 60
 DEFAULT_RENDEZVOUS_GRANT_LIFETIME = 2 * 60
 MAX_RENDEZVOUS_REGISTRATION_LIFETIME = 10 * 60
 RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS = 1.0
+MAX_INTRODUCTION_DELIVERY_TIMEOUT_SECONDS = 30.0
 RENDEZVOUS_GRANT_DOMAIN = b"granger-network-v0.4/rendezvous-grant\x00"
 RENDEZVOUS_COOKIE_TAG_DOMAIN = b"granger-network-v0.4/rendezvous-cookie-tag\x00"
+
+
+def introduction_delivery_timeout(transport_timeout: float) -> float:
+    if (
+        isinstance(transport_timeout, bool)
+        or not isinstance(transport_timeout, (int, float))
+        or transport_timeout <= 0
+    ):
+        raise ProtocolError("introduction transport timeout is invalid")
+    # A delivery can arrive immediately after the registration worker starts a
+    # heartbeat. Bound both serialized round trips without extending the
+    # caller's overall operation deadline.
+    return min(MAX_INTRODUCTION_DELIVERY_TIMEOUT_SECONDS, float(transport_timeout) * 2.0)
 
 
 def rendezvous_cookie_tag(cookie: bytes) -> bytes:

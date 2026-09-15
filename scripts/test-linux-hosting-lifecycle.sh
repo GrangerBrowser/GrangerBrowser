@@ -10,7 +10,7 @@ fail() {
     exit 1
 }
 
-for command_name in jq timeout pgrep python3 realpath; do
+for command_name in jq pgrep python3 realpath; do
     command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
 done
 [[ -x "$appimage" ]] || fail "AppImage is missing or not executable: $appimage"
@@ -82,7 +82,7 @@ run_segment() {
     mkdir -p "$profile/config" "$profile/data" "$profile/cache" \
         "$profile/runtime" "$profile/granger/data" "$profile/granger/settings" "$trace"
     chmod 0700 "$profile/runtime"
-    timeout 300 env -i \
+    env -i \
         HOME="$test_root/home" USER="${USER:-granger-test}" \
         LOGNAME="${LOGNAME:-${USER:-granger-test}}" \
         PATH=/usr/bin:/bin DISPLAY="$DISPLAY" \
@@ -93,15 +93,25 @@ run_segment() {
         GRANGER_DATA_ROOT="$profile/granger/data" \
         GRANGER_SETTINGS_ROOT="$profile/granger/settings" \
         GRANGER_ACCEPTANCE_TRACE_DIR="$trace" \
-        APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" \
+        APPIMAGE_EXTRACT_AND_RUN=1 \
+        python3 "$project_root/GrangerNetwork/tools/acceptance_diagnostics.py" \
+        --directory "$trace" \
+        --qt-trace "$result.stages.json" \
+        --timeout 300 \
+        -- "$appimage" \
         --smoke-granger-hosting \
         "--smoke-output=$result" \
         "--granger-hosting-source=$project_root/GrangerNetwork/examples/site" \
         "--granger-hosting-entry-page=index.html" \
         "--granger-hosting-backend-port=$backend_port" \
         "--granger-hosting-segment=$segment" \
-        >"$report_root/$segment.log" 2>&1 \
-        || fail "$segment segment failed or exceeded 300 seconds"
+        || {
+            cp "$trace/stdout.log" "$report_root/$segment.stdout.log" 2>/dev/null || true
+            cp "$trace/stderr.log" "$report_root/$segment.stderr.log" 2>/dev/null || true
+            fail "$segment segment failed or exceeded 300 seconds"
+        }
+    cp "$trace/stdout.log" "$report_root/$segment.stdout.log"
+    cp "$trace/stderr.log" "$report_root/$segment.stderr.log"
     jq -e --arg segment "$segment" '
         .ok == true and .segment == $segment
         and .dnsRequests == 0 and .directFallback == false

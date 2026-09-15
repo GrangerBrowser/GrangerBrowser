@@ -229,6 +229,42 @@ class WanRouteSelectionTests(unittest.TestCase):
                 {node.node_id for node, _role in selection.route[1:]},
             )
 
+    def test_failed_directed_service_edge_is_not_reused(self) -> None:
+        nodes = _service_descriptors()
+        selector = WanRouteSelector(
+            _StaticDiscovery(
+                {capability: nodes for capability in nodes[0].capabilities}
+            ),
+            guard_seed=b"d" * 32,
+        )
+        service_id = "i" * 52
+        introductions, _rendezvous, _retried = select_service_route_set(
+            selector,
+            service_id,
+            nodes[:2],
+            nodes[2],
+        )
+        failed_route = introductions[0].route
+        failed_edge = (failed_route[1][0].node_id, failed_route[2][0].node_id)
+
+        retry_introductions, retry_rendezvous, reused = select_service_route_set(
+            selector,
+            service_id,
+            nodes[:2],
+            nodes[2],
+            failed_route_edges={failed_edge},
+        )
+
+        self.assertFalse(reused)
+        for selection in (*retry_introductions, retry_rendezvous):
+            self.assertNotIn(
+                failed_edge,
+                tuple(
+                    (left[0].node_id, right[0].node_id)
+                    for left, right in zip(selection.route, selection.route[1:])
+                ),
+            )
+
     def test_temporary_failure_retry_cannot_create_a_three_node_route(self) -> None:
         nodes = _service_descriptors()[:3]
         selector = WanRouteSelector(

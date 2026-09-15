@@ -78,6 +78,7 @@ from .wan_control import (
     decode_intro_registration,
     decode_intro_request,
     encode_intro_request,
+    introduction_delivery_timeout,
 )
 
 
@@ -910,11 +911,19 @@ class WanNodeServer:
                     )
                 except queue.Empty:
                     if time.monotonic() >= next_heartbeat:
-                        response = peer.rpc.request(
-                            RpcType.PING,
-                            b"introduction",
-                            expected=RpcType.PONG,
+                        peer.channel.connection.settimeout(
+                            float(self.policy.connection_timeout_seconds)
                         )
+                        try:
+                            response = peer.rpc.request(
+                                RpcType.PING,
+                                b"introduction",
+                                expected=RpcType.PONG,
+                            )
+                        finally:
+                            peer.channel.connection.settimeout(
+                                float(self.policy.idle_timeout_seconds)
+                            )
                         if response.payload != b"introduction":
                             raise ProtocolError("introduction heartbeat response is invalid")
                         next_heartbeat = time.monotonic() + heartbeat_interval
@@ -980,7 +989,9 @@ class WanNodeServer:
         except queue.Full:
             self._send_error(peer, request, "INTRODUCTION_BUSY")
             return
-        if not delivery.ready.wait(self.policy.connection_timeout_seconds):
+        if not delivery.ready.wait(
+            introduction_delivery_timeout(self.policy.connection_timeout_seconds)
+        ):
             self._send_error(peer, request, "INTRODUCTION_TIMEOUT")
             return
         if delivery.error is not None or delivery.result is None:

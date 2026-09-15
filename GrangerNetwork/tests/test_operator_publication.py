@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import operator_bundle
@@ -52,6 +52,8 @@ class OperatorPublicationTests(unittest.TestCase):
         self.enterContext(patch.object(publication, 'Path', side_effect=fixture_path))
         self.enterContext(patch.object(publication, '_sync_directory'))
         self.enterContext(patch.object(publication.os, 'chown', create=True))
+        self.real_activate = publication._activate
+        self.activate = self.enterContext(patch.object(publication, '_activate', return_value=True))
         self.exchanges = []
         def exchange(left, right):
             self.exchanges.append((left, right))
@@ -74,10 +76,21 @@ class OperatorPublicationTests(unittest.TestCase):
         result = publication.handle(self.deploy)
         self.assertTrue(result['ok'], result)
         self.assertEqual(len(self.exchanges), 1)
+        self.activate.assert_called_once_with(
+            'node-a', self.fixture.nodes[0]['nodeId'], 2,
+            self.remote/'var/lib/granger-node/node-a', self.status,
+        )
         for name in publication.FILES:
             self.assertEqual((self.public/name).read_bytes(), (self.next/name).read_bytes())
+        self.activate.reset_mock()
+        self.activate.return_value = False
         result = publication.handle(self.deploy)
         self.assertTrue(result['reused'])
+        self.assertFalse(result['activated'])
+        self.activate.assert_called_once_with(
+            'node-a', self.fixture.nodes[0]['nodeId'], 2,
+            self.remote/'var/lib/granger-node/node-a', self.status,
+        )
         self.assertEqual(len(self.exchanges), 1)
         self.assertFalse(list(self.public.parent.glob('.public-staged-*')))
 
@@ -121,6 +134,42 @@ class OperatorPublicationTests(unittest.TestCase):
         import os
         os.utime(self.status, (1, 1))
         self.assertFalse(publication.handle(self.request)['ok'])
+
+    def test_activation_ready_requires_live_unit_identity_and_exact_generation(self):
+        state = self.remote/'var/lib/granger-node/node-a'
+        reseed = state/'reseed'
+        reseed.mkdir()
+        (reseed/'state.json').write_text(json.dumps({
+            'authorities': {'fixture': {'generation': 2}},
+        }), encoding='utf-8')
+        active = Mock(returncode=0)
+        with patch.object(publication.subprocess, 'run', return_value=active):
+            self.assertTrue(publication._activation_ready(
+                'node-a', self.fixture.nodes[0]['nodeId'], 2, state, self.status,
+            ))
+            self.assertFalse(publication._activation_ready(
+                'node-a', self.fixture.nodes[0]['nodeId'], 1, state, self.status,
+            ))
+
+    def test_activation_restarts_only_when_generation_is_not_loaded(self):
+        state = self.remote/'var/lib/granger-node/node-a'
+        restart = Mock(returncode=0)
+        with patch.object(publication, '_activation_ready', side_effect=(False, True)), \
+                patch.object(publication.subprocess, 'run', return_value=restart) as run:
+            self.assertTrue(self.real_activate(
+                'node-a', self.fixture.nodes[0]['nodeId'], 2, state, self.status,
+            ))
+        self.assertEqual(
+            run.call_args.args[0],
+            ['systemctl', 'restart', 'granger-node@node-a.service'],
+        )
+
+        with patch.object(publication, '_activation_ready', return_value=True), \
+                patch.object(publication.subprocess, 'run') as unused:
+            self.assertFalse(self.real_activate(
+                'node-a', self.fixture.nodes[0]['nodeId'], 2, state, self.status,
+            ))
+        unused.assert_not_called()
 
 
 if __name__ == '__main__':

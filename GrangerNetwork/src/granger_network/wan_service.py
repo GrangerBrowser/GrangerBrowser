@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .stage_trace import traced
+from .stage_trace import stage, traced
 
 import hashlib
 import secrets
@@ -34,6 +34,7 @@ from .wan_control import (
     decode_intro_request,
     encode_intro_registration,
     encode_intro_request,
+    introduction_delivery_timeout,
 )
 
 
@@ -145,28 +146,32 @@ class WanServiceClient:
         intro_circuit: BuiltCircuit | None = None
         introduction_phase = "route build"
         try:
-            intro_circuit = builder.open(
-                (*self.route_prefix, (introduction_node, "introduction"))
+            with stage("client-introduction-route"):
+                intro_circuit = builder.open(
+                    (*self.route_prefix, (introduction_node, "introduction"))
+                )
+            intro_circuit.endpoint.channel.connection.settimeout(
+                introduction_delivery_timeout(self.timeout)
             )
-            intro_circuit.endpoint.channel.connection.settimeout(self.timeout)
             introduction_phase = "request"
-            request_nonce = secrets.token_bytes(16)
-            response = intro_circuit.endpoint.rpc.request(
-                RpcType.INTRO_REQUEST,
-                encode_intro_request(
-                    IntroductionRequest(
-                        self.service.service_id,
-                        point.token,
-                        request_nonce,
-                    )
-                ),
-                expected=RpcType.INTRO_REQUEST,
-            )
-            grant = RendezvousGrant.decode(
-                response.payload,
-                self.service,
-                request_nonce=request_nonce,
-            )
+            with stage("client-introduction-request"):
+                request_nonce = secrets.token_bytes(16)
+                response = intro_circuit.endpoint.rpc.request(
+                    RpcType.INTRO_REQUEST,
+                    encode_intro_request(
+                        IntroductionRequest(
+                            self.service.service_id,
+                            point.token,
+                            request_nonce,
+                        )
+                    ),
+                    expected=RpcType.INTRO_REQUEST,
+                )
+                grant = RendezvousGrant.decode(
+                    response.payload,
+                    self.service,
+                    request_nonce=request_nonce,
+                )
         except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
             detail = str(error).strip()
             # Only the end-to-end authenticated endpoint's reply is terminal for
@@ -194,64 +199,69 @@ class WanServiceClient:
         rendezvous_phase = "route selection"
         try:
             rendezvous_started = time.perf_counter_ns()
-            rendezvous_prefix = self.route_prefix
-            if grant.rendezvous.node_id in {
-                descriptor.node_id for descriptor, _role in rendezvous_prefix
-            }:
-                if self.rendezvous_route_selector is None:
-                    raise OverlayRoutingError(
-                        "rendezvous node repeats a relay identity and no alternate route is available"
-                    )
-                rendezvous_prefix = tuple(self.rendezvous_route_selector(grant.rendezvous))
-                if (
-                    len(rendezvous_prefix) < 3
-                    or tuple(role for _node, role in rendezvous_prefix[:3])
-                    != ("access", "entry", "middle")
-                    or grant.rendezvous.node_id
-                    in {descriptor.node_id for descriptor, _role in rendezvous_prefix}
-                ):
-                    raise OverlayRoutingError("alternate rendezvous route prefix is invalid")
+            with stage("client-rendezvous-route-selection"):
+                rendezvous_prefix = self.route_prefix
+                if grant.rendezvous.node_id in {
+                    descriptor.node_id for descriptor, _role in rendezvous_prefix
+                }:
+                    if self.rendezvous_route_selector is None:
+                        raise OverlayRoutingError(
+                            "rendezvous node repeats a relay identity and no alternate route is available"
+                        )
+                    rendezvous_prefix = tuple(self.rendezvous_route_selector(grant.rendezvous))
+                    if (
+                        len(rendezvous_prefix) < 3
+                        or tuple(role for _node, role in rendezvous_prefix[:3])
+                        != ("access", "entry", "middle")
+                        or grant.rendezvous.node_id
+                        in {descriptor.node_id for descriptor, _role in rendezvous_prefix}
+                    ):
+                        raise OverlayRoutingError("alternate rendezvous route prefix is invalid")
             rendezvous_phase = "route build"
-            rendezvous_circuit = builder.open(
-                (*rendezvous_prefix, (grant.rendezvous, "rendezvous"))
-            )
+            with stage("client-rendezvous-route"):
+                rendezvous_circuit = builder.open(
+                    (*rendezvous_prefix, (grant.rendezvous, "rendezvous"))
+                )
             rendezvous_circuit.endpoint.channel.connection.settimeout(self.timeout)
             rendezvous_phase = "join"
-            cell_circuit_id = secrets.token_bytes(16)
-            rendezvous_circuit.endpoint.rpc.request(
-                RpcType.RENDEZVOUS_JOIN,
-                RendezvousJoin.create(
-                    grant.cookie,
-                    cell_circuit_id,
-                ).encode(),
-                expected=RpcType.RENDEZVOUS_JOIN,
-            )
+            with stage("client-rendezvous-join"):
+                cell_circuit_id = secrets.token_bytes(16)
+                rendezvous_circuit.endpoint.rpc.request(
+                    RpcType.RENDEZVOUS_JOIN,
+                    RendezvousJoin.create(
+                        grant.cookie,
+                        cell_circuit_id,
+                    ).encode(),
+                    expected=RpcType.RENDEZVOUS_JOIN,
+                )
             rendezvous_phase = "stream"
             # The operation timeout bounds JOIN only. A background multiplexer
             # must not inherit that deadline from its parent circuit stream.
             rendezvous_circuit.endpoint.channel.connection.settimeout(None)
-            rendezvous_mux = CellMultiplexer(
-                rendezvous_circuit.endpoint.channel,
-                cell_circuit_id,
-                initiator=True,
-                keepalive_interval_seconds=RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
-            )
-            stream = rendezvous_mux.open_stream(self.timeout)
-            stream.settimeout(self.timeout)
+            with stage("client-rendezvous-stream"):
+                rendezvous_mux = CellMultiplexer(
+                    rendezvous_circuit.endpoint.channel,
+                    cell_circuit_id,
+                    initiator=True,
+                    keepalive_interval_seconds=RENDEZVOUS_KEEPALIVE_INTERVAL_SECONDS,
+                )
+                stream = rendezvous_mux.open_stream(self.timeout)
+                stream.settimeout(self.timeout)
             rendezvous_phase = "handshake"
-            channel = client_handshake(
-                stream,
-                self.service.identity_public_key,
-                session_id=rendezvous_session_id(grant.cookie),
-                protocol_version=VERSION_3,
-            )
-            stream.settimeout(None)
-            application_mux = CellMultiplexer(
-                channel,
-                application_circuit_id(grant.cookie),
-                initiator=True,
-            )
-            application = WanApplicationClient(application_mux, timeout=self.timeout)
+            with stage("client-rendezvous-handshake"):
+                channel = client_handshake(
+                    stream,
+                    self.service.identity_public_key,
+                    session_id=rendezvous_session_id(grant.cookie),
+                    protocol_version=VERSION_3,
+                )
+                stream.settimeout(None)
+                application_mux = CellMultiplexer(
+                    channel,
+                    application_circuit_id(grant.cookie),
+                    initiator=True,
+                )
+                application = WanApplicationClient(application_mux, timeout=self.timeout)
             rendezvous_finished = time.perf_counter_ns()
             return WanServiceSession(
                 self.service,
@@ -452,6 +462,16 @@ class WanServiceHost:
         return self._startup_failed_ids_for_role("service-relay")
 
     @property
+    def startup_failed_route_edges(self) -> frozenset[tuple[str, str]]:
+        index = self._startup_failed_hop_index
+        if self._startup_failure_stage != "extension" or index is None or index == 0:
+            return frozenset()
+        return frozenset({(
+            self._startup_failed_route[index - 1][0].node_id,
+            self._startup_failed_route[index][0].node_id,
+        )})
+
+    @property
     def startup_failed_role(self) -> str:
         if self._startup_failed_hop_index is None:
             return ""
@@ -463,6 +483,8 @@ class WanServiceHost:
 
     def _startup_failed_ids_for_role(self, role: str) -> frozenset[str]:
         if self.startup_failed_role != role or self._startup_failed_hop_index is None:
+            return frozenset()
+        if self._startup_failure_stage == "extension" and self._startup_failed_hop_index > 0:
             return frozenset()
         return frozenset({
             self._startup_failed_route[self._startup_failed_hop_index][0].node_id
@@ -869,76 +891,78 @@ class WanServiceHost:
             try:
                 request = intro_circuit.endpoint.rpc.receive()
                 if request.message_type is RpcType.PING and not request.is_response:
-                    if request.is_error or len(request.payload) > 64:
-                        raise ProtocolError("introduction heartbeat request is invalid")
-                    intro_circuit.endpoint.rpc.send(
-                        RpcType.PONG,
-                        request.payload,
-                        request_id=request.request_id,
-                        response=True,
-                    )
-                    with self._grant_condition:
-                        self._intro_activity[node_id] = time.monotonic()
+                    with stage("introduction-heartbeat"):
+                        if request.is_error or len(request.payload) > 64:
+                            raise ProtocolError("introduction heartbeat request is invalid")
+                        intro_circuit.endpoint.rpc.send(
+                            RpcType.PONG,
+                            request.payload,
+                            request_id=request.request_id,
+                            response=True,
+                        )
+                        with self._grant_condition:
+                            self._intro_activity[node_id] = time.monotonic()
                     continue
                 if request.message_type is not RpcType.INTRO_DELIVER or request.is_response:
                     raise ProtocolError("service received an unexpected introduction message")
-                introduced = decode_intro_request(request.payload)
-                if introduced.service_id != self.service.service_id:
-                    raise ProtocolError("introduction delivery service identity is invalid")
-                with self._grant_condition:
-                    self._intro_activity[node_id] = time.monotonic()
-                deadline = time.monotonic() + self.timeout
-                grant_slot: tuple[bytes, int] | None = None
-                with self._grant_condition:
-                    while self._grant_slot is None and not self._stop.is_set():
-                        if len(self._sessions) + len(self._pending_rendezvous) >= self.max_sessions:
-                            break
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        self._grant_condition.wait(min(0.25, remaining))
-                    if self._grant_slot is not None:
-                        grant_slot = self._grant_slot
-                        self._grant_slot = None
-                        self._grant_condition.notify_all()
-                    elif self._stop.is_set():
-                        raise ProtocolError("service is stopping")
-                if grant_slot is None:
-                    if len(self.session_failures) < 1024:
-                        self.session_failures.append("introduction:RENDEZVOUS_BUSY")
+                with stage("introduction-delivery"):
+                    introduced = decode_intro_request(request.payload)
+                    if introduced.service_id != self.service.service_id:
+                        raise ProtocolError("introduction delivery service identity is invalid")
+                    with self._grant_condition:
+                        self._intro_activity[node_id] = time.monotonic()
+                    deadline = time.monotonic() + self.timeout
+                    grant_slot: tuple[bytes, int] | None = None
+                    with self._grant_condition:
+                        while self._grant_slot is None and not self._stop.is_set():
+                            if len(self._sessions) + len(self._pending_rendezvous) >= self.max_sessions:
+                                break
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            self._grant_condition.wait(min(0.25, remaining))
+                        if self._grant_slot is not None:
+                            grant_slot = self._grant_slot
+                            self._grant_slot = None
+                            self._grant_condition.notify_all()
+                        elif self._stop.is_set():
+                            raise ProtocolError("service is stopping")
+                    if grant_slot is None:
+                        if len(self.session_failures) < 1024:
+                            self.session_failures.append("introduction:RENDEZVOUS_BUSY")
+                        intro_circuit.endpoint.rpc.send(
+                            RpcType.ERROR,
+                            encode_error("RENDEZVOUS_BUSY"),
+                            request_id=request.request_id,
+                            response=True,
+                            error=True,
+                        )
+                        continue
+                    cookie, expires_at = grant_slot
+                    # Issue the normal short grant, not the receiver's absolute
+                    # maximum. A slightly leading host clock must not exceed that
+                    # unchanged validation bound at an introduction node.
+                    lifetime = max(
+                        1,
+                        min(
+                            DEFAULT_RENDEZVOUS_GRANT_LIFETIME,
+                            expires_at - int(time.time()),
+                        ),
+                    )
+                    grant = RendezvousGrant.create(
+                        self.identity,
+                        self.service,
+                        introduced.nonce,
+                        rendezvous,
+                        cookie=cookie,
+                        lifetime=lifetime,
+                    )
                     intro_circuit.endpoint.rpc.send(
-                        RpcType.ERROR,
-                        encode_error("RENDEZVOUS_BUSY"),
+                        RpcType.INTRO_DELIVER,
+                        grant.encode(),
                         request_id=request.request_id,
                         response=True,
-                        error=True,
                     )
-                    continue
-                cookie, expires_at = grant_slot
-                # Issue the normal short grant, not the receiver's absolute
-                # maximum. A slightly leading host clock must not exceed that
-                # unchanged validation bound at an introduction node.
-                lifetime = max(
-                    1,
-                    min(
-                        DEFAULT_RENDEZVOUS_GRANT_LIFETIME,
-                        expires_at - int(time.time()),
-                    ),
-                )
-                grant = RendezvousGrant.create(
-                    self.identity,
-                    self.service,
-                    introduced.nonce,
-                    rendezvous,
-                    cookie=cookie,
-                    lifetime=lifetime,
-                )
-                intro_circuit.endpoint.rpc.send(
-                    RpcType.INTRO_DELIVER,
-                    grant.encode(),
-                    request_id=request.request_id,
-                    response=True,
-                )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 with self._grant_condition:
                     self._intro_activity.pop(node_id, None)

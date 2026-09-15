@@ -93,9 +93,19 @@ class RecordCircuitScopeTests(unittest.TestCase):
                     elif reason == "transport":
                         circuit.multiplexers = [SimpleNamespace(failed=True)]
                     with patch("granger_network.wan_discovery.time.monotonic",
-                               return_value=109 if reason == "expiry" else 101):
+                               return_value=149 if reason == "expiry" else 101):
                         self.assertIsNone(scope.take(peer))
                 circuit.close.assert_called_once()
+
+    def test_reuse_survives_a_slow_quorum_member_within_one_transaction(self):
+        peer = self.peer()
+        circuit = self.circuit(peer)
+        with _RecordCircuits(b"a" * 32, RpcType.FIND_RECORD, b"record", 8) as scope:
+            with patch("granger_network.wan_discovery.time.monotonic", return_value=100):
+                scope.keep(peer, circuit)
+            with patch("granger_network.wan_discovery.time.monotonic", return_value=135):
+                self.assertIs(scope.take(peer), circuit)
+        circuit.close.assert_not_called()
 
 
 class ConnectionRecordTests(unittest.TestCase):
@@ -135,7 +145,102 @@ class ConnectionRecordTests(unittest.TestCase):
                 with self.assertRaises(GrangerNetworkError):
                     resolver.resolve_connection(service.canonical_name)
             self.assertEqual(len(workers), 2)
-            self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+
+
+class RecordLookupQuorumTests(unittest.TestCase):
+    def setUp(self):
+        self.now = int(time.time())
+        self.identity = ServiceIdentity.generate()
+        self.service = ServiceDescriptor.create_remote(
+            self.identity,
+            "lookup-quorum",
+            issued_at=self.now,
+            lifetime=1800,
+        )
+        self.envelope = encode_record(self.service, now=self.now)
+        self.peers = tuple(
+            NodeDescriptor.create(
+                ServiceIdentity.generate(),
+                RendezvousEndpoint("127.0.0.1", available_port()),
+                ("discovery",),
+                RelayPolicy(enabled=False),
+                lifetime=3600,
+            )
+            for _ in range(4)
+        )
+        self.client = WanDiscoveryClient.__new__(WanDiscoveryClient)
+        self.client.replication_factor = 3
+        self.client.minimum_replicas = 2
+        self.client.timeout = 2
+        self.client._remember_record_sequence = Mock()
+
+    def test_read_and_publication_discover_the_full_replication_set(self):
+        self.client._lookup_record = Mock(return_value=self.service)
+        self.client._publish_record = Mock(return_value=self.client.replication_factor)
+
+        self.client.lookup(SERVICE_RECORD, self.service.service_id, now=self.now)
+        read_circuits = self.client._lookup_record.call_args.args[-1]
+        self.assertEqual(
+            read_circuits.response_target,
+            self.client.replication_factor,
+        )
+
+        self.client.publish(self.service, now=self.now)
+        publication_circuits = self.client._publish_record.call_args.args[-1]
+        self.assertEqual(
+            publication_circuits.response_target,
+            self.client.replication_factor,
+        )
+
+    def test_lookup_does_not_wait_for_a_hedge_after_storage_quorum(self):
+        batches = []
+
+        def request_batch(peers, *_args, **_kwargs):
+            batches.append(tuple(peers))
+            return tuple(
+                (peer, encode_optional_record(self.envelope)) for peer in peers
+            )
+
+        self.client.find_nodes = Mock(return_value=self.peers)
+        self.client._request_batch = Mock(side_effect=request_batch)
+        result = self.client._lookup_record(
+            SERVICE_RECORD,
+            self.service.service_id,
+            b"t" * 32,
+            b"request",
+            self.now,
+            Mock(),
+        )
+
+        self.assertEqual(result, self.service)
+        self.assertEqual(batches, [self.peers[:3]])
+
+    def test_lookup_queries_the_hedge_when_primary_set_has_no_quorum(self):
+        batches = []
+
+        def request_batch(peers, *_args, **_kwargs):
+            batches.append(tuple(peers))
+            if len(batches) == 1:
+                return tuple(
+                    (peer, encode_optional_record(self.envelope) if index == 0 else encode_optional_record(None))
+                    for index, peer in enumerate(peers)
+                )
+            return ((peers[0], encode_optional_record(self.envelope)),)
+
+        self.client.find_nodes = Mock(return_value=self.peers)
+        self.client._request_batch = Mock(side_effect=request_batch)
+        result = self.client._lookup_record(
+            SERVICE_RECORD,
+            self.service.service_id,
+            b"t" * 32,
+            b"request",
+            self.now,
+            Mock(),
+        )
+
+        self.assertEqual(result, self.service)
+        self.assertEqual(batches, [self.peers[:3], self.peers[3:]])
 
 
 class PrivateDiscoveryFailureTests(unittest.TestCase):
@@ -192,6 +297,10 @@ class PrivateDiscoveryFailureTests(unittest.TestCase):
             time.monotonic() + 60.0,
         )
 
+        # Authentication through another access relay does not prove that this
+        # peer is directly reachable from the local network path.
+        self.client._record_peer_success(failed_access.node_id)
+
         routes = self.client._private_route_candidates(target, limit=6)
 
         self.assertTrue(routes)
@@ -200,6 +309,9 @@ class PrivateDiscoveryFailureTests(unittest.TestCase):
             self.assertEqual(len({peer.node_id for peer, _role in route}), 4)
             self.assertNotEqual(route[0][0].node_id, failed_access.node_id)
             self.assertIn(failed_access.node_id, {peer.node_id for peer, _role in route[1:]})
+
+        self.client._record_peer_success(failed_access.node_id, direct_access=True)
+        self.assertNotIn(failed_access.node_id, self.client._failed_until)
 
     def test_record_phases_do_not_restart_an_exhausted_route_search(self):
         from granger_network.wan_discovery import _RecordCircuits, encode_find_node
@@ -237,6 +349,201 @@ class PrivateDiscoveryFailureTests(unittest.TestCase):
             with _RecordCircuits(b't' * 32, RpcType.FIND_RECORD, b'record', 2) as circuits:
                 found = self.client.find_nodes(b't' * 32, 'discovery', record_circuits=circuits)
         self.assertEqual({p.node_id for p in found}, responsive)
+
+    def test_record_discovery_stops_at_the_replication_target(self):
+        from granger_network.wan_discovery import _RecordCircuits, encode_node_list
+        from granger_network.network_health import NetworkState
+        payload = encode_node_list(self.peers)
+        batches = []
+        success_targets = []
+
+        def responses(peers, *_args, **_kwargs):
+            batches.append(tuple(peers))
+            success_targets.append(_kwargs["stop_after_successes"])
+            return tuple(
+                (peer, payload if index < _kwargs["stop_after_successes"] else None)
+                for index, peer in enumerate(peers)
+            )
+
+        with patch.object(self.client, 'join_network', return_value=SimpleNamespace(state=NetworkState.CONNECTED)), \
+                patch.object(self.client, '_request_batch', side_effect=responses):
+            with _RecordCircuits(b't' * 32, RpcType.FIND_RECORD, b'record', 2) as circuits:
+                found = self.client.find_nodes(b't' * 32, 'discovery', record_circuits=circuits)
+
+        self.assertEqual(
+            [len(batch) for batch in batches],
+            [self.client.replication_factor + 1],
+        )
+        self.assertEqual(success_targets, [self.client.replication_factor])
+        self.assertEqual(len(found), self.client.replication_factor)
+
+    def test_record_discovery_uses_a_hedged_peer_after_failure(self):
+        from granger_network.wan_discovery import _RecordCircuits, encode_node_list
+        from granger_network.network_health import NetworkState
+        payload = encode_node_list(self.peers)
+        batches = []
+
+        def responses(peers, *_args, **_kwargs):
+            batches.append(tuple(peers))
+            if len(batches) > 1:
+                return tuple((peer, payload) for peer in peers)
+            return tuple(
+                (peer, None if index == 0 else payload)
+                for index, peer in enumerate(peers)
+            )
+
+        with patch.object(self.client, 'join_network', return_value=SimpleNamespace(state=NetworkState.CONNECTED)), \
+                patch.object(self.client, '_request_batch', side_effect=responses):
+            with _RecordCircuits(b't' * 32, RpcType.FIND_RECORD, b'record', 2) as circuits:
+                found = self.client.find_nodes(b't' * 32, 'discovery', record_circuits=circuits)
+
+        self.assertEqual(
+            [len(batch) for batch in batches],
+            [self.client.replication_factor + 1],
+        )
+        self.assertEqual(len(found), self.client.replication_factor)
+
+    def test_record_read_uses_signed_quorum_with_a_bounded_hedge(self):
+        from granger_network.wan_discovery import _RecordCircuits, encode_node_list
+        from granger_network.network_health import NetworkState
+        payload = encode_node_list(self.peers)
+        batches = []
+        success_targets = []
+
+        def responses(peers, *_args, **_kwargs):
+            batches.append(tuple(peers))
+            success_targets.append(_kwargs["stop_after_successes"])
+            return tuple(
+                (peer, payload if index < self.client.minimum_replicas else None)
+                for index, peer in enumerate(peers)
+            )
+
+        with patch.object(self.client, 'join_network', return_value=SimpleNamespace(state=NetworkState.CONNECTED)), \
+                patch.object(self.client, '_request_batch', side_effect=responses):
+            with _RecordCircuits(
+                b't' * 32,
+                RpcType.FIND_RECORD,
+                b'record',
+                2,
+                response_target=self.client.minimum_replicas,
+            ) as circuits:
+                found = self.client.find_nodes(
+                    b't' * 32,
+                    'discovery',
+                    record_circuits=circuits,
+                )
+
+        self.assertEqual(
+            [len(batch) for batch in batches],
+            [self.client.minimum_replicas + 1],
+        )
+        self.assertEqual(success_targets, [self.client.minimum_replicas])
+        self.assertEqual(len(found), self.client.minimum_replicas)
+
+    def test_normal_discovery_continues_with_nonempty_batches(self):
+        from granger_network.wan_discovery import encode_node_list
+        from granger_network.network_health import NetworkState
+        extra = tuple(NodeDescriptor.create(
+            ServiceIdentity.generate(),
+            RendezvousEndpoint("127.0.0.1", 24100 + index),
+            ("access", "bootstrap", "discovery", "entry", "middle"),
+            RelayPolicy(enabled=True),
+            lifetime=3600,
+        ) for index in range(2))
+        peers = (*self.peers, *extra)
+        payload = encode_node_list(peers)
+        batches = []
+
+        def responses(batch, *_args, **_kwargs):
+            self.assertTrue(batch, "normal discovery submitted an empty batch")
+            batches.append(tuple(batch))
+            return tuple((peer, payload) for peer in batch)
+
+        with patch.object(self.client, 'join_network', return_value=SimpleNamespace(state=NetworkState.CONNECTED)), \
+                patch.object(self.client.pool, 'candidates', return_value=peers), \
+                patch.object(self.client, '_request_batch', side_effect=responses):
+            found = self.client.find_nodes(b't' * 32, 'discovery')
+
+        self.assertEqual([len(batch) for batch in batches], [4, 2])
+        self.assertEqual(len(found), len(peers))
+
+    def test_request_batch_stops_new_route_attempts_after_success_target(self):
+        stopped = threading.Event()
+
+        def request(peer, *_args, **kwargs):
+            stop_event = kwargs["stop_event"]
+            if peer.node_id == self.peers[-1].node_id:
+                if not stop_event.wait(1):
+                    raise AssertionError("batch success target was not signalled")
+                stopped.set()
+                raise DiscoveryError("controlled hedged request cancellation")
+            return b"response"
+
+        with patch.object(self.client, '_request', side_effect=request):
+            results = self.client._request_batch(
+                list(self.peers),
+                RpcType.FIND_NODE,
+                b"request",
+                RpcType.FIND_NODE,
+                stop_after_successes=3,
+            )
+
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(sum(content == b"response" for _peer, content in results), 3)
+        self.assertEqual(sum(content is None for _peer, content in results), 1)
+
+    def test_cancelled_hedged_request_opens_no_new_private_route(self):
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with patch("granger_network.circuit.CircuitBuilder") as builder:
+            with self.assertRaisesRegex(DiscoveryError, "success target"):
+                self.client._request(
+                    self.peers[0],
+                    RpcType.FIND_NODE,
+                    b"request",
+                    RpcType.FIND_NODE,
+                    stop_event=stop_event,
+                )
+
+        builder.return_value.open.assert_not_called()
+
+    def test_route_candidates_probe_dht_with_an_authenticated_signed_quorum(self):
+        from granger_network.network_health import NetworkState
+        self.client._health.update(
+            NetworkState.JOINING,
+            authenticated_peers=2,
+            known_peers=len(self.peers),
+            reachable_relays=len(self.peers),
+            dht_ready=False,
+            failure_reason="",
+        )
+        for peer in self.peers[:2]:
+            self.client._record_peer_success(peer.node_id)
+
+        with patch.object(self.client, 'find_nodes', return_value=self.peers) as find_nodes:
+            found = self.client.route_candidates(b't' * 32, 'access')
+
+        find_nodes.assert_called_once_with(b't' * 32, 'access')
+        self.assertEqual({peer.node_id for peer in found}, {peer.node_id for peer in self.peers})
+
+    def test_route_candidates_probe_without_an_authenticated_quorum(self):
+        from granger_network.network_health import NetworkState
+        self.client._health.update(
+            NetworkState.JOINING,
+            authenticated_peers=1,
+            known_peers=len(self.peers),
+            reachable_relays=len(self.peers),
+            dht_ready=False,
+            failure_reason="",
+        )
+        self.client._record_peer_success(self.peers[0].node_id)
+
+        with patch.object(self.client, 'find_nodes', return_value=self.peers) as find_nodes:
+            found = self.client.route_candidates(b't' * 32, 'access')
+
+        find_nodes.assert_called_once_with(b't' * 32, 'access')
+        self.assertEqual({peer.node_id for peer in found}, {peer.node_id for peer in self.peers})
 
     def test_successful_private_circuit_records_authenticated_ingress(self):
         route = self.client._private_route_candidates(self.peers[0])[0]
@@ -927,8 +1234,14 @@ class WanDiscoveryTests(unittest.TestCase):
         self.assertEqual(getaddrinfo.call_count, 0)
         self.assertEqual(gethostbyname.call_count, 0)
         self.assertEqual(gethostbyname_ex.call_count, 0)
-        self.assertTrue(all(node.accepted_connections > 0 for node in self.nodes))
-        self.assertTrue(all(node.rpc_requests > 0 for node in self.nodes))
+        self.assertGreaterEqual(
+            sum(node.accepted_connections > 0 for node in self.nodes),
+            self.client.replication_factor,
+        )
+        self.assertGreaterEqual(
+            sum(node.rpc_requests > 0 for node in self.nodes),
+            self.client.replication_factor,
+        )
         self.assertEqual(len(self.cache.load(now=self.now)), 6)
         health = self.client.health()
         self.assertEqual(health.state, NetworkState.CONNECTED)

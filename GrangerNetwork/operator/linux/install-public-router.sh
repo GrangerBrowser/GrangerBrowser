@@ -110,9 +110,22 @@ fi
 
 WITH_BOOTSTRAP=no
 if [[ -f "$BOOTSTRAP_ROOT/bootstrap-set.json" && \
-      -f "$BOOTSTRAP_ROOT/bootstrap-authority.pin" ]]; then
+      -f "$BOOTSTRAP_ROOT/bootstrap-authority.pin" && \
+      -f "$BOOTSTRAP_ROOT/browser-wan.json" && \
+      -f "$BOOTSTRAP_ROOT/config-authority.pin" ]]; then
     WITH_BOOTSTRAP=yes
 fi
+
+RUNTIME_ENV="$CONFIG_ROOT/$NODE_NAME-runtime.env"
+if [[ "$WITH_BOOTSTRAP" == yes ]]; then
+    printf '%s\n' \
+        "GRANGER_WAN_CONFIG_ARGUMENTS=--wan-config-publication=$BOOTSTRAP_ROOT/browser-wan.json --wan-config-trust-anchor=$BOOTSTRAP_ROOT/config-authority.pin" \
+        >"$RUNTIME_ENV"
+else
+    printf '%s\n' 'GRANGER_WAN_CONFIG_ARGUMENTS=' >"$RUNTIME_ENV"
+fi
+chown root:granger "$RUNTIME_ENV"
+chmod 0640 "$RUNTIME_ENV"
 
 python3 - "$PUBLIC_IP" "$PORT" "$CONFIG_ROOT/$NODE_NAME.json" \
     "$BOOTSTRAP_ROOT" "$WITH_BOOTSTRAP" <<'PY'

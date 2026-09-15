@@ -10,13 +10,36 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
 $packageRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $PackageDirectory)).TrimEnd('\')
 $outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory)).TrimEnd('\')
+$canonicalRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "release/Granger Browser")).TrimEnd('\')
 foreach ($path in @($packageRoot, $outputRoot)) {
     if (-not $path.StartsWith($workspaceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
         throw "Portable archive paths must remain inside the project workspace: $path"
     }
 }
+if (-not $packageRoot.Equals($canonicalRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Portable release archives must be created from the accepted canonical package."
+}
 if (-not (Test-Path -LiteralPath (Join-Path $packageRoot "GrangerBrowser.exe") -PathType Leaf)) {
     throw "Canonical packaged executable not found under $packageRoot"
+}
+
+$sourceHead = (& git -C $projectRoot rev-parse HEAD).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
+    throw "Unable to resolve the portable release source revision."
+}
+$sourceChanges = @(& git -C $projectRoot status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) { throw "Unable to inspect the portable release source tree." }
+if ($sourceChanges.Count -ne 0) {
+    throw "Portable release archives require a clean committed source tree."
+}
+$deploymentMetadataPath = Join-Path $packageRoot "deployment-metadata.json"
+if (-not (Test-Path -LiteralPath $deploymentMetadataPath -PathType Leaf)) {
+    throw "Canonical package has no deployment metadata."
+}
+$deploymentMetadata = Get-Content -LiteralPath $deploymentMetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not ([string]$deploymentMetadata.SourceCommit).Equals(
+        $sourceHead, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Canonical package source does not match source HEAD $sourceHead."
 }
 
 $portability = & (Join-Path $PSScriptRoot "test-windows-portability.ps1") `

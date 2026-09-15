@@ -163,11 +163,15 @@ independent coordinator against another journal with the same authority keys.
 
 Public-only SSH control validates pins, node identity, signed config, hashes,
 expiry and policy before a Linux `renameat2(RENAME_EXCHANGE)` directory swap.
-It refuses a non-atomic fallback. It does not restart services, replace runtime,
-edit firewall/systemd, or access node private identities. The existing operator
-reloads the new publication. Health must then show fresh RUNNING/CONNECTED,
-AUTH 4 and DHT ready, followed by the browser's real authenticated wire-v3
-config download/verification. Only after every peer passes is renewal complete.
+It refuses a non-atomic fallback. It does not replace runtime, edit
+firewall/systemd, or access node private identities. A newer verified generation
+triggers one bounded restart of the existing unit so its in-memory discovery
+pool cannot remain on the preceding generation. An idempotent retry restarts
+only when the generation has not yet reached the node's monotonic reseed state.
+Health has a bounded four-minute convergence window and must then show fresh
+RUNNING/CONNECTED, AUTH 4 and DHT ready, followed by the browser's real
+authenticated wire-v3 config download/verification. Only after every peer
+passes is renewal complete.
 
 Protect the entire operator root with owner-only ACLs and use verified SSH
 host keys. The coordinator needs authority read access, local journal/bundle

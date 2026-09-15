@@ -7,7 +7,8 @@ from unittest.mock import Mock, patch
 
 from granger_network.descriptor import ServiceDescriptor
 from granger_network.errors import (
-    IntroductionOfflineError, OverlayRoutingError, ReplayError, ResolutionError,
+    IntroductionOfflineError, OverlayRoutingError, PeerRpcError, ReplayError,
+    ResolutionError,
 )
 from granger_network.identity import ServiceIdentity
 from granger_network.introduction import IntroductionDescriptor
@@ -230,6 +231,50 @@ class IntroductionRefreshTests(unittest.TestCase):
             )
         ordered_points = [point.node_id for point in self.old.points]
         self.assertEqual(used_nodes, ordered_points * 2)
+
+    def test_authenticated_timeout_tries_other_point_before_refresh(self):
+        self.old = IntroductionDescriptor.create(
+            self.identity,
+            self.service,
+            [self.nodes[3].node_id, self.nodes[4].node_id],
+            sequence=2,
+            lifetime=900,
+        )
+        self.resolver.resolve_introduction.side_effect = None
+        self.resolver.resolve_introduction.return_value = self.old
+        used_nodes = []
+        timeout = OverlayRoutingError(
+            "introduction stage failed during request (PeerRpcError): "
+            "peer RPC request failed: INTRODUCTION_TIMEOUT"
+        )
+        timeout.__cause__ = PeerRpcError("INTRODUCTION_TIMEOUT")
+
+        def client(_identity, _service, _introduction, _route, **_options):
+            def connect(node):
+                used_nodes.append(node.node_id)
+                if len(used_nodes) == 1:
+                    raise timeout
+                return self.session
+
+            return SimpleNamespace(connect=connect)
+
+        with (
+            patch("granger_network.wan_client.WanRouteSelector", return_value=self.selector),
+            patch("granger_network.wan_client.WanServiceClient", side_effect=client),
+        ):
+            connected = connect_service(
+                self.runtime,
+                self.resolver,
+                self.service.canonical_name,
+                route_attempts=2,
+            )
+
+        self.assertIs(connected.session, self.session)
+        self.assertEqual(
+            used_nodes,
+            [point.node_id for point in self.old.points],
+        )
+        self.assertEqual(self.resolver.resolve_introduction.call_count, 1)
 
     def test_single_attempt_does_not_start_unused_refresh(self):
         with self.assertRaises(OverlayRoutingError):
