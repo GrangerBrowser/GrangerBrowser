@@ -5566,7 +5566,7 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
                && generalSettingsHtml.contains(QStringLiteral("@media(max-width:760px)"))
                && !generalSettingsHtml.contains(QStringLiteral("__SCROLLBAR_SIZE__")));
     record(QStringLiteral("Settings form geometry uses one responsive card inset"),
-           generalSettingsHtml.contains(QStringLiteral("padding:2px var(--settings-card-inset) var(--settings-card-inset)"))
+           generalSettingsHtml.contains(QStringLiteral("padding:0 var(--settings-card-inset) var(--settings-card-inset)"))
                && generalSettingsHtml.contains(QStringLiteral("calc(-1 * var(--settings-card-inset))"))
                && generalSettingsHtml.contains(QStringLiteral("--settings-row-min-height:66px"))
                && generalSettingsHtml.contains(QStringLiteral("min-height:var(--settings-row-min-height);padding:13px 0"))
