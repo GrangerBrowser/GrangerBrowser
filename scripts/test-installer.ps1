@@ -292,7 +292,13 @@ try {
             -and $tor.bootstrapProgress -eq 100 -and -not $tor.routeVerified `
             -and $configurationValid `
             -and $tor.reason -match 'route verification|check endpoint|timed out'
-        if (-not ($retryableBootstrapTimeout -or $retryableVerificationFailure)) { break }
+        $retryableOnionFailure = $torAttempt -lt $maxTorAttempts `
+            -and $tor.bootstrapProgress -eq 100 -and $tor.routeVerified `
+            -and $configurationValid -and $tor.onionCheck.requested `
+            -and (-not $tor.onionCheck.loaded -or -not $tor.onionCheck.remainedOnOnion) `
+            -and $tor.reason -match 'onion|timed out'
+        if (-not ($retryableBootstrapTimeout -or $retryableVerificationFailure -or
+                  $retryableOnionFailure)) { break }
         Start-Sleep -Seconds 2
     }
     if (-not $torPassed) {
