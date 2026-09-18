@@ -21,11 +21,13 @@ from granger_network.hosting import (
     IDENTITY_FILE,
     PUBLICATION_CONTENT,
     PUBLICATION_MANIFEST,
+    RUNTIME_INSTANCE_ENV,
     SERVICE_DESCRIPTOR_FILE,
     StaticSiteBridge,
     _ensure_publication_snapshot,
     _service_route_startup_timeout,
     _hosting_health_state,
+    _write_status,
     initialize_hosted_service,
     inspect_static_site,
     load_hosted_service,
@@ -83,6 +85,16 @@ class HostingHealthTests(unittest.TestCase):
         self.assertEqual(self.check(), ("intro-unavailable", "INTRO_DESCRIPTOR_EXPIRED"))
         self.now = self.service.expires_at
         self.assertEqual(self.check(), ("service-unpublished", "SERVICE_DESCRIPTOR_EXPIRED"))
+
+    def test_status_echoes_valid_runtime_instance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="granger-hosting-status-") as directory:
+            root = Path(directory)
+            (root / "metadata").mkdir()
+            runtime_instance = "a" * 32
+            with patch.dict(os.environ, {RUNTIME_INSTANCE_ENV: runtime_instance}):
+                _write_status(root, "online", self.service)
+            status = json.loads((root / "metadata/status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["runtimeInstance"], runtime_instance)
 
 
 class RecordingHandler(BaseHTTPRequestHandler):
@@ -613,6 +625,69 @@ class HostedServiceStorageTests(unittest.TestCase):
                 entry_page="index.html",
             ).fetch("GET", "/").body,
         )
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory sharing retry")
+    def test_snapshot_install_retries_transient_windows_sharing_failure(self) -> None:
+        services = self.root / "services"
+        identifier = "a" * 32
+        real_replace = os.replace
+        snapshot_attempts = 0
+
+        def replace(source: object, destination: object) -> None:
+            nonlocal snapshot_attempts
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if source_path.name.endswith(".staging") and destination_path.name == "current":
+                snapshot_attempts += 1
+                if snapshot_attempts == 1:
+                    error = PermissionError("directory is temporarily busy")
+                    error.winerror = 5
+                    raise error
+            real_replace(source, destination)
+
+        with patch("granger_network.hosting.os.replace", side_effect=replace):
+            with patch("granger_network.hosting.time.sleep") as pause:
+                initialize_hosted_service(
+                    services, identifier, "Sharing retry", "static", source=str(self.site.resolve())
+                )
+
+        self.assertEqual(snapshot_attempts, 2)
+        pause.assert_called_once_with(0.01)
+        self.assertTrue((services / identifier / PUBLICATION_MANIFEST).is_file())
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory sharing retry")
+    def test_snapshot_install_propagates_persistent_windows_sharing_failure(self) -> None:
+        services = self.root / "services"
+        identifier = "b" * 32
+        real_replace = os.replace
+        snapshot_attempts = 0
+
+        def replace(source: object, destination: object) -> None:
+            nonlocal snapshot_attempts
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if source_path.name.endswith(".staging") and destination_path.name == "current":
+                snapshot_attempts += 1
+                error = PermissionError("directory remains busy")
+                error.winerror = 32
+                raise error
+            real_replace(source, destination)
+
+        with patch("granger_network.hosting.os.replace", side_effect=replace):
+            with patch("granger_network.hosting.time.sleep") as pause:
+                with self.assertRaises(PermissionError):
+                    initialize_hosted_service(
+                        services,
+                        identifier,
+                        "Persistent sharing failure",
+                        "static",
+                        source=str(self.site.resolve()),
+                    )
+
+        self.assertEqual(snapshot_attempts, 6)
+        self.assertEqual(pause.call_count, 5)
+        self.assertFalse((services / identifier).exists())
+        self.assertEqual(list(services.glob(".*.creating")), [])
 
     def test_tampered_publication_snapshot_fails_closed(self) -> None:
         services = self.root / "services"

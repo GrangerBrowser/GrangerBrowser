@@ -62,7 +62,8 @@ struct HostedServiceRecord {
     qint64 pid = 0;
     bool autoStart = false;
 
-    void applyRuntimeStatus(const QJsonObject &runtime, qint64 now, qint64 startedAt);
+    void applyRuntimeStatus(const QJsonObject &runtime, qint64 now, qint64 startedAt,
+                            const QString &runtimeInstance);
 };
 
 class GrangerHostingManager final : public QObject {
@@ -166,6 +167,7 @@ private:
     QSet<QString> m_stoppingServices;
     QHash<QString, QString> m_lastErrors;
     QHash<QString, qint64> m_startedAt;
+    QHash<QString, QString> m_runtimeInstances;
     quint64 m_nextOperationId = 1;
     bool m_shuttingDown = false;
 };

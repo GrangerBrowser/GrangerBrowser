@@ -117,13 +117,16 @@ QProcessEnvironment isolatedEnvironment(const QString &moduleRoot, bool appLocal
 }
 
 void HostedServiceRecord::applyRuntimeStatus(const QJsonObject &runtime,
-                                           qint64 now, qint64 startedAt)
+                                           qint64 now, qint64 startedAt,
+                                           const QString &runtimeInstance)
 {
     status = QStringLiteral("starting");
     stage.clear();
     error.clear();
     const qint64 updated = runtime.value(QStringLiteral("updatedAt")).toInteger();
-    if (runtime.value(QStringLiteral("pid")).toInteger() != pid
+    if (runtime.value(QStringLiteral("pid")).toInteger() <= 0
+        || runtimeInstance.isEmpty()
+        || runtime.value(QStringLiteral("runtimeInstance")).toString() != runtimeInstance
         || runtime.value(QStringLiteral("canonicalName")).toString() != address
         || updated < startedAt) return;
 
@@ -554,7 +557,8 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
         result.uptimeSeconds = qMax<qint64>(
             0, (QDateTime::currentMSecsSinceEpoch() - m_startedAt.value(result.id)) / 1000);
         result.applyRuntimeStatus(runtimeStatus, QDateTime::currentSecsSinceEpoch(),
-                                  m_startedAt.value(result.id) / 1000);
+                                  m_startedAt.value(result.id) / 1000,
+                                  m_runtimeInstances.value(result.id));
         if (result.status == QStringLiteral("error")) {
             if (result.error.isEmpty()) result.error = m_lastErrors.value(result.id);
         }
@@ -1056,7 +1060,11 @@ bool GrangerHostingManager::launchService(const QString &id, QString *error)
     auto *process = new QProcess(this);
     configureManagedProcess(process);
     process->setProcessChannelMode(QProcess::SeparateChannels);
-    process->setProcessEnvironment(isolatedEnvironment(moduleRoot, appLocal));
+    QProcessEnvironment environment = isolatedEnvironment(moduleRoot, appLocal);
+    QString runtimeInstance = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    runtimeInstance.remove(QLatin1Char('-'));
+    environment.insert(QStringLiteral("GRANGER_HOSTING_RUNTIME_INSTANCE"), runtimeInstance);
+    process->setProcessEnvironment(environment);
     process->setProgram(python);
     QStringList arguments;
     if (appLocal) arguments.append({QStringLiteral("-I"), QStringLiteral("-B")});
@@ -1098,16 +1106,22 @@ bool GrangerHostingManager::launchService(const QString &id, QString *error)
             }
             emit servicesChanged();
         }
-        if (m_processes.value(id) == process) m_processes.remove(id);
+        if (m_processes.value(id) == process) {
+            m_processes.remove(id);
+            m_startedAt.remove(id);
+            m_runtimeInstances.remove(id);
+        }
         process->deleteLater();
     });
     m_lastErrors.remove(id);
     m_processes.insert(id, process);
     m_startedAt.insert(id, QDateTime::currentMSecsSinceEpoch());
+    m_runtimeInstances.insert(id, runtimeInstance);
     process->start();
     if (!process->waitForStarted(3000)) {
         m_processes.remove(id);
         m_startedAt.remove(id);
+        m_runtimeInstances.remove(id);
         const QString message = QStringLiteral("Hosting runtime could not start: %1")
                                     .arg(process->errorString());
         m_lastErrors.insert(id, message);
@@ -1173,6 +1187,8 @@ void GrangerHostingManager::stopProcess(const QString &id)
         timer->deleteLater();
     }
     QProcess *process = m_processes.take(id);
+    m_startedAt.remove(id);
+    m_runtimeInstances.remove(id);
     if (!process) return;
     disconnect(process, nullptr, this, nullptr);
     if (process->state() != QProcess::NotRunning) {
@@ -1183,7 +1199,6 @@ void GrangerHostingManager::stopProcess(const QString &id)
         }
     }
     process->deleteLater();
-    m_startedAt.remove(id);
 }
 
 bool GrangerHostingManager::startService(const QString &id, QString *error)

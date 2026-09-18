@@ -429,10 +429,17 @@ class _WanGateway:
                     isinstance(error, TimeoutError)
                     and not slot.connected.session.application_mux.failed
                 )
+                stream_protocol_failure = (
+                    isinstance(error, ProtocolError)
+                    and not slot.connected.session.application_mux.failed
+                )
                 failed = not request_timeout
                 retry_with_fresh_session = (
                     attempt + 1 < maximum_attempts
-                    and slot.connected.session.application_mux.failed
+                    and (
+                        slot.connected.session.application_mux.failed
+                        or stream_protocol_failure
+                    )
                 )
                 retry_on_healthy_session = (
                     attempt + 1 < maximum_attempts and request_timeout

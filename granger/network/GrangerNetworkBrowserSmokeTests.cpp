@@ -110,33 +110,44 @@ QJsonObject hostingStatusChecks()
     HostedServiceRecord record;
     record.pid = 17;
     record.address = QString(52, QLatin1Char('a')) + QStringLiteral(".granger");
+    const QString runtimeInstance(32, QLatin1Char('a'));
     const QJsonObject fresh{
         {QStringLiteral("pid"), record.pid},
+        {QStringLiteral("runtimeInstance"), runtimeInstance},
         {QStringLiteral("canonicalName"), record.address},
         {QStringLiteral("state"), QStringLiteral("online")},
         {QStringLiteral("updatedAt"), 1000},
         {QStringLiteral("healthLeaseSeconds"), 15}
     };
     QJsonObject checks;
-    record.applyRuntimeStatus(fresh, 1000, 999);
+    record.applyRuntimeStatus(fresh, 1000, 999, runtimeInstance);
     checks.insert(QStringLiteral("freshOnline"), record.status == QStringLiteral("online"));
-    record.applyRuntimeStatus(fresh, 1015, 999);
+    record.applyRuntimeStatus(fresh, 1015, 999, runtimeInstance);
     checks.insert(QStringLiteral("expiredDegraded"), record.status == QStringLiteral("degraded"));
-    record.applyRuntimeStatus(fresh, 998, 999);
+    record.applyRuntimeStatus(fresh, 998, 999, runtimeInstance);
     checks.insert(QStringLiteral("futureRejected"), record.status == QStringLiteral("degraded"));
-    record.applyRuntimeStatus(fresh, 1000, 1001);
+    record.applyRuntimeStatus(fresh, 1000, 1001, runtimeInstance);
     checks.insert(QStringLiteral("previousStartRejected"), record.status == QStringLiteral("starting"));
-    for (const QString &field : {QStringLiteral("pid"), QStringLiteral("canonicalName")}) {
+    for (const QString &field : {QStringLiteral("pid"), QStringLiteral("runtimeInstance"),
+                                 QStringLiteral("canonicalName")}) {
         QJsonObject invalid = fresh;
         invalid.remove(field);
-        record.applyRuntimeStatus(invalid, 1000, 999);
+        record.applyRuntimeStatus(invalid, 1000, 999, runtimeInstance);
         checks.insert(field + QStringLiteral("MismatchRejected"),
                       record.status == QStringLiteral("starting"));
     }
+    QJsonObject childInterpreter = fresh;
+    childInterpreter.insert(QStringLiteral("pid"), record.pid + 1);
+    record.applyRuntimeStatus(childInterpreter, 1000, 999, runtimeInstance);
+    checks.insert(QStringLiteral("launcherChildPidAccepted"),
+                  record.status == QStringLiteral("online"));
+    record.applyRuntimeStatus(fresh, 1000, 999, QString(32, QLatin1Char('b')));
+    checks.insert(QStringLiteral("previousInstanceRejected"),
+                  record.status == QStringLiteral("starting"));
     for (const int lease : {0, -1, 16, 86400}) {
         QJsonObject invalid = fresh;
         invalid.insert(QStringLiteral("healthLeaseSeconds"), lease);
-        record.applyRuntimeStatus(invalid, 1000, 999);
+        record.applyRuntimeStatus(invalid, 1000, 999, runtimeInstance);
         checks.insert(QStringLiteral("invalidLease%1Rejected").arg(lease),
                       record.status == QStringLiteral("degraded"));
     }
@@ -145,10 +156,10 @@ QJsonObject hostingStatusChecks()
              QStringLiteral("service-unpublished"), QStringLiteral("error")}) {
         QJsonObject current = fresh;
         current.insert(QStringLiteral("state"), state);
-        record.applyRuntimeStatus(current, 1000, 999);
+        record.applyRuntimeStatus(current, 1000, 999, runtimeInstance);
         checks.insert(state, record.status == state);
     }
-    record.applyRuntimeStatus(fresh, 1000, 999);
+    record.applyRuntimeStatus(fresh, 1000, 999, runtimeInstance);
     checks.insert(QStringLiteral("freshHealthRecovers"), record.status == QStringLiteral("online"));
     return checks;
 }

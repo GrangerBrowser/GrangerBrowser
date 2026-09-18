@@ -887,6 +887,49 @@ class WanServiceTests(unittest.TestCase):
         session.close.assert_not_called()
         self.assertIs(gateway._sessions["asset.granger"].connected, connected)
 
+    def test_gateway_retries_get_stream_protocol_failure_with_fresh_session(self) -> None:
+        gateway = _WanGateway.__new__(_WanGateway)
+        gateway._runtime = object()
+        gateway._resolver = object()
+        gateway._route_attempts = 1
+        gateway._timeout = 3.0
+        gateway._sessions = {}
+        gateway._session_locks = tuple(threading.Lock() for _ in range(4))
+        gateway._rotation_policy = CircuitRotationPolicy()
+        gateway._rotation_count = 0
+        gateway._closed = False
+        gateway._lock = threading.Lock()
+
+        first = Mock()
+        first.application_mux.failed = False
+        first.fetch.side_effect = ProtocolError(
+            "application stream closed before its message completed"
+        )
+        second = Mock()
+        second.application_mux.failed = False
+        second.fetch.return_value = HttpResult(
+            200, "OK", {"content-type": "text/css"}, CSS,
+        )
+        first_connected = SimpleNamespace(
+            service=SimpleNamespace(canonical_name="asset.granger"), session=first,
+        )
+        second_connected = SimpleNamespace(
+            service=SimpleNamespace(canonical_name="asset.granger"), session=second,
+        )
+        with patch(
+            "granger_network.browser_gateway.connect_service",
+            side_effect=(first_connected, second_connected),
+        ) as connect:
+            response = gateway.fetch_gateway(
+                "asset.granger", "/style.css", "GET", {}, b"",
+            )
+
+        self.assertEqual(response.body, CSS)
+        self.assertEqual(connect.call_count, 2)
+        first.close.assert_called_once()
+        second.close.assert_not_called()
+        self.assertIs(gateway._sessions["asset.granger"].connected, second_connected)
+
     def test_gateway_does_not_retry_post_timeout_or_discard_a_healthy_session(self) -> None:
         gateway = _WanGateway.__new__(_WanGateway)
         gateway._runtime = object()

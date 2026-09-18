@@ -16,6 +16,7 @@ from granger_network.descriptor import ServiceDescriptor
 from granger_network.errors import (
     IdentityVerificationError,
     NetworkUnavailableError,
+    OverlayRoutingError,
     ProtocolError,
 )
 from granger_network.identity import ServiceIdentity
@@ -70,6 +71,7 @@ class HostRecoveryTests(unittest.TestCase):
 
             def make_host(*_args, **_kwargs):
                 host = Mock()
+                host_number = len(hosts) + 1
                 host.recovery_requested = len(hosts) == 0
                 host.recovery_reason = "introduction unavailable"
                 host.wait.side_effect = [False, True] if not hosts else [False, Finished()]
@@ -77,6 +79,14 @@ class HostRecoveryTests(unittest.TestCase):
                     "recoveryRequested": False, "running": True, "ready": True,
                     "healthyIntroductions": 2, "requiredIntroductions": 2,
                 }
+                if phase == "route" and host_number in failures:
+                    host.wait_ready.side_effect = error
+                    host.startup_failed_access_ids = frozenset()
+                    host.startup_failed_service_relay_ids = frozenset()
+                    host.startup_failed_middle_ids = frozenset()
+                    host.startup_failed_route_edges = frozenset()
+                    host.startup_failed_role = "access"
+                    host.startup_failure_stage = "authentication"
                 hosts.append(host)
                 return host
 
@@ -169,6 +179,21 @@ class HostRecoveryTests(unittest.TestCase):
                 self.assertEqual(result["hosts"], [])
                 self.assertEqual(result["sleeps"], [])
 
+    def test_initial_route_recovery_is_globally_bounded(self):
+        result = self.run_case(
+            "browser",
+            failure_at=range(1, 20),
+            phase="route",
+            error=ProtocolError("simulated route authentication timeout"),
+        )
+        self.assertIsInstance(result["error"], OverlayRoutingError)
+        self.assertEqual(
+            len(result["hosts"]),
+            hosting.MAX_SERVICE_ROUTE_ATTEMPTS
+            * hosting.MAX_INITIAL_ROUTE_RECOVERY_CYCLES,
+        )
+        self.assertTrue(all(host.stop.called for host in result["hosts"]))
+
     def test_browser_introduction_publication_overlaps_route_startup(self):
         with tempfile.TemporaryDirectory(prefix="granger-host-pipeline-") as temporary:
             root = Path(temporary)
@@ -192,6 +217,7 @@ class HostRecoveryTests(unittest.TestCase):
             discovery = Mock()
             discovery.route_candidates.return_value = peers
             discovery.health.return_value.to_document.return_value = {
+                "updatedAt": int(time.time()),
                 "state": "CONNECTED",
                 "dhtReady": True,
             }
@@ -267,7 +293,7 @@ class HostRecoveryTests(unittest.TestCase):
                 self.assertIsInstance(result["error"], IdentityVerificationError)
                 self.assertEqual(result["unavailable"], [])
 
-    def test_browser_host_retry_moves_a_failed_access_node_out_of_that_role(self):
+    def test_browser_host_retry_recovers_after_bounded_attempts(self):
         with tempfile.TemporaryDirectory(prefix="granger-host-access-retry-") as temporary:
             root = Path(temporary)
             identity = ServiceIdentity.generate()
@@ -296,22 +322,45 @@ class HostRecoveryTests(unittest.TestCase):
             discovery = Mock()
             discovery.route_candidates.return_value = peers
             discovery.health.return_value.to_document.return_value = {
+                "updatedAt": int(time.time()),
                 "state": "CONNECTED",
                 "dhtReady": True,
             }
             discovery.publish.return_value = 4
             runtime = SimpleNamespace(identity=identity, discovery=discovery)
-            failed_host = Mock()
-            failed_host.wait_ready.side_effect = ProtocolError(
-                "simulated first-hop authentication timeout"
-            )
-            failed_host.startup_failed_access_ids = frozenset({peers[0].node_id})
-            failed_host.startup_failed_service_relay_ids = frozenset()
-            failed_host.startup_failed_middle_ids = frozenset()
-            failed_host.startup_failed_route_edges = frozenset()
-            failed_host.startup_failed_role = "access"
-            failed_host.startup_failure_stage = "authentication"
-            select = Mock(side_effect=[((route, route), route, False), Finished()])
+            def failed_host() -> Mock:
+                host = Mock()
+                host.wait_ready.side_effect = ProtocolError(
+                    "simulated first-hop authentication timeout"
+                )
+                host.startup_failed_access_ids = frozenset({peers[0].node_id})
+                host.startup_failed_service_relay_ids = frozenset()
+                host.startup_failed_middle_ids = frozenset()
+                host.startup_failed_route_edges = frozenset()
+                host.startup_failed_role = "access"
+                host.startup_failure_stage = "authentication"
+                return host
+
+            first_failed = failed_host()
+            second_failed = failed_host()
+            recovered = Mock()
+            recovered.recovery_requested = False
+            recovered.errors = []
+            recovered.wait.side_effect = [False, Finished()]
+            recovered.health.return_value = {
+                "recoveryRequested": False,
+                "running": True,
+                "ready": True,
+                "healthyIntroductions": 2,
+                "requiredIntroductions": 2,
+            }
+            select = Mock(return_value=((route, route), route, False))
+            recovery_states: list[tuple[str, int]] = []
+
+            def sleep(delay: float) -> None:
+                if delay == 0.25:
+                    status = json.loads((root / hosting.STATUS_FILE).read_text(encoding="utf-8"))
+                    recovery_states.append((status["state"], status["generation"]))
             config = SimpleNamespace(
                 kind="static",
                 visibility="unlisted",
@@ -339,17 +388,28 @@ class HostRecoveryTests(unittest.TestCase):
                 stack.enter_context(patch.object(hosting, "StaticSiteBridge"))
                 stack.enter_context(patch.object(hosting, "WanRouteSelector"))
                 stack.enter_context(patch.object(hosting, "select_service_route_set", select))
-                stack.enter_context(patch.object(hosting, "WanServiceHost", return_value=failed_host))
-                stack.enter_context(patch.object(hosting.time, "sleep"))
+                stack.enter_context(
+                    patch.object(
+                        hosting,
+                        "WanServiceHost",
+                        side_effect=[first_failed, second_failed, recovered],
+                    )
+                )
+                stack.enter_context(patch.object(hosting.time, "sleep", side_effect=sleep))
                 with self.assertRaises(Finished):
                     hosting.serve_hosted_service(root, root / "wan.json")
 
-            self.assertEqual(select.call_count, 2)
+            self.assertEqual(select.call_count, 3)
             retry_options = select.call_args_list[1].kwargs
             self.assertEqual(retry_options["failed_access_ids"], {peers[0].node_id})
             self.assertEqual(retry_options["failed_service_relay_ids"], set())
             self.assertEqual(retry_options["failed_middle_ids"], set())
-            failed_host.stop.assert_called_once_with()
+            next_cycle_options = select.call_args_list[2].kwargs
+            self.assertEqual(next_cycle_options["failed_access_ids"], set())
+            self.assertEqual(recovery_states, [("recovering", 0)])
+            first_failed.stop.assert_called_once_with()
+            second_failed.stop.assert_called_once_with()
+            recovered.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":

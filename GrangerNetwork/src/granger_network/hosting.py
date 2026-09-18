@@ -22,7 +22,13 @@ from urllib.parse import unquote_to_bytes, urlsplit
 from ._codec import atomic_write_text, parse_json_object
 from .bootstrap import PeerCache
 from .descriptor import ServiceDescriptor
-from .errors import DiscoveryError, GrangerNetworkError, NetworkUnavailableError, OverlayRoutingError, UpstreamPolicyError
+from .errors import (
+    DiscoveryError,
+    GrangerNetworkError,
+    NetworkUnavailableError,
+    OverlayRoutingError,
+    UpstreamPolicyError,
+)
 from .http_bridge import HttpResult, LoopbackHttpBridge, LoopbackHttpTarget
 from .identity import ServiceIdentity
 from .introduction import IntroductionDescriptor
@@ -43,6 +49,8 @@ HOSTING_STATUS_INTERVAL = 5.0
 HOSTING_STATUS_LEASE_SECONDS = 15
 HOSTING_DHT_CHECK_INTERVAL = 60.0
 HOSTING_DHT_HEALTH_SECONDS = 120
+RUNTIME_INSTANCE_ENV = "GRANGER_HOSTING_RUNTIME_INSTANCE"
+MAX_INITIAL_ROUTE_RECOVERY_CYCLES = 2
 MAX_STATIC_FILES = 10_000
 MAX_TEXT_SCAN_BYTES = 256 * 1024
 CONFIG_FILE = "config.json"
@@ -677,6 +685,19 @@ def _remove_internal_tree(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _replace_internal_path(source: Path, destination: Path) -> None:
+    for attempt in range(6):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as error:
+            # Windows scanners and short-lived readers can transiently hold a
+            # directory handle. Keep the swap atomic and bound the retry time.
+            if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32) or attempt == 5:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def _copy_publication_file(item: _PublicationFile, content_root: Path) -> None:
     destination = content_root.joinpath(*PurePosixPath(item.relative_path).parts)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -744,12 +765,12 @@ def build_publication_snapshot(
             mode=0o600,
         )
         if current.exists():
-            os.replace(current, backup)
+            _replace_internal_path(current, backup)
         try:
-            os.replace(staging, current)
+            _replace_internal_path(staging, current)
         except Exception:
             if backup.exists() and not current.exists():
-                os.replace(backup, current)
+                _replace_internal_path(backup, current)
             raise
         installed = True
         _remove_internal_tree(backup)
@@ -1062,7 +1083,7 @@ def initialize_hosted_service(
             json.dumps(config.to_document(), ensure_ascii=True, indent=2, sort_keys=True) + "\n",
             mode=0o600,
         )
-        os.replace(temporary, destination)
+        _replace_internal_path(temporary, destination)
         return config, descriptor
     except Exception:
         if temporary.exists():
@@ -1180,9 +1201,13 @@ def _service_route_startup_timeout(network_timeout: float, route_count: int) -> 
 
 
 def _write_status(root: Path, state: str, descriptor: ServiceDescriptor, **details: object) -> None:
+    runtime_instance = os.environ.get(RUNTIME_INSTANCE_ENV, "")
+    if re.fullmatch(r"[a-f0-9]{32}", runtime_instance) is None:
+        runtime_instance = ""
     document: dict[str, object] = {
         "canonicalName": descriptor.canonical_name,
         "pid": os.getpid(),
+        "runtimeInstance": runtime_instance,
         "state": state,
         "updatedAt": int(time.time()),
         "healthLeaseSeconds": HOSTING_STATUS_LEASE_SECONDS,
@@ -1446,11 +1471,6 @@ def serve_hosted_service(
                             time.sleep(0.2 * (attempt + 1))
                 introduction_publication.result()
             if host is None:
-                if generation == 0:
-                    raise OverlayRoutingError(
-                        "hosting route startup attempts were exhausted: "
-                        + ";".join(failures)
-                    )
                 recovery_cycles += 1
                 _write_status(
                     root,
@@ -1461,6 +1481,11 @@ def serve_hosted_service(
                     recoveryReason="hosting route startup attempts were exhausted",
                     startupFailures=failures,
                 )
+                if generation == 0 and recovery_cycles >= MAX_INITIAL_ROUTE_RECOVERY_CYCLES:
+                    raise OverlayRoutingError(
+                        "initial hosting route recovery was exhausted: "
+                        + ";".join(failures)
+                    )
                 time.sleep(min(2.0, 0.25 * recovery_cycles))
                 continue
             recovery_cycles = 0
