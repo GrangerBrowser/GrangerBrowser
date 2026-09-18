@@ -355,11 +355,14 @@ if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
     }
 
     $torOutput = Join-Path $resultRoot "canonical-managed-tor.json"
+    $onionAcceptanceUrl = 'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/'
     Invoke-IsolatedBrowser -Executable $canonicalExecutable `
-        -Arguments @("--smoke-managed-mode=direct", "--smoke-output=$torOutput") `
+        -Arguments @("--smoke-managed-mode=direct", "--smoke-output=$torOutput", "--smoke-onion-url=$onionAcceptanceUrl") `
         -RunRoot (Join-Path $resultRoot "canonical-managed-tor") -TimeoutSeconds 420
     $tor = Get-Content -LiteralPath $torOutput -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $tor.ok -or -not $tor.routeVerified -or [int]$tor.bootstrapProgress -ne 100) {
+    if (-not $tor.ok -or -not $tor.routeVerified -or [int]$tor.bootstrapProgress -ne 100 -or
+        -not [bool]$tor.onionCheck.loaded -or -not [bool]$tor.onionCheck.remainedOnOnion -or
+        [int]$tor.onionCheck.contentCharacters -le 0) {
         throw "Canonical managed Tor smoke failed."
     }
 

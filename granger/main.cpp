@@ -342,6 +342,7 @@ bool managedModeArgumentsAreIsolated(int argc, char *argv[])
         QStringLiteral("--smoke-managed-mode="),
         QStringLiteral("--smoke-output="),
         QStringLiteral("--smoke-upstream-url="),
+        QStringLiteral("--smoke-onion-url="),
         QStringLiteral("--smoke-managed-bridge-line="),
         QStringLiteral("--smoke-managed-bridge-file=")
     };
@@ -4723,7 +4724,8 @@ int runManagedModeSmoke(QApplication &app,
                         const QString &outputPath,
                         const QString &mode,
                         const QString &upstreamProxyUrl,
-                        const QString &bridgeLine)
+                        const QString &bridgeLine,
+                        const QString &onionUrl)
 {
     const QString profilesPath = granger::AppPaths::stateFile(QStringLiteral("bridge_profiles.json"));
     QFile profilesBackupFile(profilesPath);
@@ -4764,12 +4766,19 @@ int runManagedModeSmoke(QApplication &app,
     auto *window = new granger::MainWindow(*settings, *theme);
     auto *poll = new QTimer(&app);
     auto *timeout = new QTimer(&app);
+    QWebEnginePage *onionPage = nullptr;
     poll->setInterval(500);
     timeout->setSingleShot(true);
     bool finished = false;
     bool applyActionTriggered = false;
+    bool onionStarted = false;
     int lastBootstrapProgress = -2;
     QJsonArray bootstrapEvents;
+    QJsonObject onionCheck{
+        {QStringLiteral("requested"), !onionUrl.trimmed().isEmpty()},
+        {QStringLiteral("requestedUrl"), onionUrl.trimmed()}
+    };
+    QElapsedTimer onionTimer;
     auto finish = [&](bool ok, const QString &reason) {
         if (finished) return;
         finished = true;
@@ -4791,6 +4800,7 @@ int runManagedModeSmoke(QApplication &app,
         result.insert(QStringLiteral("torrcVerified"), status.torrcVerified);
         result.insert(QStringLiteral("configVerificationOutput"), status.configVerificationOutput);
         result.insert(QStringLiteral("bootstrapEvents"), bootstrapEvents);
+        result.insert(QStringLiteral("onionCheck"), onionCheck);
         const QString exactBridge = bridgeLine.trimmed();
         result.insert(QStringLiteral("bridgeStillSavedExactly"),
                       exactBridge.isEmpty() || window->savedBridgeLines().contains(exactBridge));
@@ -4822,6 +4832,12 @@ int runManagedModeSmoke(QApplication &app,
         settings->setProxy(oldProxyUrl, oldProxyEnabled);
         QObject::disconnect(poll, nullptr, &app, nullptr);
         QObject::disconnect(timeout, nullptr, &app, nullptr);
+        if (onionPage) {
+            QObject::disconnect(onionPage, nullptr, &app, nullptr);
+            onionPage->triggerAction(QWebEnginePage::Stop);
+            onionPage->deleteLater();
+            onionPage = nullptr;
+        }
         poll->deleteLater();
         timeout->deleteLater();
         auto *closingWindow = window;
@@ -4851,7 +4867,64 @@ int runManagedModeSmoke(QApplication &app,
             bootstrapEvents.append(event);
         }
         if (status.routeVerified) {
-            finish(true, QStringLiteral("Managed mode reached a browser-verified Tor route"));
+            if (onionUrl.trimmed().isEmpty()) {
+                finish(true, QStringLiteral("Managed mode reached a browser-verified Tor route"));
+            } else if (!onionStarted) {
+                onionStarted = true;
+                poll->stop();
+                onionTimer.start();
+                onionPage = new QWebEnginePage(granger::BrowserProfile::instance(), &app);
+                QObject::connect(onionPage, &QWebEnginePage::loadingChanged, &app,
+                                 [&](const QWebEngineLoadingInfo &info) {
+                    const QMetaEnum statusMeta =
+                        QMetaEnum::fromType<QWebEngineLoadingInfo::LoadStatus>();
+                    const QMetaEnum domainMeta =
+                        QMetaEnum::fromType<QWebEngineLoadingInfo::ErrorDomain>();
+                    const char *statusKey = statusMeta.valueToKey(int(info.status()));
+                    const char *domainKey = domainMeta.valueToKey(int(info.errorDomain()));
+                    const QJsonObject diagnostic{
+                        {QStringLiteral("url"), info.url().toString(QUrl::FullyEncoded)},
+                        {QStringLiteral("status"), statusKey
+                            ? QString::fromLatin1(statusKey) : QString::number(int(info.status()))},
+                        {QStringLiteral("errorDomain"), domainKey
+                            ? QString::fromLatin1(domainKey) : QString::number(int(info.errorDomain()))},
+                        {QStringLiteral("errorCode"), info.errorCode()},
+                        {QStringLiteral("errorString"), info.errorString()},
+                        {QStringLiteral("isErrorPage"), info.isErrorPage()}
+                    };
+                    onionCheck.insert(QStringLiteral("lastLoading"), diagnostic);
+                    if (info.status() == QWebEngineLoadingInfo::LoadFailedStatus) {
+                        onionCheck.insert(QStringLiteral("loadingFailure"), diagnostic);
+                    }
+                });
+                QObject::connect(onionPage, &QWebEnginePage::loadFinished, &app,
+                                 [&](bool loaded) {
+                    if (finished || !onionPage) return;
+                    const QUrl finalUrl = onionPage->url();
+                    onionCheck.insert(QStringLiteral("loaded"), loaded);
+                    onionCheck.insert(QStringLiteral("finalUrl"),
+                                      finalUrl.toString(QUrl::FullyEncoded));
+                    onionCheck.insert(QStringLiteral("loadMs"), double(onionTimer.elapsed()));
+                    if (!loaded) {
+                        finish(false, QStringLiteral("Managed Tor onion URL failed to load"));
+                        return;
+                    }
+                    onionPage->toPlainText([&](const QString &text) {
+                        if (finished || !onionPage) return;
+                        const bool remainedOnOnion =
+                            onionPage->url().host().endsWith(QStringLiteral(".onion"),
+                                                            Qt::CaseInsensitive);
+                        const int contentCharacters = text.size();
+                        onionCheck.insert(QStringLiteral("remainedOnOnion"), remainedOnOnion);
+                        onionCheck.insert(QStringLiteral("contentCharacters"), contentCharacters);
+                        const bool ok = remainedOnOnion && contentCharacters > 0;
+                        finish(ok, ok
+                            ? QStringLiteral("Managed mode verified Tor and loaded onion content")
+                            : QStringLiteral("Managed Tor onion response was not valid onion content"));
+                    });
+                });
+                onionPage->load(QUrl(onionUrl.trimmed()));
+            }
         } else if (status.bridgeState == QStringLiteral("Failed")) {
             finish(false, status.bridgeError);
         }
@@ -6561,7 +6634,8 @@ int main(int argc, char *argv[])
                                    smokeOutput.isEmpty() ? QStringLiteral("output/managed-mode-smoke.json") : smokeOutput,
                                    managedModeSmoke,
                                    argumentValue(arguments, QStringLiteral("--smoke-upstream-url=")),
-                                   managedBridgeLine);
+                                   managedBridgeLine,
+                                   argumentValue(arguments, QStringLiteral("--smoke-onion-url=")));
     }
     if (arguments.contains(QStringLiteral("--smoke-invalid-torrc"))) {
         const QString smokeOutput = argumentValue(arguments, QStringLiteral("--smoke-output="));

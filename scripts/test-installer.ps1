@@ -274,13 +274,15 @@ try {
 
     $torPassed = $false
     $maxTorAttempts = 3
+    $onionAcceptanceUrl = 'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/'
     for ($torAttempt = 1; $torAttempt -le $maxTorAttempts; $torAttempt++) {
         $torOutput = Join-Path $testPath $(if ($torAttempt -eq 1) { 'managed-tor.json' } else { 'managed-tor-retry.json' })
         $torProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
-            -ArgumentList @('--smoke-managed-mode=direct', "--smoke-output=$torOutput") -Wait -PassThru
+            -ArgumentList @('--smoke-managed-mode=direct', "--smoke-output=$torOutput", "--smoke-onion-url=$onionAcceptanceUrl") -Wait -PassThru
         $tor = Get-Content $torOutput -Raw | ConvertFrom-Json
         $torPassed = $torProcess.ExitCode -eq 0 -and $tor.ok -and $tor.routeVerified `
-            -and $tor.bootstrapProgress -eq 100
+            -and $tor.bootstrapProgress -eq 100 -and $tor.onionCheck.loaded `
+            -and $tor.onionCheck.remainedOnOnion -and $tor.onionCheck.contentCharacters -gt 0
         if ($torPassed) { break }
         $configurationValid = $tor.configVerificationOutput -match 'Configuration was valid'
         $retryableBootstrapTimeout = $torAttempt -lt $maxTorAttempts `
