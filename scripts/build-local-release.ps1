@@ -399,15 +399,39 @@ if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
         throw "Canonical managed Tor and onion smoke failed after $torAttempt attempt(s). Evidence: $torEvidence"
     }
 
-    $i2pOutput = Join-Path $resultRoot "canonical-i2p.json"
-    Invoke-IsolatedBrowser -Executable $canonicalExecutable `
-        -Arguments @("--smoke-i2p-runtime", "--smoke-output=$i2pOutput", "--smoke-timeout-ms=600000") `
-        -RunRoot (Join-Path $resultRoot "canonical-i2p") -TimeoutSeconds 1300
-    $i2p = Get-Content -LiteralPath $i2pOutput -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $i2p.ok -or -not $i2p.firstRouteVerified -or -not $i2p.secondRouteVerified -or
-        -not $i2p.stopped -or [string]$i2p.clearnetPolicy -ne "blocked" -or
-        [bool]$i2p.outproxyConfigured) {
-        throw "Canonical bundled I2P smoke failed."
+    $i2pEvidence = Join-Path $projectRoot 'output/acceptance/canonical-managed-i2p.json'
+    $i2pPassed = $false
+    $maxI2pAttempts = 2
+    for ($i2pAttempt = 1; $i2pAttempt -le $maxI2pAttempts; $i2pAttempt++) {
+        $i2pOutput = Join-Path $resultRoot "canonical-i2p-$i2pAttempt.json"
+        $i2pExitCode = Invoke-IsolatedBrowser -Executable $canonicalExecutable `
+            -Arguments @("--smoke-i2p-runtime", "--smoke-output=$i2pOutput", "--smoke-timeout-ms=600000") `
+            -RunRoot (Join-Path $resultRoot "canonical-i2p-$i2pAttempt") `
+            -TimeoutSeconds 1300 -AllowNonZeroExit
+        if (-not (Test-Path -LiteralPath $i2pOutput -PathType Leaf)) {
+            throw "Canonical bundled I2P smoke did not write diagnostic evidence."
+        }
+        $i2p = Get-Content -LiteralPath $i2pOutput -Raw -Encoding UTF8 | ConvertFrom-Json
+        New-Item -ItemType Directory -Path (Split-Path -Parent $i2pEvidence) -Force | Out-Null
+        Copy-Item -LiteralPath $i2pOutput -Destination $i2pEvidence -Force
+        $i2pPassed = $i2pExitCode -eq 0 -and $i2p.ok `
+            -and $i2p.firstRouteVerified -and $i2p.secondRouteVerified `
+            -and $i2p.firstAddressBookReady -and $i2p.bootstrapContainsExpectedNames `
+            -and $i2p.humanReadableConnected -and $i2p.humanReadableHttpResponse `
+            -and $i2p.externalB32Connected -and $i2p.externalB32HttpResponse `
+            -and $i2p.unknownNameBlocked -and $i2p.headlessConfigured `
+            -and $i2p.routeLossObserved -and $i2p.restartRequested -and $i2p.stopped `
+            -and -not $i2p.outproxyConfigured -and [string]$i2p.clearnetPolicy -eq "blocked"
+        if ($i2pPassed) { break }
+        $retryableReseedFailure = $i2pAttempt -lt $maxI2pAttempts `
+            -and $i2p.started -and $i2p.stopped -and $i2p.firstAddressBookReady `
+            -and -not $i2p.firstRouteVerified `
+            -and [string]$i2p.finalError -match 'SOCKS is not listening|timed out|reseed'
+        if (-not $retryableReseedFailure) { break }
+        Start-Sleep -Seconds 2
+    }
+    if (-not $i2pPassed) {
+        throw "Canonical bundled I2P smoke failed after $i2pAttempt attempt(s). Evidence: $i2pEvidence"
     }
     Assert-NoGeneratedPythonBytecode -PackageDirectory $canonical
 

@@ -409,11 +409,41 @@ userAgentProfile=default
     try {
         $env:GRANGER_DATA_ROOT = Join-Path $testRoot "i2p runtime data"
         $env:GRANGER_SETTINGS_ROOT = Join-Path $testRoot "i2p runtime settings"
-        Invoke-GrangerBrowser @(
-            "--smoke-i2p-runtime",
-            "--smoke-output=$i2pRuntimeResult",
-            "--smoke-timeout-ms=600000"
-        ) -TimeoutSeconds 1300
+        $i2pPassed = $false
+        $maxI2pAttempts = 2
+        for ($i2pAttempt = 1; $i2pAttempt -le $maxI2pAttempts; $i2pAttempt++) {
+            $attemptResult = Join-Path $testRoot "i2p-runtime-smoke-$i2pAttempt.json"
+            $i2pExitCode = Invoke-GrangerBrowser @(
+                "--smoke-i2p-runtime",
+                "--smoke-output=$attemptResult",
+                "--smoke-timeout-ms=600000"
+            ) -TimeoutSeconds 1300 -AllowNonZero
+            if (-not (Test-Path -LiteralPath $attemptResult -PathType Leaf)) {
+                throw "Packaged I2P smoke did not write diagnostic evidence."
+            }
+            $i2pAttemptResult = Get-Content -Raw -Encoding UTF8 -LiteralPath $attemptResult | ConvertFrom-Json
+            Copy-Item -LiteralPath $attemptResult -Destination $i2pRuntimeResult -Force
+            $i2pPassed = $i2pExitCode -eq 0 -and $i2pAttemptResult.ok `
+                -and $i2pAttemptResult.firstRouteVerified -and $i2pAttemptResult.secondRouteVerified `
+                -and $i2pAttemptResult.firstAddressBookReady -and $i2pAttemptResult.bootstrapContainsExpectedNames `
+                -and $i2pAttemptResult.humanReadableConnected -and $i2pAttemptResult.humanReadableHttpResponse `
+                -and $i2pAttemptResult.externalB32Connected -and $i2pAttemptResult.externalB32HttpResponse `
+                -and $i2pAttemptResult.unknownNameBlocked -and $i2pAttemptResult.headlessConfigured `
+                -and $i2pAttemptResult.routeLossObserved -and $i2pAttemptResult.restartRequested `
+                -and $i2pAttemptResult.stopped -and -not $i2pAttemptResult.outproxyConfigured `
+                -and $i2pAttemptResult.clearnetPolicy -eq 'blocked'
+            if ($i2pPassed) { break }
+            $retryableReseedFailure = $i2pAttempt -lt $maxI2pAttempts `
+                -and $i2pAttemptResult.started -and $i2pAttemptResult.stopped `
+                -and $i2pAttemptResult.firstAddressBookReady `
+                -and -not $i2pAttemptResult.firstRouteVerified `
+                -and $i2pAttemptResult.finalError -match 'SOCKS is not listening|timed out|reseed'
+            if (-not $retryableReseedFailure) { break }
+            Start-Sleep -Seconds 2
+        }
+        if (-not $i2pPassed) {
+            throw "Packaged I2P smoke failed after $i2pAttempt attempt(s)."
+        }
     } finally {
         $env:GRANGER_DATA_ROOT = $primaryDataRoot
         $env:GRANGER_SETTINGS_ROOT = $primarySettingsRoot
