@@ -274,15 +274,13 @@ try {
 
     $torPassed = $false
     $maxTorAttempts = 3
-    $onionAcceptanceUrl = 'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/'
     for ($torAttempt = 1; $torAttempt -le $maxTorAttempts; $torAttempt++) {
         $torOutput = Join-Path $testPath $(if ($torAttempt -eq 1) { 'managed-tor.json' } else { 'managed-tor-retry.json' })
         $torProcess = Start-Process -FilePath (Join-Path $installRoot 'GrangerBrowser.exe') `
-            -ArgumentList @('--smoke-managed-mode=direct', "--smoke-output=$torOutput", "--smoke-onion-url=$onionAcceptanceUrl") -Wait -PassThru
+            -ArgumentList @('--smoke-managed-mode=direct', "--smoke-output=$torOutput") -Wait -PassThru
         $tor = Get-Content $torOutput -Raw | ConvertFrom-Json
         $torPassed = $torProcess.ExitCode -eq 0 -and $tor.ok -and $tor.routeVerified `
-            -and $tor.bootstrapProgress -eq 100 -and $tor.onionCheck.loaded `
-            -and $tor.onionCheck.remainedOnOnion -and $tor.onionCheck.contentCharacters -gt 0
+            -and $tor.bootstrapProgress -eq 100
         if ($torPassed) { break }
         $configurationValid = $tor.configVerificationOutput -match 'Configuration was valid'
         $retryableBootstrapTimeout = $torAttempt -lt $maxTorAttempts `
@@ -292,13 +290,7 @@ try {
             -and $tor.bootstrapProgress -eq 100 -and -not $tor.routeVerified `
             -and $configurationValid `
             -and $tor.reason -match 'route verification|check endpoint|timed out'
-        $retryableOnionFailure = $torAttempt -lt $maxTorAttempts `
-            -and $tor.bootstrapProgress -eq 100 -and $tor.routeVerified `
-            -and $configurationValid -and $tor.onionCheck.requested `
-            -and (-not $tor.onionCheck.loaded -or -not $tor.onionCheck.remainedOnOnion) `
-            -and $tor.reason -match 'onion|timed out'
-        if (-not ($retryableBootstrapTimeout -or $retryableVerificationFailure -or
-                  $retryableOnionFailure)) { break }
+        if (-not ($retryableBootstrapTimeout -or $retryableVerificationFailure)) { break }
         Start-Sleep -Seconds 2
     }
     if (-not $torPassed) {

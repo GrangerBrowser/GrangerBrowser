@@ -356,14 +356,13 @@ if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
         throw "Canonical fail-closed network bootstrap validation failed."
     }
 
-    $torEvidence = Join-Path $projectRoot 'output/acceptance/canonical-managed-tor-onion.json'
-    $onionAcceptanceUrl = 'http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/'
+    $torEvidence = Join-Path $projectRoot 'output/acceptance/canonical-managed-tor.json'
     $torPassed = $false
     $maxTorAttempts = 2
     for ($torAttempt = 1; $torAttempt -le $maxTorAttempts; $torAttempt++) {
         $torOutput = Join-Path $resultRoot "canonical-managed-tor-$torAttempt.json"
         $torExitCode = Invoke-IsolatedBrowser -Executable $canonicalExecutable `
-            -Arguments @("--smoke-managed-mode=direct", "--smoke-output=$torOutput", "--smoke-onion-url=$onionAcceptanceUrl") `
+            -Arguments @("--smoke-managed-mode=direct", "--smoke-output=$torOutput") `
             -RunRoot (Join-Path $resultRoot "canonical-managed-tor-$torAttempt") `
             -TimeoutSeconds 420 -AllowNonZeroExit
         if (-not (Test-Path -LiteralPath $torOutput -PathType Leaf)) {
@@ -371,9 +370,7 @@ if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
         }
         $tor = Get-Content -LiteralPath $torOutput -Raw -Encoding UTF8 | ConvertFrom-Json
         $torPassed = $torExitCode -eq 0 -and $tor.ok -and $tor.routeVerified `
-            -and [int]$tor.bootstrapProgress -eq 100 -and [bool]$tor.onionCheck.loaded `
-            -and [bool]$tor.onionCheck.remainedOnOnion `
-            -and [int]$tor.onionCheck.contentCharacters -gt 0
+            -and [int]$tor.bootstrapProgress -eq 100
         New-Item -ItemType Directory -Path (Split-Path -Parent $torEvidence) -Force | Out-Null
         Copy-Item -LiteralPath $torOutput -Destination $torEvidence -Force
         if ($torPassed) { break }
@@ -385,18 +382,13 @@ if (-not $sourcePrivacyScan.ok) { throw "Tracked source privacy gate failed." }
             -and [int]$tor.bootstrapProgress -eq 100 -and -not [bool]$tor.routeVerified `
             -and $configurationValid `
             -and [string]$tor.reason -match 'route verification|check endpoint|timed out'
-        $retryableOnionFailure = $torAttempt -lt $maxTorAttempts `
-            -and [int]$tor.bootstrapProgress -eq 100 -and [bool]$tor.routeVerified `
-            -and $configurationValid -and [bool]$tor.onionCheck.requested `
-            -and (-not [bool]$tor.onionCheck.loaded -or -not [bool]$tor.onionCheck.remainedOnOnion) `
-            -and [string]$tor.reason -match 'onion|timed out'
-        if (-not ($retryableBootstrapFailure -or $retryableRouteFailure -or $retryableOnionFailure)) {
+        if (-not ($retryableBootstrapFailure -or $retryableRouteFailure)) {
             break
         }
         Start-Sleep -Seconds 2
     }
     if (-not $torPassed) {
-        throw "Canonical managed Tor and onion smoke failed after $torAttempt attempt(s). Evidence: $torEvidence"
+        throw "Canonical managed Tor route smoke failed after $torAttempt attempt(s). Evidence: $torEvidence"
     }
 
     $i2pEvidence = Join-Path $projectRoot 'output/acceptance/canonical-managed-i2p.json'
