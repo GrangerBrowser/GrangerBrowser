@@ -6326,8 +6326,9 @@ int main(int argc, char *argv[])
                          &privacyNetwork, &granger::PrivacyNetworkManager::stop);
     }
     if (!startupProcessProxy.isEmpty()) {
-        appendChromiumFlag(
-            QByteArrayLiteral("--proxy-bypass-list=\"<-loopback>;*.granger\""));
+        appendChromiumFlag(usePrivacyGateway
+            ? QByteArrayLiteral("--proxy-bypass-list=\"<-loopback>;*.granger\"")
+            : QByteArrayLiteral("--proxy-bypass-list=\"*.granger\""));
     }
     appendChromiumFlag(
         QByteArrayLiteral("--host-resolver-rules=\"MAP *.granger 127.0.0.1:")
