@@ -559,6 +559,12 @@ HostedServiceRecord GrangerHostingManager::readService(const QString &root) cons
         result.applyRuntimeStatus(runtimeStatus, QDateTime::currentSecsSinceEpoch(),
                                   m_startedAt.value(result.id) / 1000,
                                   m_runtimeInstances.value(result.id));
+        if (result.type == QStringLiteral("local-application")
+            && result.status == QStringLiteral("online")
+            && traffic.contains(QStringLiteral("backendAvailable"))
+            && !traffic.value(QStringLiteral("backendAvailable")).toBool()) {
+            result.status = QStringLiteral("backend-unavailable");
+        }
         if (result.status == QStringLiteral("error")) {
             if (result.error.isEmpty()) result.error = m_lastErrors.value(result.id);
         }

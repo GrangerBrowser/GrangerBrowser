@@ -233,5 +233,8 @@ mock service state. See [Hosting.md](docs/Hosting.md).
   measurements are not implemented.
 - Responses are buffered up to bounded limits; streaming large files and
   WebSocket integration are not implemented.
-- Qt custom schemes expose successful fetches as status 200. The original
-  backend status is available as `X-Granger-Status`.
+- Browser-visible `.granger` applications use the authenticated loopback HTTP
+  gateway, so Chromium receives native response status and cookie semantics.
+  The HTTP origin is not a Secure Context, and Service Worker remains
+  unsupported. The legacy custom-scheme compatibility path is not the
+  application release boundary.

@@ -95,7 +95,7 @@ separation in the protocol does not create organizational separation.
 | Introduction peer | Persistent service ID, record/token, client request and adjacent relays | Service across introduction-circuit lifetime | No endpoint IP from protocol data; request timing remains visible |
 | Rendezvous peer | Two adjacent middle links, cookie tag, circuit IDs, timing and volume | One rendezvous session | No service ID, endpoint IP, end-to-end key or plaintext |
 | DHT peer | Raw record kind/key, including service ID, query/store timing and previous middle | Repeated lookup of the same public record | Post-join source IP is hidden by a private circuit; query target is not hidden |
-| `.granger` host | Decrypted HTTP data, response timing and per-session opaque ID | Application cookies/content and one service session | Protocol does not provide client IP; active content can add identifiers |
+| `.granger` host | Decrypted HTTP data and response timing | Application cookies/content and one service session | Protocol does not provide client IP; active content can add identifiers |
 | Malicious client | Public service identity/records and returned content | Its own sessions and browser state | Cannot derive or directly dial a host endpoint from valid records |
 | Malicious host | Host view plus attacker-controlled page behavior | User-supplied/application identifiers | Application fingerprinting remains possible; protocol withholds client IP |
 | Malicious relay | Adjacent endpoints, role, cells, timing, count and direction | Flows traversing that relay | Can delay/drop/tag timing; cannot decrypt end-to-end application traffic |
@@ -135,7 +135,6 @@ that public key.
 | Circuit ID | Random per adjacent segment | The two peers on that segment | Not a global route identifier |
 | Introduction nonce/token | Fresh and short-lived | Client, service and selected introduction peer | Request authorization and replay rejection |
 | Rendezvous cookie/tag | Fresh and short-lived | Client, service and rendezvous peer | Pairs one session without carrying service ID |
-| Application session identity | Fresh per service session | Client and local host bridge | Same-session state only; not an IP address |
 
 ## Attacker classes
 
@@ -156,9 +155,9 @@ course reveal everything visible at that endpoint.
 
 It controls returned content and may fingerprint or attack the browser within
 the Chromium security boundary. Service identity authentication does not make
-HTML trustworthy. The custom scheme isolates origins and blocks cross-service,
-clearnet, Onion, I2P, file, WebSocket, and external subresource escapes from a
-`.granger` document.
+HTML trustworthy. Normal `.granger` HTTP origins remain distinct, while the
+request interceptor blocks cross-service, clearnet, Onion, I2P, file,
+WebSocket, and external subresource escapes from a `.granger` document.
 
 The service receives application content and timing, but the protocol does not
 provide the client endpoint. Active content can still collect application-level
@@ -167,8 +166,8 @@ identifiers supplied by the user or browser.
 A malicious static source can contain active HTML/JavaScript and is treated as
 untrusted web content. Hosting validation prevents filesystem escape and
 high-confidence secret publication; it does not make page script trustworthy. A
-malicious local application receives request content and an opaque per-session
-identifier, but forwarding/client/relay IP headers are removed.
+malicious local application receives request content and application cookies,
+but forwarding/client/relay IP and overlay metadata headers are removed.
 
 ### Malicious hosted source
 

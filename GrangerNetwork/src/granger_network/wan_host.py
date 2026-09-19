@@ -93,7 +93,10 @@ def run_host(options: argparse.Namespace) -> int:
         runtime.discovery,
         guard_seed=runtime.identity.public_key_bytes,
     )
-    bridge = LoopbackHttpBridge(LoopbackHttpTarget.parse(options.upstream))
+    bridge = LoopbackHttpBridge(
+        LoopbackHttpTarget.parse(options.upstream),
+        virtual_host=service.canonical_name,
+    )
     generation = 0
     recovery_cycles = 0
     while True:

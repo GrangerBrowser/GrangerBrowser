@@ -56,14 +56,28 @@ PROTOCOL_VERSION = 2
 MAX_REQUEST_BODY = 2 * 1024 * 1024
 MAX_MESSAGE_BYTES = 3 * 1024 * 1024
 MAX_PATH_LENGTH = 4096
-MAX_HEADER_VALUE = 1024
+MAX_HEADER_VALUE = 4096
 MAX_RESPONSE_BODY = 2 * 1024 * 1024
 _REQUEST_ID = re.compile(r"^[a-f0-9]{32}$")
 _ALLOWED_REQUEST_HEADERS = {
     "accept",
     "accept-language",
+    "authorization",
+    "cache-control",
+    "content-encoding",
+    "content-language",
     "content-type",
+    "cookie",
+    "if-match",
+    "if-modified-since",
+    "if-none-match",
+    "if-unmodified-since",
+    "origin",
+    "range",
+    "referer",
     "user-agent",
+    "x-csrf-token",
+    "x-requested-with",
 }
 _dns_request_count = 0
 _write_lock = threading.Lock()
@@ -414,7 +428,7 @@ class _WanGateway:
                     + len(response.body)
                     + sum(
                         len(key.encode("utf-8")) + len(value.encode("utf-8"))
-                        for key, value in (*headers.items(), *response.headers.items())
+                        for key, value in (*headers.items(), *response.header_fields)
                     )
                 )
                 return GrangerResponse(
@@ -423,6 +437,7 @@ class _WanGateway:
                     response.headers,
                     response.body,
                     slot.connected.service.canonical_name,
+                    response.header_fields,
                 )
             except (GrangerNetworkError, OSError, TimeoutError, ValueError) as error:
                 request_timeout = (
@@ -676,7 +691,7 @@ def _validate_path(path: object) -> str:
 
 
 def _validate_headers(headers: object) -> dict[str, str]:
-    if not isinstance(headers, dict) or len(headers) > 16:
+    if not isinstance(headers, dict) or len(headers) > 32:
         raise ValueError("request headers are invalid")
     result: dict[str, str] = {}
     for name, value in headers.items():
@@ -716,7 +731,9 @@ def parse_request(content: bytes) -> dict[str, object]:
     if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
         raise ValueError("gateway request identifier is invalid")
     method = document["method"]
-    if not isinstance(method, str) or method.upper() not in {"GET", "HEAD", "POST"}:
+    if not isinstance(method, str) or method.upper() not in {
+        "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
+    }:
         raise ValueError("gateway request method is unsupported")
     encoded_body = document["body"]
     if not isinstance(encoded_body, str):
@@ -784,13 +801,16 @@ def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str
                 request["body"],
             )
         else:
+            arguments = {
+                "method": str(request["method"]),
+                "headers": request["headers"],
+            }
             if request["body"]:
-                raise ProtocolError("compatibility gateway does not carry request bodies")
+                arguments["body"] = request["body"]
             response = GrangerClient(resolver, timeout=timeout).fetch(
                 str(request["name"]),
                 str(request["path"]),
-                method=str(request["method"]),
-                headers=request["headers"],
+                **arguments,
             )
         if len(response.body) > MAX_RESPONSE_BODY:
             raise ProtocolError("service response exceeds the browser gateway limit")
@@ -798,7 +818,7 @@ def handle_request(resolver: object, timeout: float, content: bytes) -> dict[str
             "body": base64.b64encode(response.body).decode("ascii"),
             "canonicalService": response.canonical_service,
             "dnsRequests": _dns_request_count,
-            "headers": response.headers,
+            "headers": [list(field) for field in response.header_fields],
             "ok": True,
             "reason": response.reason,
             "requestId": request_id,

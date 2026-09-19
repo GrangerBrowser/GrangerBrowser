@@ -16,8 +16,10 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QHostAddress>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QJsonArray>
@@ -40,6 +42,26 @@
 #include "granger/ui/DesignTokens.h"
 
 namespace granger {
+namespace {
+
+QNetworkProxy privateRouteProxy()
+{
+    const QUrl route(qApp ? qApp->property("granger.startupProcessProxy").toString().trimmed()
+                          : QString());
+    const QString scheme = route.scheme().toLower();
+    const bool socks = scheme == QStringLiteral("socks5")
+        || scheme == QStringLiteral("socks5h");
+    const bool http = scheme == QStringLiteral("http")
+        || scheme == QStringLiteral("https");
+    if ((!socks && !http) || !QHostAddress(route.host()).isLoopback()
+        || route.port() <= 0 || route.port() > 65535) {
+        return QNetworkProxy();
+    }
+    return QNetworkProxy(socks ? QNetworkProxy::Socks5Proxy : QNetworkProxy::HttpProxy,
+                         route.host(), quint16(route.port()), route.userName(), route.password());
+}
+
+}
 
 class AddressBarFrame final : public QFrame {
 public:
@@ -841,6 +863,13 @@ void NavigationBar::requestSuggestions()
         return;
     }
     endpoint.setQuery(query);
+    const QNetworkProxy proxy = privateRouteProxy();
+    if (proxy.type() != QNetworkProxy::Socks5Proxy
+        && proxy.type() != QNetworkProxy::HttpProxy) {
+        m_suggestionModel->setStringList({});
+        return;
+    }
+    m_suggestionNetwork->setProxy(proxy);
     QNetworkReply *reply = m_suggestionNetwork->get(QNetworkRequest(endpoint));
     reply->setProperty("query", text);
     reply->setProperty("engine", m_selectedSearchEngineId);

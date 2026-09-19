@@ -55,11 +55,37 @@ loopback. The target must be reachable when the service is created or edited.
 Hostnames, LAN addresses, wildcard binds, and public endpoints are rejected
 without DNS lookup.
 
-The bridge carries bounded GET, HEAD, and POST requests. Its allowlist excludes
-`Forwarded`, `X-Forwarded-For`, `X-Real-IP`, relay metadata, and arbitrary
-client headers. For each end-to-end rendezvous session, the application server
-generates an opaque `X-Granger-Session` value and overwrites any client input
-before the loopback request. This is not a network address or stable user ID.
+The bridge carries bounded `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, and
+`OPTIONS` requests. JSON, form, multipart, text, and binary bodies are forwarded
+byte-for-byte within the existing 2 MiB request and response bounds. The
+backend receives the canonical `.granger` service name in `Host` and the local
+TCP peer as loopback. It never receives the configured backend port through the
+request.
+
+The explicit request allowlist preserves ordinary application headers such as
+`Authorization`, `Cookie`, conditionals, range, origin, and CSRF headers. It
+excludes hop-by-hop headers, `Forwarded`, `X-Forwarded-For`, `X-Real-IP`, and
+all relay, node, circuit, DHT, introduction, and rendezvous metadata. The bridge
+does not inject a Granger session identifier. Applications use normal cookies,
+accounts, or their own random tokens when they need session state.
+
+Approved response headers include repeated `Set-Cookie`, CSP, CORS, cache
+validators, redirect locations, content metadata, and browser security policy.
+Framework version headers such as `Server` and `X-Powered-By` are removed.
+Granger does not enable permissive CORS. The browser retains its minimum CSP,
+referrer, content-type, and device-permission restrictions. The browser-owned
+HTTP gateway gives Chromium native response status, redirects, cookie storage,
+and Fetch credentials handling without a manual cookie bridge.
+
+Backend connect, header, and body stages have separate bounds. Refusal returns
+`503`, timeout returns `504`, and a malformed or oversized response returns
+`502`; none selects another transport. Restarting the backend on the same port
+recovers on the next request without republishing. The application owns its
+database and mutable files outside the browser installation. Granger transports
+HTTP data and does not parse SQLite or another database protocol.
+
+The precise implementation boundary and current non-streaming limitations are
+recorded in [ApplicationHostingBoundary.md](ApplicationHostingBoundary.md).
 
 ## Storage and lifecycle
 
@@ -132,8 +158,12 @@ on Windows is not AppImage portability acceptance.
 
 ## Evidence boundary
 
-Unit and local multi-process tests cover static assets, loopback POST, ten
-independent identities, lifecycle, descriptor publication, browser navigation,
-zero resolver calls, and no direct client-host edge. They do not prove
-anonymity or physical cross-network portability. A real Windows-to-Linux or
-cross-ISP run remains required before those results can be marked verified.
+Unit and local multi-process tests cover static assets, all supported application
+methods, binary and multipart bodies, cookie-header transport, SQLite
+persistence, backend restart, multiple services, lifecycle, descriptor
+publication, browser navigation, zero resolver calls, and no direct client-host
+edge. The browser regression separately verifies native status, redirects,
+Chromium-managed cookie sessions, credentials modes, origin/profile isolation,
+and gateway authorization. These tests do not prove anonymity or physical
+cross-network portability. A real Windows-to-Linux or cross-ISP run remains
+required before those results can be marked verified.

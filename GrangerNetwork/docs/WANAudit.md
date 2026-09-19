@@ -168,7 +168,7 @@ request and are not permitted to return a service host endpoint.
 | Failure recovery | Missing | Alternate eligible peers, circuit teardown/rebuild, cache bootstrap |
 | Process topology tests | Compatibility only | Separate bootstrap, relay, host, client, and backend processes |
 | Packet/WAN evidence | Missing | Local process socket audit plus scripts for two physical networks |
-| Browser distributed path | Missing | Select WAN resolver/client without weakening custom-scheme isolation |
+| Browser distributed path | Implemented | Native HTTP origin through the authenticated loopback gateway; overlay routing remains fail closed |
 
 ## Implementation decisions
 

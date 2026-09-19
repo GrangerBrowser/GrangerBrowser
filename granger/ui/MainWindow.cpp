@@ -93,6 +93,7 @@
 #include "granger/i18n/Localization.h"
 #include "granger/network/PrivacyNetworkManager.h"
 #include "granger/network/GrangerNetworkUrl.h"
+#include "granger/network/GrangerHttpGateway.h"
 #include "granger/privacy/PrivacyConfigSerializer.h"
 #include "granger/security/HttpsFirstPolicy.h"
 #include "granger/tabs/TabManager.h"
@@ -1324,6 +1325,9 @@ MainWindow::MainWindow(SettingsManager &settings, ThemeManager &theme, QWidget *
       m_permissions(m_privacy, this)
 {
     Localization::setLanguage(m_settings.language());
+    if (GrangerHttpGateway *gateway = GrangerHttpGateway::instance()) {
+        gateway->attachRuntime(&m_grangerNetwork);
+    }
     connect(&m_privacy, &PrivacyPolicyManager::webProfileCreated,
             this, [this](QWebEngineProfile *profile) {
         m_grangerNetwork.installOnProfile(profile);
@@ -2144,7 +2148,11 @@ QJsonObject MainWindow::developerToolsDiagnostics() const
 
 QJsonObject MainWindow::grangerNetworkDiagnosticsForDiagnostics() const
 {
-    return m_grangerNetwork.diagnostics();
+    QJsonObject result = m_grangerNetwork.diagnostics();
+    if (const GrangerHttpGateway *gateway = GrangerHttpGateway::instance()) {
+        result.insert(QStringLiteral("httpGateway"), gateway->diagnostics());
+    }
+    return result;
 }
 
 QJsonObject MainWindow::grangerHostingDiagnosticsForDiagnostics() const
@@ -4040,7 +4048,8 @@ BrowserTab *MainWindow::createTab(bool privateTab,
     tab->setMainFrameNavigationHandler(
         [this, tab](const QUrl &url, QWebEnginePage::NavigationType type) {
         if (GrangerNetworkUrl::targetsNamespace(url)
-            && !GrangerNetworkUrl::isCustomUrl(url)) {
+            && !GrangerNetworkUrl::isCustomUrl(url)
+            && !GrangerNetworkUrl::isHttpOriginUrl(url)) {
             const QPointer<BrowserTab> guardedTab(tab);
             const QString address = url.toString(QUrl::FullyEncoded);
             QMetaObject::invokeMethod(this, [this, guardedTab, address] {
@@ -4059,6 +4068,7 @@ BrowserTab *MainWindow::createTab(bool privateTab,
         }
 
         if (scheme == QStringLiteral("http")
+            && !GrangerNetworkUrl::isHttpOriginUrl(url)
             && type == QWebEnginePage::NavigationTypeFormSubmitted
             && m_settings.warnHttpFormsEnabled()) {
             const auto answer = QMessageBox::warning(
@@ -4070,7 +4080,8 @@ BrowserTab *MainWindow::createTab(bool privateTab,
             if (answer != QMessageBox::Yes) return false;
             m_httpsUpgradeAttempts.remove(tab);
             m_httpsFallbackOnce.remove(tab);
-        } else if (scheme == QStringLiteral("http")) {
+        } else if (scheme == QStringLiteral("http")
+                   && !GrangerNetworkUrl::isHttpOriginUrl(url)) {
             const auto pending = m_httpsUpgradeAttempts.constFind(tab);
             if (pending != m_httpsUpgradeAttempts.constEnd() && !pending->warningShown) {
                 QPointer<BrowserTab> guardedTab(tab);
@@ -5094,7 +5105,8 @@ void MainWindow::reapplyRouteProfiles(bool reloadExternalPages)
         if (isInternalAddress(address) || address.isEmpty()) continue;
         const QUrl url = browserUrlForDisplayAddress(address);
         if (!url.isValid()) continue;
-        if (GrangerNetworkUrl::isCustomUrl(url)) {
+        if (GrangerNetworkUrl::isCustomUrl(url)
+            || GrangerNetworkUrl::isHttpOriginUrl(url)) {
             m_privacy.applyToPage(tab->page(), url, tab->privacyProfileKind());
             continue;
         }
@@ -5144,7 +5156,8 @@ bool MainWindow::privateRouteTransitioning() const
 
 bool MainWindow::destinationAllowedForNavigation(const QUrl &url, QString *reason) const
 {
-    if (GrangerNetworkUrl::isCustomUrl(url)) return true;
+    if (GrangerNetworkUrl::isCustomUrl(url)
+        || GrangerNetworkUrl::isHttpOriginUrl(url)) return true;
     if (GrangerNetworkUrl::targetsNamespace(url)) {
         if (reason) *reason = QStringLiteral("Invalid Granger Network destination");
         return false;
@@ -5574,7 +5587,9 @@ void MainWindow::navigateTab(BrowserTab *tab, const QString &input)
         return;
     }
     if (resolution.kind == AddressInputKind::GrangerNetwork) {
-        if (!resolution.url.isValid() || !GrangerNetworkUrl::isCustomUrl(resolution.url)) {
+        if (!resolution.url.isValid()
+            || (!GrangerNetworkUrl::isCustomUrl(resolution.url)
+                && !GrangerNetworkUrl::isHttpOriginUrl(resolution.url))) {
             tab->showErrorPageForAddress(
                 clean,
                 QStringLiteral("Invalid Granger Network address"),

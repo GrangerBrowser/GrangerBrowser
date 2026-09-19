@@ -162,7 +162,8 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
             Localization::text(QStringLiteral("error.page_unavailable")),
             Localization::text(QStringLiteral("error.loading_timeout")),
             Localization::text(
-                GrangerNetworkUrl::isCustomUrl(m_lastRequestedUrl)
+                (GrangerNetworkUrl::isCustomUrl(m_lastRequestedUrl)
+                    || GrangerNetworkUrl::isHttpOriginUrl(m_lastRequestedUrl))
                     ? QStringLiteral("error.granger_loading_timeout_detail")
                     : QStringLiteral("error.loading_timeout_detail")),
             QStringLiteral("https://granger.local/__action/error/retry?url=%1")
@@ -177,7 +178,8 @@ BrowserTab::BrowserTab(QWebEngineProfile *profile,
         m_finalResponseWasHttpError = false;
         m_loading = true;
         m_loadingWatchdog->start(
-            GrangerNetworkUrl::isCustomUrl(m_lastRequestedUrl)
+            (GrangerNetworkUrl::isCustomUrl(m_lastRequestedUrl)
+                || GrangerNetworkUrl::isHttpOriginUrl(m_lastRequestedUrl))
                 ? kGrangerLoadingWatchdogMs : kStandardLoadingWatchdogMs);
         emit loadingChanged(true);
         emit loadProgressChanged(0);
@@ -562,7 +564,9 @@ void BrowserTab::goBack()
         const QWebEngineHistoryItem target = history->backItem();
         if (target.isValid()
             && (GrangerNetworkUrl::isCustomUrl(m_view->url())
-                || GrangerNetworkUrl::isCustomUrl(target.url()))) {
+                || GrangerNetworkUrl::isHttpOriginUrl(m_view->url())
+                || GrangerNetworkUrl::isCustomUrl(target.url())
+                || GrangerNetworkUrl::isHttpOriginUrl(target.url()))) {
             history->goToItem(target);
             return;
         }
@@ -577,7 +581,9 @@ void BrowserTab::goForward()
         const QWebEngineHistoryItem target = history->forwardItem();
         if (target.isValid()
             && (GrangerNetworkUrl::isCustomUrl(m_view->url())
-                || GrangerNetworkUrl::isCustomUrl(target.url()))) {
+                || GrangerNetworkUrl::isHttpOriginUrl(m_view->url())
+                || GrangerNetworkUrl::isCustomUrl(target.url())
+                || GrangerNetworkUrl::isHttpOriginUrl(target.url()))) {
             history->goToItem(target);
             return;
         }

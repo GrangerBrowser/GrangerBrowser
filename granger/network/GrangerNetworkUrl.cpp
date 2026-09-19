@@ -12,15 +12,20 @@ bool hasForbiddenAuthority(const QUrl &url)
 
 bool sameGrangerOrigin(const QUrl &left, const QUrl &right)
 {
-    return GrangerNetworkUrl::isCustomUrl(left)
-        && GrangerNetworkUrl::isCustomUrl(right)
+    const bool leftNamespace = GrangerNetworkUrl::isCustomUrl(left)
+        || GrangerNetworkUrl::isHttpNamespaceUrl(left);
+    const bool rightNamespace = GrangerNetworkUrl::isCustomUrl(right)
+        || GrangerNetworkUrl::isHttpNamespaceUrl(right);
+    return leftNamespace && rightNamespace
         && left.host().compare(right.host(), Qt::CaseInsensitive) == 0;
 }
 
 QUrl sourceContext(const QUrl &firstPartyUrl, const QUrl &initiator)
 {
-    if (GrangerNetworkUrl::isCustomUrl(initiator)) return initiator;
-    if (GrangerNetworkUrl::isCustomUrl(firstPartyUrl)) return firstPartyUrl;
+    if (GrangerNetworkUrl::isCustomUrl(initiator)
+        || GrangerNetworkUrl::isHttpNamespaceUrl(initiator)) return initiator;
+    if (GrangerNetworkUrl::isCustomUrl(firstPartyUrl)
+        || GrangerNetworkUrl::isHttpNamespaceUrl(firstPartyUrl)) return firstPartyUrl;
     return QUrl();
 }
 
@@ -70,6 +75,12 @@ bool GrangerNetworkUrl::isHttpNamespaceUrl(const QUrl &url)
         && !hasForbiddenAuthority(url);
 }
 
+bool GrangerNetworkUrl::isHttpOriginUrl(const QUrl &url)
+{
+    return isHttpNamespaceUrl(url)
+        && url.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0;
+}
+
 bool GrangerNetworkUrl::targetsNamespace(const QUrl &url)
 {
     return url.host().endsWith(QStringLiteral(".granger"), Qt::CaseInsensitive)
@@ -94,15 +105,17 @@ QUrl GrangerNetworkUrl::fromNamespaceUrl(const QUrl &url)
 {
     if (!isHttpNamespaceUrl(url) && !isCustomUrl(url)) return QUrl();
     QUrl result(url);
-    result.setScheme(scheme());
+    result.setScheme(QStringLiteral("http"));
     result.setHost(url.host().toLower());
     if (result.path().isEmpty()) result.setPath(QStringLiteral("/"));
-    return isCustomUrl(result) ? result : QUrl();
+    return isHttpOriginUrl(result) ? result : QUrl();
 }
 
 QString GrangerNetworkUrl::displayAddress(const QUrl &url)
 {
-    if (!isCustomUrl(url)) return url.toString(QUrl::FullyEncoded);
+    if (!isCustomUrl(url) && !isHttpOriginUrl(url)) {
+        return url.toString(QUrl::FullyEncoded);
+    }
     QString result = url.host().toLower();
     const QString path = url.path(QUrl::FullyEncoded);
     if (!path.isEmpty() && path != QStringLiteral("/")) result += path;
@@ -121,34 +134,47 @@ GrangerNetworkRequestPolicy GrangerNetworkUrl::evaluateRequest(
     const QByteArray &method)
 {
     GrangerNetworkRequestPolicy policy;
+    const bool namespaceTarget = targetsNamespace(requestUrl);
+    const bool namespaceSource = targetsNamespace(initiator)
+        || targetsNamespace(firstPartyUrl);
+    if (!namespaceTarget && !namespaceSource) return policy;
+
     const QByteArray normalizedMethod = method.toUpper();
     const bool safeMethod = normalizedMethod == QByteArrayLiteral("GET")
         || normalizedMethod == QByteArrayLiteral("HEAD");
-    const bool serviceWrite = normalizedMethod == QByteArrayLiteral("POST");
-    const bool namespaceTarget = targetsNamespace(requestUrl);
+    const bool serviceWrite = normalizedMethod == QByteArrayLiteral("POST")
+        || normalizedMethod == QByteArrayLiteral("PUT")
+        || normalizedMethod == QByteArrayLiteral("PATCH")
+        || normalizedMethod == QByteArrayLiteral("DELETE")
+        || normalizedMethod == QByteArrayLiteral("OPTIONS");
     const bool customTarget = isCustomUrl(requestUrl);
-    const bool httpTarget = isHttpNamespaceUrl(requestUrl);
+    const bool httpNamespaceTarget = isHttpNamespaceUrl(requestUrl);
+    const QString targetScheme = requestUrl.scheme().toLower();
+    const bool httpTarget = httpNamespaceTarget && targetScheme == QStringLiteral("http");
+    const bool httpsTarget = httpNamespaceTarget && targetScheme == QStringLiteral("https");
     const QUrl source = sourceContext(firstPartyUrl, initiator);
     const bool grangerSource = source.isValid();
 
-    if (namespaceTarget && !customTarget && !httpTarget) {
+    if (namespaceTarget && !customTarget && !httpTarget && !httpsTarget) {
         policy.action = GrangerNetworkRequestAction::Block;
         policy.reason = QStringLiteral("Invalid Granger Network destination");
         return policy;
     }
-    if (httpTarget) {
-        if (!safeMethod || (!mainFrame && !sameGrangerOrigin(
-                                source, fromNamespaceUrl(requestUrl)))) {
+    if (customTarget || httpsTarget) {
+        const QUrl canonical = fromNamespaceUrl(requestUrl);
+        const bool sameOrigin = sameGrangerOrigin(source, canonical);
+        if ((!safeMethod && !serviceWrite) || (!mainFrame && !sameOrigin)
+            || (serviceWrite && !sameOrigin)) {
             policy.action = GrangerNetworkRequestAction::Block;
             policy.reason = QStringLiteral("Cross-origin Granger Network request");
             return policy;
         }
         policy.action = GrangerNetworkRequestAction::Redirect;
-        policy.redirect = fromNamespaceUrl(requestUrl);
+        policy.redirect = canonical;
         policy.reason = QStringLiteral("Granger Network namespace interception");
         return policy;
     }
-    if (customTarget) {
+    if (httpTarget) {
         const bool sameOrigin = sameGrangerOrigin(source, requestUrl);
         if ((!safeMethod && !serviceWrite) || (!mainFrame && !sameOrigin)
             || (serviceWrite && !sameOrigin)) {

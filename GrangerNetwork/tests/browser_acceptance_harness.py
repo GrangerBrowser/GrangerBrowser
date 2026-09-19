@@ -50,6 +50,19 @@ window.grangerScriptLoaded = true;
     body.dataset.fetch = data.owner === {json.dumps(owner)} ? 'ok' : 'wrong';
   }} catch (_error) {{ body.dataset.fetch = 'failed'; }}
   try {{
+    body.dataset.networkCacheOwner = await (await fetch('/cache-origin')).text();
+  }} catch (_error) {{ body.dataset.networkCacheOwner = 'failed'; }}
+  try {{
+    await fetch('/http-cookie', {{credentials: 'same-origin'}});
+    const sent = await (await fetch('/http-cookie', {{credentials: 'same-origin'}})).text();
+    const omitted = await (await fetch('/http-cookie', {{credentials: 'omit'}})).text();
+    body.dataset.httpCookie = sent.includes('application_session=' + {json.dumps(owner)})
+      ? 'supported' : 'unsupported';
+    body.dataset.credentialsOmit = omitted.includes('application_session=') ? 'leaked' : 'respected';
+    const status = await fetch('/http-status');
+    body.dataset.nativeHttpStatus = String(status.status);
+  }} catch (_error) {{ body.dataset.credentialsOmit = 'failed'; }}
+  try {{
     await fetch('granger-network://{other}.granger/api/data.json');
     body.dataset.crossService = 'leaked';
   }} catch (_error) {{ body.dataset.crossService = 'blocked'; }}
@@ -128,10 +141,174 @@ window.grangerScriptLoaded = true;
 """.encode("utf-8")
 
 
-def handler_for(owner: str, heading: str, other: str, escape_url: str):
+def application_matrix_script(owner: str, other: str) -> bytes:
+    template = r"""
+(async () => {
+  const body = document.body;
+  const owner = __OWNER__;
+  const otherOrigin = 'http://' + __OTHER__ + '.granger';
+  const matrix = {methods: {}, statuses: {}, redirects: {}, cookies: {}, errors: []};
+  const recordError = (stage, error) => matrix.errors.push(
+    stage + ':' + String(error && error.message ? error.message : error));
+  const cached = sessionStorage.getItem('granger-application-matrix');
+  if (location.hostname !== 'test.granger' || cached) {
+    body.dataset.applicationMatrix = cached || '{}';
+    body.dataset.matrixReady = 'true';
+    return;
+  }
+  try {
+    for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+      const payload = ['GET', 'HEAD'].includes(method) ? undefined : 'payload-' + method;
+      const options = {method, headers: {'Content-Type': 'text/plain'}};
+      if (payload !== undefined) options.body = payload;
+      const response = await fetch('/echo', options);
+      if (method === 'HEAD') {
+        matrix.methods[method] = response.status === 200 && (await response.text()) === '';
+      } else {
+        const echoed = await response.json();
+        matrix.methods[method] = response.status === 200 && echoed.method === method
+          && echoed.body === (payload || '');
+      }
+    }
+  } catch (error) { recordError('methods', error); }
+
+  try {
+    const payload = new Uint8Array([0, 1, 2, 127, 128, 255]);
+    const upload = await fetch('/upload', {
+      method: 'POST', body: payload, headers: {'Content-Type': 'application/octet-stream'}
+    });
+    const uploaded = await upload.json();
+    const download = await fetch('/download');
+    const downloaded = new Uint8Array(await download.arrayBuffer());
+    matrix.binaryTransfer = upload.status === 200
+      && uploaded.bodyBase64 === 'AAECf4D/'
+      && download.status === 200
+      && download.headers.get('content-disposition') === 'attachment; filename="probe.bin"'
+      && downloaded.length === payload.length
+      && downloaded.every((value, index) => value === payload[index]);
+  } catch (error) { recordError('binary', error); }
+  try {
+    const oversized = await fetch('/echo', {
+      method: 'POST', body: new Uint8Array(2 * 1024 * 1024 + 1),
+      headers: {'Content-Type': 'application/octet-stream'}
+    });
+    matrix.oversizedBodyRejected = oversized.status === 413;
+    matrix.oversizedBodyResult = 'http-' + oversized.status;
+  } catch (_error) {
+    matrix.oversizedBodyRejected = true;
+    matrix.oversizedBodyResult = 'connection-blocked';
+  }
+
+  try {
+    for (const code of [200, 201, 204, 206, 301, 302, 303, 307, 308, 400, 401,
+                        403, 404, 405, 409, 413, 422, 429, 500, 502, 503, 504]) {
+      const response = await fetch('/status/' + code);
+      matrix.statuses[String(code)] = response.status === code;
+    }
+  } catch (error) { recordError('statuses', error); }
+
+  try {
+    const redirect302 = await (await fetch('/redirect/302')).json();
+    matrix.redirects['302'] = redirect302.method === 'GET' && redirect302.body === '';
+    const redirect303 = await (await fetch('/redirect/303', {method: 'POST', body: 'three'})).json();
+    matrix.redirects['303'] = redirect303.method === 'GET' && redirect303.body === '';
+    const redirect307 = await (await fetch('/redirect/307', {method: 'POST', body: 'seven'})).json();
+    matrix.redirects['307'] = redirect307.method === 'POST' && redirect307.body === 'seven';
+    const redirect308 = await (await fetch('/redirect/308', {method: 'POST', body: 'eight'})).json();
+    matrix.redirects['308'] = redirect308.method === 'POST' && redirect308.body === 'eight';
+  } catch (error) { recordError('redirects', error); }
+
+  try {
+    await fetch('/cookie/delete', {credentials: 'include'});
+    await fetch('/cookie/set', {credentials: 'include'});
+    const visible = document.cookie;
+    const included = await (await fetch('/cookie/read', {credentials: 'include'})).text();
+    const sameOrigin = await (await fetch('/cookie/read', {credentials: 'same-origin'})).text();
+    const omitted = await (await fetch('/cookie/read', {credentials: 'omit'})).text();
+    const scoped = await (await fetch('/scoped/read', {credentials: 'include'})).text();
+    matrix.cookies = {
+      setCookie: included.includes('application_session=' + owner),
+      roundtrip: included.includes('basic_cookie=' + owner),
+      httpOnly: included.includes('application_session=' + owner)
+        && !visible.includes('application_session='),
+      path: scoped.includes('path_cookie=' + owner) && !included.includes('path_cookie='),
+      maxAge: included.includes('max_age_cookie=' + owner),
+      expires: included.includes('expires_cookie=' + owner),
+      multiple: included.includes('multi_a=' + owner) && included.includes('multi_b=' + owner),
+      sameSiteLax: included.includes('lax_cookie=' + owner),
+      sameSiteStrict: included.includes('strict_cookie=' + owner),
+      sameSiteNoneRejected: !included.includes('none_cookie='),
+      secureRejected: !included.includes('secure_cookie='),
+      include: included.includes('application_session=' + owner),
+      sameOrigin: sameOrigin.includes('application_session=' + owner),
+      omit: omitted === ''
+    };
+    await fetch('/cookie/delete', {credentials: 'include'});
+    const deleted = await (await fetch('/cookie/read', {credentials: 'include'})).text();
+    matrix.cookies.deleted = !deleted.includes('application_session=')
+      && !deleted.includes('basic_cookie=') && !deleted.includes('multi_a=')
+      && !deleted.includes('multi_b=');
+  } catch (error) { recordError('cookies', error); }
+
+  try {
+    matrix.xhrStatus = await new Promise((resolve) => {
+      const request = new XMLHttpRequest();
+      request.open('GET', '/status/409');
+      request.withCredentials = true;
+      request.onload = () => resolve(request.status === 409);
+      request.onerror = () => resolve(false);
+      request.send();
+    });
+  } catch (error) { recordError('xhr', error); }
+
+  try {
+    const headers = await fetch('/headers');
+    matrix.responseHeaders = headers.headers.get('content-language') === 'en-Granger'
+      && headers.headers.get('etag') === '"granger-fixture"';
+    const csp = await fetch('/csp');
+    matrix.csp = (csp.headers.get('content-security-policy') || '').includes("default-src 'none'");
+    const cors = await fetch('/cors', {method: 'OPTIONS'});
+    matrix.corsSameOrigin = cors.status === 204
+      && (cors.headers.get('access-control-allow-methods') || '').includes('POST');
+    const metadata = await (await fetch('/request-metadata')).json();
+    matrix.gatewayMetadataHidden = metadata.capabilityPresent === false
+      && metadata.forwardingMetadataPresent === false
+      && !metadata.host.includes('127.0.0.1') && !metadata.host.includes(':');
+    matrix.gatewayTokenPageVisible = document.documentElement.innerHTML
+      .toLowerCase().includes('sec-granger-route-capability');
+  } catch (error) { recordError('headers', error); }
+
+  try {
+    await fetch(otherOrigin + '/cors');
+    matrix.crossServiceBlocked = false;
+  } catch (_error) { matrix.crossServiceBlocked = true; }
+  matrix.visibleOrigin = location.protocol === 'http:' && location.hostname.endsWith('.granger')
+    && !location.href.includes('127.0.0.1');
+  matrix.secureContext = window.isSecureContext;
+  body.dataset.applicationMatrix = JSON.stringify(matrix);
+  sessionStorage.setItem('granger-application-matrix', body.dataset.applicationMatrix);
+  body.dataset.matrixReady = 'true';
+})();
+"""
+    return (
+        template.replace("__OWNER__", json.dumps(owner))
+        .replace("__OTHER__", json.dumps(other))
+        .encode("utf-8")
+    )
+
+
+def handler_for(
+    owner: str,
+    heading: str,
+    other: str,
+    escape_url: str,
+    request_records: list[dict[str, str]],
+):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            request_records.append({name.lower(): value for name, value in self.headers.items()})
             if path == "/style.css":
                 self._send(b"#style-probe { color: rgb(45, 212, 191); }", "text/css")
                 return
@@ -141,11 +318,161 @@ def handler_for(owner: str, heading: str, other: str, escape_url: str):
                     "application/javascript; charset=utf-8",
                 )
                 return
+            if path == "/matrix.js":
+                self._send(
+                    application_matrix_script(owner, other),
+                    "application/javascript; charset=utf-8",
+                )
+                return
             if path == "/pixel.png":
                 self._send(PIXEL, "image/png")
                 return
             if path == "/api/data.json":
                 self._send(json.dumps({"owner": owner}).encode("ascii"), "application/json")
+                return
+            if path == "/cache-origin":
+                content = owner.encode("ascii")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "public, max-age=600")
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(content)
+                return
+            if path == "/http-cookie":
+                cookie = self.headers.get("Cookie", "").encode("ascii")
+                self._send(
+                    cookie,
+                    "text/plain",
+                    headers=[(
+                        "Set-Cookie",
+                        f"application_session={owner}; Path=/; HttpOnly; SameSite=Strict",
+                    )],
+                )
+                return
+            if path == "/http-status":
+                self._send(b"", "text/plain", 409)
+                return
+            if path.startswith("/status/"):
+                try:
+                    status = int(path.rsplit("/", 1)[1])
+                except ValueError:
+                    status = 400
+                headers = [("Content-Range", "bytes 0-0/1")] if status == 206 else []
+                self._send(
+                    b"" if status == 204 else str(status).encode("ascii"),
+                    "text/plain",
+                    status,
+                    headers,
+                )
+                return
+            if path == "/echo":
+                self._send(
+                    json.dumps(
+                        {"body": body.decode("utf-8", errors="replace"), "method": self.command}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            if path == "/upload":
+                self._send(
+                    json.dumps(
+                        {"bodyBase64": base64.b64encode(body).decode("ascii"), "method": self.command}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            if path == "/download":
+                self._send(
+                    b"\x00\x01\x02\x7f\x80\xff",
+                    "application/octet-stream",
+                    headers=[("Content-Disposition", 'attachment; filename="probe.bin"')],
+                )
+                return
+            if path == "/cookie/set":
+                cookies = [
+                    f"application_session={owner}; Path=/; HttpOnly; SameSite=Strict",
+                    f"basic_cookie={owner}; Path=/",
+                    f"lax_cookie={owner}; Path=/; SameSite=Lax",
+                    f"strict_cookie={owner}; Path=/; SameSite=Strict",
+                    f"path_cookie={owner}; Path=/scoped",
+                    f"max_age_cookie={owner}; Path=/; Max-Age=3600",
+                    f"restart_cookie={owner}; Path=/; Max-Age=3600; SameSite=Strict",
+                    f"expires_cookie={owner}; Path=/; Expires=Wed, 09 Jun 2038 10:18:14 GMT",
+                    f"multi_a={owner}; Path=/",
+                    f"multi_b={owner}; Path=/",
+                    f"none_cookie={owner}; Path=/; SameSite=None",
+                    f"secure_cookie={owner}; Path=/; Secure; SameSite=Strict",
+                ]
+                self._send(
+                    b"set",
+                    "text/plain",
+                    headers=[("Set-Cookie", value) for value in cookies],
+                )
+                return
+            if path == "/cookie/delete":
+                names = (
+                    "application_session", "basic_cookie", "lax_cookie", "strict_cookie",
+                    "max_age_cookie", "expires_cookie", "multi_a", "multi_b", "none_cookie",
+                    "secure_cookie",
+                )
+                headers = [("Set-Cookie", f"{name}=; Path=/; Max-Age=0") for name in names]
+                headers.append(("Set-Cookie", "path_cookie=; Path=/scoped; Max-Age=0"))
+                self._send(b"deleted", "text/plain", headers=headers)
+                return
+            if path in {"/cookie/read", "/scoped/read"}:
+                self._send(self.headers.get("Cookie", "").encode("ascii"), "text/plain")
+                return
+            if path.startswith("/redirect/") and path != "/redirect/target":
+                try:
+                    status = int(path.rsplit("/", 1)[1])
+                except ValueError:
+                    status = 302
+                self._send(b"", "text/plain", status, [("Location", "/redirect/target")])
+                return
+            if path == "/redirect/target":
+                self._send(
+                    json.dumps({"body": body.decode("utf-8"), "method": self.command}).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            if path == "/headers":
+                self._send(
+                    b"headers",
+                    "text/plain",
+                    headers=[("Content-Language", "en-Granger"), ("ETag", '"granger-fixture"')],
+                )
+                return
+            if path == "/csp":
+                self._send(
+                    b"<!doctype html><title>CSP</title>",
+                    "text/html; charset=utf-8",
+                    headers=[("Content-Security-Policy", "default-src 'none'")],
+                )
+                return
+            if path == "/cors":
+                self._send(
+                    b"",
+                    "text/plain",
+                    204 if self.command == "OPTIONS" else 200,
+                    [
+                        ("Access-Control-Allow-Origin", f"http://{owner}.granger"),
+                        ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+                        ("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token"),
+                    ],
+                )
+                return
+            if path == "/request-metadata":
+                lowered = {name.lower(): value for name, value in self.headers.items()}
+                metadata = {
+                    "capabilityPresent": "sec-granger-route-capability" in lowered,
+                    "forwardingMetadataPresent": any(
+                        name in lowered for name in ("forwarded", "x-forwarded-for", "x-real-ip")
+                    ),
+                    "host": lowered.get("host", ""),
+                }
+                self._send(json.dumps(metadata).encode("utf-8"), "application/json")
                 return
             if path == "/sw.js":
                 self._send(
@@ -187,16 +514,32 @@ def handler_for(owner: str, heading: str, other: str, escape_url: str):
 <a id="relative-link" href="/next">next</a>
 <form id="search-form" action="/form" method="get">
 <input name="q" value="granger"><button type="submit">submit</button></form>
-<script src="/app.js"></script></body></html>"""
+<script src="/app.js"></script><script src="/matrix.js"></script></body></html>"""
             self._send(page.encode("utf-8"), "text/html; charset=utf-8")
 
-        def _send(self, body: bytes, content_type: str) -> None:
-            self.send_response(200)
+        do_DELETE = do_GET
+        do_HEAD = do_GET
+        do_OPTIONS = do_GET
+        do_PATCH = do_GET
+        do_POST = do_GET
+        do_PUT = do_GET
+
+        def _send(
+            self,
+            body: bytes,
+            content_type: str,
+            status: int = 200,
+            headers: list[tuple[str, str]] | None = None,
+        ) -> None:
+            self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            for name, value in headers or []:
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != "HEAD" and status not in {204, 304}:
+                self.wfile.write(body)
 
         def log_message(self, _format: str, *_args: object) -> None:
             return
@@ -282,6 +625,7 @@ def run(
     output: Path,
     qt_bin: Path | None,
     expect_packaged_runtime: bool,
+    require_application_semantics: bool = False,
 ) -> int:
     repository = Path(__file__).resolve().parents[2]
     network_root = repository / "GrangerNetwork"
@@ -290,14 +634,20 @@ def run(
     probe_thread = threading.Thread(target=probe.serve_forever, daemon=True)
     probe_thread.start()
     escape_url = f"http://127.0.0.1:{probe.server_address[1]}/escape"
+    first_request_records: list[dict[str, str]] = []
+    second_request_records: list[dict[str, str]] = []
 
     first_http = ThreadingHTTPServer(
         ("127.0.0.1", 0),
-        handler_for("first", "Granger browser integration", "second", escape_url),
+        handler_for(
+            "first", "Granger browser integration", "second", escape_url, first_request_records
+        ),
     )
     second_http = ThreadingHTTPServer(
         ("127.0.0.1", 0),
-        handler_for("second", "Second Granger service", "test", escape_url),
+        handler_for(
+            "second", "Second Granger service", "test", escape_url, second_request_records
+        ),
     )
     first_http_thread = threading.Thread(target=first_http.serve_forever, daemon=True)
     second_http_thread = threading.Thread(target=second_http.serve_forever, daemon=True)
@@ -328,13 +678,19 @@ def run(
         first_host = RendezvousServiceHost(
             ServiceIdentity.load(root / "first-service" / "service.key"),
             first_descriptor,
-            LoopbackHttpBridge(LoopbackHttpTarget("127.0.0.1", first_http.server_address[1])),
+            LoopbackHttpBridge(
+                LoopbackHttpTarget("127.0.0.1", first_http.server_address[1]),
+                virtual_host=first_descriptor.canonical_name,
+            ),
             RendezvousHostTransport(relay_endpoint),
         )
         second_host = RendezvousServiceHost(
             ServiceIdentity.load(root / "second-service" / "service.key"),
             second_descriptor,
-            LoopbackHttpBridge(LoopbackHttpTarget("127.0.0.1", second_http.server_address[1])),
+            LoopbackHttpBridge(
+                LoopbackHttpTarget("127.0.0.1", second_http.server_address[1]),
+                virtual_host=second_descriptor.canonical_name,
+            ),
             RendezvousHostTransport(relay_endpoint),
         )
         relay.start_background()
@@ -359,6 +715,7 @@ def run(
             environment["PATH"] = str(qt_bin) + os.pathsep + environment.get("PATH", "")
         environment["GRANGER_DATA_ROOT"] = str(root / "browser-data")
         environment["GRANGER_CACHE_ROOT"] = str(root / "browser-cache")
+        environment["GRANGER_ACCEPTANCE_TRACE_DIR"] = str(output.parent)
         arguments = [
             str(browser),
             "--smoke-granger-network-browser",
@@ -384,14 +741,36 @@ def run(
             timeout=150,
             check=False,
         )
+        restart_output = output.with_name(output.stem + "-restart" + output.suffix)
+        restart_completed: subprocess.CompletedProcess[str] | None = None
+        restart_result: dict[str, object] = {}
+        if require_application_semantics:
+            restart_arguments = [
+                f"--smoke-output={restart_output}" if argument.startswith("--smoke-output=") else argument
+                for argument in arguments
+            ]
+            restart_completed = subprocess.run(
+                restart_arguments,
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=150,
+                check=False,
+            )
+            if restart_output.is_file():
+                restart_result = json.loads(restart_output.read_text(encoding="utf-8"))
         first_host.stop()
         second_host.stop()
         relay.stop()
 
         result = json.loads(output.read_text(encoding="utf-8")) if output.is_file() else {}
         worker_pid = int(result.get("runtime", {}).get("workerPid", 0))
+        restart_worker_pid = int(restart_result.get("runtime", {}).get("workerPid", 0))
         time.sleep(0.25)
-        orphan_count = int(process_is_running(worker_pid))
+        orphan_count = int(process_is_running(worker_pid)) + int(
+            process_is_running(restart_worker_pid)
+        )
         captured = bytes(wire)
         plaintext_observed = any(
             marker in captured
@@ -414,17 +793,59 @@ def run(
             "stdout": completed.stdout[-4000:],
             "packagedRuntimeRequested": expect_packaged_runtime,
         }
+        restart_first = restart_result.get("first", {})
+        restart_cookie_persistence = (
+            not require_application_semantics
+            or (
+                restart_completed is not None
+                and restart_completed.returncode == 0
+                and restart_result.get("ok") is True
+                and isinstance(restart_first, dict)
+                and "restart_cookie=first" in str(restart_first.get("priorCookie", ""))
+                and restart_first.get("priorStorage") == "first"
+                and restart_first.get("priorIndexedDb") == "first"
+            )
+        )
+        harness["browserRestartChecked"] = require_application_semantics
+        harness["browserRestartExitCode"] = (
+            restart_completed.returncode if restart_completed is not None else None
+        )
+        harness["browserRestartStatePersistence"] = restart_cookie_persistence
         result["harness"] = harness
         runtime = result.get("runtime", {})
+        gateway_port = int(runtime.get("httpGateway", {}).get("port", 0))
+        backend_headers = json.dumps(
+            first_request_records + second_request_records,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).lower()
+        backend_gateway_details_absent = (
+            "sec-granger-route-capability" not in backend_headers
+            and "x-forwarded-for" not in backend_headers
+            and "x-real-ip" not in backend_headers
+            and (gateway_port == 0 or str(gateway_port) not in backend_headers)
+        )
+        harness["backendGatewayDetailsAbsent"] = backend_gateway_details_absent
+        harness["backendRequestCount"] = len(first_request_records) + len(second_request_records)
         packaged_runtime_ok = not expect_packaged_runtime or (
             runtime.get("appLocalRuntime") is True
             and Path(str(runtime.get("runtimePython", ""))).resolve()
             == (browser.parent / "runtime" / "python" / "python.exe").resolve()
         )
         harness["packagedRuntimeConfirmed"] = packaged_runtime_ok
-        result["ok"] = bool(result.get("ok")) and completed.returncode == 0 \
-            and probe.connection_count == 0 and orphan_count == 0 and not plaintext_observed \
+        result["ok"] = (
+            bool(result.get("ok"))
+            and completed.returncode == 0
+            and probe.connection_count == 0
+            and orphan_count == 0
+            and not plaintext_observed
             and packaged_runtime_ok
+            and backend_gateway_details_absent
+            and restart_cookie_persistence
+        )
+        harness["applicationSemanticsRequired"] = require_application_semantics
+        if require_application_semantics:
+            result["ok"] = result["ok"] and result.get("applicationReleaseReady") is True
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -446,6 +867,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--qt-bin", type=Path)
     parser.add_argument("--expect-packaged-runtime", action="store_true")
+    parser.add_argument("--require-application-semantics", action="store_true")
     options = parser.parse_args()
     qt_bin = options.qt_bin.resolve() if options.qt_bin is not None else None
     if not options.expect_packaged_runtime and qt_bin is None:
@@ -455,6 +877,7 @@ def main() -> int:
         options.output.resolve(),
         qt_bin,
         options.expect_packaged_runtime,
+        options.require_application_semantics,
     )
 
 

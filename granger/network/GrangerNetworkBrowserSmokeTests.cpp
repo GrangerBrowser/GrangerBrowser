@@ -3,6 +3,7 @@
 #include "granger/browser/BrowserTab.h"
 #include "granger/core/AppPaths.h"
 #include "granger/network/GrangerNetworkUrl.h"
+#include "granger/network/GrangerHttpGateway.h"
 #include "granger/network/GrangerWanConfigPaths.h"
 #include "granger/settings/SettingsManager.h"
 #include "granger/ui/MainWindow.h"
@@ -23,6 +24,7 @@
 #include <QSaveFile>
 #include <QHostAddress>
 #include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QVariant>
@@ -221,13 +223,17 @@ LoadResult waitForAddress(BrowserTab *tab,
 {
     LoadResult result;
     if (!tab) return result;
+    const quint64 generation = tab->navigationGeneration();
+    const bool alreadyAtExpected = tab->displayAddress() == expected;
     QEventLoop loop;
     QTimer poll;
     QTimer timeout;
     poll.setInterval(50);
     timeout.setSingleShot(true);
     QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
-        if (tab->displayAddress() != expected) return;
+        const bool navigationObserved = alreadyAtExpected
+            || tab->navigationGeneration() > generation;
+        if (!navigationObserved || tab->displayAddress() != expected || tab->isLoading()) return;
         result.signaled = true;
         result.loaded = true;
         result.address = tab->displayAddress();
@@ -277,6 +283,38 @@ QVariant evaluateJavaScript(QWebEnginePage *page, const QString &source, int tim
         guardedLoop->quit();
     });
     loop.exec();
+    return result;
+}
+
+LoadResult waitForPageText(BrowserTab *tab,
+                           const QStringList &needles,
+                           const std::function<void()> &action,
+                           QString *observedText,
+                           int timeoutMs = 10000)
+{
+    LoadResult result;
+    if (!tab || !tab->page()) return result;
+    action();
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QString text;
+    while (elapsed.elapsed() < timeoutMs) {
+        text = evaluateJavaScript(
+                   tab->page(), QStringLiteral("document.body?.innerText || ''"), 1000)
+                   .toString();
+        bool matches = true;
+        for (const QString &needle : needles) matches = matches && text.contains(needle);
+        if (matches) {
+            result.signaled = true;
+            result.loaded = true;
+            result.address = tab->displayAddress();
+            break;
+        }
+        QEventLoop delay;
+        QTimer::singleShot(100, &delay, &QEventLoop::quit);
+        delay.exec();
+    }
+    if (observedText) *observedText = text.left(2048);
     return result;
 }
 
@@ -332,6 +370,7 @@ QJsonObject pageSnapshot(BrowserTab *tab, bool waitForReady = true, int timeoutM
           image: !!document.querySelector('#relative-image')?.complete &&
                  document.querySelector('#relative-image')?.naturalWidth > 0,
           fetch: document.body?.dataset.fetch || '',
+          networkCacheOwner: document.body?.dataset.networkCacheOwner || '',
           crossNetwork: document.body?.dataset.crossNetwork || '',
           crossService: document.body?.dataset.crossService || '',
           crossVectors: document.body?.dataset.crossVectors || '',
@@ -339,10 +378,18 @@ QJsonObject pageSnapshot(BrowserTab *tab, bool waitForReady = true, int timeoutM
           priorStorage: document.body?.dataset.priorStorage || '',
           cookie: document.cookie || '',
           priorCookie: document.body?.dataset.priorCookie || '',
+          httpCookie: document.body?.dataset.httpCookie || '',
+          credentialsOmit: document.body?.dataset.credentialsOmit || '',
+          nativeHttpStatus: document.body?.dataset.nativeHttpStatus || '',
           indexedDb: document.body?.dataset.indexedDb || '',
           priorIndexedDb: document.body?.dataset.priorIndexedDb || '',
           cache: document.body?.dataset.cache || '',
-          serviceWorker: document.body?.dataset.serviceWorker || ''
+          serviceWorker: document.body?.dataset.serviceWorker || '',
+          matrixReady: document.body?.dataset.matrixReady || '',
+          applicationMatrix: (() => {
+            try { return JSON.parse(document.body?.dataset.applicationMatrix || '{}'); }
+            catch (_error) { return {}; }
+          })()
         }))()
     )JS");
     QElapsedTimer elapsed;
@@ -353,7 +400,10 @@ QJsonObject pageSnapshot(BrowserTab *tab, bool waitForReady = true, int timeoutM
         const QJsonDocument parsed = QJsonDocument::fromJson(encoded.toUtf8(), &error);
         if (error.error == QJsonParseError::NoError && parsed.isObject()) {
             const QJsonObject snapshot = parsed.object();
-            if (!waitForReady || snapshot.value(QStringLiteral("ready")).toString() == QStringLiteral("true")) {
+            if (!waitForReady
+                || (snapshot.value(QStringLiteral("ready")).toString() == QStringLiteral("true")
+                    && snapshot.value(QStringLiteral("matrixReady")).toString()
+                        == QStringLiteral("true"))) {
                 return snapshot;
             }
         }
@@ -362,6 +412,33 @@ QJsonObject pageSnapshot(BrowserTab *tab, bool waitForReady = true, int timeoutM
         delay.exec();
     } while (elapsed.elapsed() < timeoutMs);
     return {};
+}
+
+QByteArray unauthenticatedGatewayRequest(quint16 port)
+{
+    if (port == 0) return {};
+    QTcpSocket socket;
+    QByteArray response;
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    timeout.setInterval(3000);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&socket, &QTcpSocket::connected, &socket, [&socket] {
+        socket.write(QByteArrayLiteral(
+            "GET / HTTP/1.1\r\nHost: test.granger\r\nConnection: close\r\n\r\n"));
+    });
+    QObject::connect(&socket, &QTcpSocket::readyRead, &socket,
+                     [&socket, &response] { response += socket.readAll(); });
+    QObject::connect(&socket, &QTcpSocket::disconnected, &loop, &QEventLoop::quit);
+    QObject::connect(&socket, &QTcpSocket::errorOccurred, &loop,
+                     [&loop](QAbstractSocket::SocketError) { loop.quit(); });
+    timeout.start();
+    socket.connectToHost(QHostAddress::LocalHost, port);
+    loop.exec();
+    response += socket.readAll();
+    socket.abort();
+    return response;
 }
 
 bool writeResult(const QString &path, const QJsonObject &result)
@@ -391,41 +468,150 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
         MainWindow window(settings, theme);
         window.show();
         BrowserTab *tab = window.currentTabForDiagnostics();
+        HostingStageTrace trace(outputPath + QStringLiteral(".trace.json"));
+        trace.probe([&window] { return window.grangerNetworkDiagnosticsForDiagnostics(); });
 
+        trace.begin(QStringLiteral("gateway-unauthenticated-boundary"));
+        const QJsonObject initialRuntime = window.grangerNetworkDiagnosticsForDiagnostics();
+        const QJsonObject initialGateway = initialRuntime.value(QStringLiteral("httpGateway")).toObject();
+        const QByteArray unauthenticatedResponse = unauthenticatedGatewayRequest(
+            quint16(initialGateway.value(QStringLiteral("port")).toInt()));
+        const bool unauthenticatedGatewayBlocked =
+            unauthenticatedResponse.startsWith(QByteArrayLiteral("HTTP/1.1 403 "))
+            && !unauthenticatedResponse.contains(QByteArrayLiteral("Granger browser integration"));
+        trace.end(unauthenticatedGatewayBlocked,
+                  QStringLiteral("UNAUTHENTICATED_GATEWAY_ACCESS_ALLOWED"));
+
+        trace.begin(QStringLiteral("alias-navigation"));
         const LoadResult aliasLoad = waitForLoad(tab, [&] {
             window.openAddressForDiagnostics(aliasAddress);
         });
         const QJsonObject first = pageSnapshot(tab);
+        const bool aliasSnapshotLoaded = !first.isEmpty()
+            && first.value(QStringLiteral("address")).toString()
+                == QStringLiteral("http://") + aliasAddress + QStringLiteral("/");
+        trace.end(aliasLoad.loaded || aliasSnapshotLoaded, QStringLiteral("ALIAS_LOAD_FAILED"));
 
+        trace.begin(QStringLiteral("gateway-failure-recovery"));
+        GrangerHttpGateway *gateway = GrangerHttpGateway::instance();
+        const quint16 gatewayPort = gateway ? gateway->port() : 0;
+        if (gateway) gateway->stop();
+        const LoadResult gatewayDownLoad = waitForLoad(tab, [&] {
+            window.openAddressForDiagnostics(
+                aliasAddress + QStringLiteral("/status/200?gateway=stopped"));
+        });
+        QTcpServer collisionServer;
+        const bool collisionReserved = gatewayPort != 0
+            && collisionServer.listen(QHostAddress::LocalHost, gatewayPort);
+        QString collisionError;
+        const bool collisionFailedClosed = collisionReserved && gateway
+            && !gateway->listen(&collisionError) && !gateway->isListening();
+        collisionServer.close();
+        QString restartError;
+        const bool gatewayRestarted = gateway && gateway->listen(&restartError)
+            && gateway->port() == gatewayPort;
+        const LoadResult gatewayRecoveryLoad = waitForLoad(tab, [&] {
+            window.openAddressForDiagnostics(aliasAddress);
+        });
+        const QJsonObject gatewayRecovery = pageSnapshot(tab);
+        const bool gatewayFailureRecovery = gatewayDownLoad.signaled && !gatewayDownLoad.loaded
+            && collisionFailedClosed && gatewayRestarted && gatewayRecoveryLoad.loaded
+            && gatewayRecovery.value(QStringLiteral("heading")).toString()
+                == QStringLiteral("Granger browser integration");
+        trace.end(gatewayFailureRecovery, QStringLiteral("GATEWAY_RECOVERY_FAILED"));
+
+        trace.begin(QStringLiteral("profile-cookie-isolation"));
+        evaluateJavaScript(tab->page(), QStringLiteral(
+            "document.cookie='tab_shared=default; Path=/; SameSite=Strict'"));
+        window.openNewTabForDiagnostics();
+        BrowserTab *sharedProfileTab = window.currentTabForDiagnostics();
+        const LoadResult sharedProfileLoad = waitForLoad(sharedProfileTab, [&] {
+            window.openAddressForDiagnostics(aliasAddress + QStringLiteral("/cookie/read"));
+        });
+        const QString sharedProfileCookies = evaluateJavaScript(
+            sharedProfileTab ? sharedProfileTab->page() : nullptr,
+            QStringLiteral("document.body.innerText")).toString();
+        const bool multiTabCookieSharing = sharedProfileLoad.loaded
+            && sharedProfileCookies.contains(QStringLiteral("tab_shared=default"));
+        window.closeCurrentTabForDiagnostics();
+
+        window.openIsolatedTabForDiagnostics();
+        BrowserTab *isolatedTab = window.currentTabForDiagnostics();
+        const LoadResult isolatedLoad = waitForLoad(isolatedTab, [&] {
+            window.openAddressForDiagnostics(aliasAddress + QStringLiteral("/cookie/read"));
+        });
+        const QString isolatedCookies = evaluateJavaScript(
+            isolatedTab ? isolatedTab->page() : nullptr,
+            QStringLiteral("document.body.innerText")).toString();
+        const bool isolatedProfileCookies = isolatedLoad.loaded
+            && !isolatedCookies.contains(QStringLiteral("tab_shared=default"));
+        window.closeCurrentTabForDiagnostics();
+
+        const QString containerId = window.createContainerForDiagnostics(
+            QStringLiteral("Application gate %1").arg(
+                QUuid::createUuid().toString(QUuid::WithoutBraces).left(8)),
+            QStringLiteral("#3d9b78"),
+            QStringLiteral("shield"), QStringLiteral("Origin isolation fixture"));
+        if (!containerId.isEmpty()) window.openContainerTabForDiagnostics(containerId);
+        BrowserTab *containerTab = window.currentTabForDiagnostics();
+        const LoadResult containerLoad = waitForLoad(containerTab, [&] {
+            window.openAddressForDiagnostics(aliasAddress + QStringLiteral("/cookie/read"));
+        });
+        const QString containerCookies = evaluateJavaScript(
+            containerTab ? containerTab->page() : nullptr,
+            QStringLiteral("document.body.innerText")).toString();
+        const bool containerProfileCookies = !containerId.isEmpty() && containerLoad.loaded
+            && !containerCookies.contains(QStringLiteral("tab_shared=default"));
+        window.closeCurrentTabForDiagnostics();
+        const bool profileCookieIsolation = multiTabCookieSharing
+            && isolatedProfileCookies && containerProfileCookies;
+        trace.end(profileCookieIsolation, QStringLiteral("PROFILE_COOKIE_ISOLATION_FAILED"));
+
+        trace.begin(QStringLiteral("explicit-https-navigation"));
         const LoadResult explicitHttpsLoad = waitForLoad(tab, [&] {
             window.openAddressForDiagnostics(QStringLiteral("https://") + aliasAddress);
         });
         const QJsonObject explicitHttps = pageSnapshot(tab);
+        trace.end(explicitHttpsLoad.loaded && !explicitHttps.isEmpty(),
+                  QStringLiteral("HTTPS_NAMESPACE_LOAD_FAILED"));
+        trace.begin(QStringLiteral("explicit-http-navigation"));
         const LoadResult explicitHttpLoad = waitForLoad(tab, [&] {
             window.openAddressForDiagnostics(QStringLiteral("http://") + aliasAddress);
         });
         const QJsonObject explicitHttp = pageSnapshot(tab);
+        trace.end(explicitHttpLoad.loaded && !explicitHttp.isEmpty(),
+                  QStringLiteral("HTTP_NAMESPACE_LOAD_FAILED"));
 
+        trace.begin(QStringLiteral("relative-navigation"));
         const LoadResult relativeLoad = waitForLoad(tab, [&] {
             evaluateJavaScript(tab->page(), QStringLiteral("document.querySelector('#relative-link').click()"));
         });
         const QJsonObject relative = pageSnapshot(tab, false);
+        trace.end(relativeLoad.loaded, QStringLiteral("RELATIVE_NAVIGATION_FAILED"));
+        trace.begin(QStringLiteral("history-navigation"));
         const bool historyAvailable = tab && tab->canGoBack();
         const QJsonObject historyAfterRelative = historyDiagnostics(tab);
         const LoadResult backFromRelative = waitForAddress(
             tab, aliasAddress, [&] { tab->goBack(); });
+        const QJsonObject historyAfterBack = historyDiagnostics(tab);
         LoadResult forwardToRelative;
         LoadResult backBeforeForm;
+        QJsonObject historyAfterForward;
         if (backFromRelative.loaded) {
             forwardToRelative = waitForAddress(
                 tab, aliasAddress + QStringLiteral("/next"), [&] { tab->goForward(); });
+            historyAfterForward = historyDiagnostics(tab);
             backBeforeForm = waitForAddress(
                 tab, aliasAddress, [&] { tab->goBack(); });
         }
         if (!backBeforeForm.loaded) {
             waitForLoad(tab, [&] { window.openAddressForDiagnostics(aliasAddress); });
         }
+        trace.end(historyAvailable && backFromRelative.loaded && forwardToRelative.loaded
+                      && backBeforeForm.loaded,
+                  QStringLiteral("HISTORY_NAVIGATION_FAILED"));
 
+        trace.begin(QStringLiteral("form-navigation"));
         const LoadResult formLoad = waitForLoad(tab, [&] {
             evaluateJavaScript(tab->page(), QStringLiteral("document.querySelector('#search-form').requestSubmit()"));
         });
@@ -433,22 +619,33 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
         const LoadResult backFromForm = waitForAddress(
             tab, aliasAddress, [&] { tab->goBack(); });
         const LoadResult reload = waitForLoad(tab, [&] { tab->reload(); });
+        trace.end(formLoad.loaded && backFromForm.loaded && reload.loaded,
+                  QStringLiteral("FORM_OR_RELOAD_FAILED"));
 
+        trace.begin(QStringLiteral("canonical-navigation"));
         const LoadResult canonicalLoad = waitForLoad(tab, [&] {
             window.openAddressForDiagnostics(canonicalAddress);
         });
         const QJsonObject canonical = pageSnapshot(tab);
+        trace.end(canonicalLoad.loaded && !canonical.isEmpty(),
+                  QStringLiteral("CANONICAL_LOAD_FAILED"));
 
+        trace.begin(QStringLiteral("second-service-navigation"));
         const LoadResult secondLoad = waitForLoad(tab, [&] {
             window.openAddressForDiagnostics(secondAddress);
         });
         const QJsonObject second = pageSnapshot(tab);
+        trace.end(secondLoad.loaded && !second.isEmpty(),
+                  QStringLiteral("SECOND_SERVICE_LOAD_FAILED"));
 
-        const LoadResult unknownLoad = waitForLoad(tab, [&] {
-            window.openAddressForDiagnostics(QStringLiteral("missing-service.granger"));
-        });
-        const QString unknownText = evaluateJavaScript(
-            tab->page(), QStringLiteral("document.body?.innerText || ''")).toString();
+        trace.begin(QStringLiteral("unknown-service-navigation"));
+        QString unknownText;
+        const LoadResult unknownLoad = waitForPageText(
+            tab,
+            {QStringLiteral("Unable to reach this service"), QStringLiteral("Service not found")},
+            [&] { window.openAddressForDiagnostics(QStringLiteral("missing-service.granger")); },
+            &unknownText);
+        trace.end(unknownLoad.loaded, QStringLiteral("UNKNOWN_SERVICE_ERROR_PAGE_FAILED"));
 
         const bool html = first.value(QStringLiteral("heading")).toString()
             == QStringLiteral("Granger browser integration");
@@ -457,11 +654,21 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
         const bool javascript = first.value(QStringLiteral("script")).toBool();
         const bool resources = first.value(QStringLiteral("image")).toBool()
             && first.value(QStringLiteral("fetch")).toString() == QStringLiteral("ok");
+        const QString firstPriorStorage = first.value(QStringLiteral("priorStorage")).toString();
+        const QString secondPriorStorage = second.value(QStringLiteral("priorStorage")).toString();
+        const QString firstPriorIndexedDb = first.value(QStringLiteral("priorIndexedDb")).toString();
+        const QString secondPriorIndexedDb = second.value(QStringLiteral("priorIndexedDb")).toString();
         const bool origins = first.value(QStringLiteral("origin")).toString()
                 != second.value(QStringLiteral("origin")).toString()
-            && second.value(QStringLiteral("priorStorage")).toString().isEmpty()
+            && (firstPriorStorage.isEmpty() || firstPriorStorage == QStringLiteral("first"))
+            && (secondPriorStorage.isEmpty() || secondPriorStorage == QStringLiteral("second"))
             && !second.value(QStringLiteral("priorCookie")).toString().contains(QStringLiteral("first"))
-            && second.value(QStringLiteral("priorIndexedDb")).toString().isEmpty();
+            && (firstPriorIndexedDb.isEmpty() || firstPriorIndexedDb == QStringLiteral("first"))
+            && (secondPriorIndexedDb.isEmpty() || secondPriorIndexedDb == QStringLiteral("second"));
+        const bool networkCacheIsolation = first.value(
+                QStringLiteral("networkCacheOwner")).toString() == QStringLiteral("first")
+            && second.value(QStringLiteral("networkCacheOwner")).toString()
+                == QStringLiteral("second");
         const bool storage = first.value(QStringLiteral("storage")).toString()
                 == QStringLiteral("first")
             && first.value(QStringLiteral("indexedDb")).toString() == QStringLiteral("ok");
@@ -469,15 +676,84 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
             .contains(QStringLiteral("first"));
         const bool cookieIsolation = !cookiesSupported
             || !second.value(QStringLiteral("priorCookie")).toString().contains(QStringLiteral("first"));
+        const bool credentialsOmit = first.value(QStringLiteral("credentialsOmit")).toString()
+            == QStringLiteral("respected");
+        const bool applicationCookies = first.value(QStringLiteral("httpCookie")).toString()
+            == QStringLiteral("supported");
+        const bool applicationStatus = first.value(QStringLiteral("nativeHttpStatus")).toString()
+            == QStringLiteral("409");
         const bool cacheSupported = first.value(QStringLiteral("cache")).toString()
             == QStringLiteral("ok");
+        const QJsonObject applicationMatrix = first.value(
+            QStringLiteral("applicationMatrix")).toObject();
+        const auto allTrue = [](const QJsonObject &object, const QStringList &keys) {
+            for (const QString &key : keys) {
+                if (!object.value(key).toBool(false)) return false;
+            }
+            return true;
+        };
+        const bool applicationMethods = allTrue(
+            applicationMatrix.value(QStringLiteral("methods")).toObject(),
+            {QStringLiteral("GET"), QStringLiteral("HEAD"), QStringLiteral("POST"),
+             QStringLiteral("PUT"), QStringLiteral("PATCH"), QStringLiteral("DELETE"),
+             QStringLiteral("OPTIONS")});
+        const bool applicationStatuses = allTrue(
+            applicationMatrix.value(QStringLiteral("statuses")).toObject(),
+            {QStringLiteral("200"), QStringLiteral("201"), QStringLiteral("204"),
+             QStringLiteral("206"), QStringLiteral("301"), QStringLiteral("302"),
+             QStringLiteral("303"), QStringLiteral("307"), QStringLiteral("308"),
+             QStringLiteral("400"), QStringLiteral("401"), QStringLiteral("403"),
+             QStringLiteral("404"), QStringLiteral("405"), QStringLiteral("409"),
+             QStringLiteral("413"), QStringLiteral("422"), QStringLiteral("429"),
+             QStringLiteral("500"), QStringLiteral("502"), QStringLiteral("503"),
+             QStringLiteral("504")});
+        const bool applicationRedirects = allTrue(
+            applicationMatrix.value(QStringLiteral("redirects")).toObject(),
+            {QStringLiteral("302"), QStringLiteral("303"), QStringLiteral("307"),
+             QStringLiteral("308")});
+        const QJsonObject cookieMatrix = applicationMatrix.value(
+            QStringLiteral("cookies")).toObject();
+        const bool applicationCookieMatrix = allTrue(
+            cookieMatrix,
+            {QStringLiteral("setCookie"), QStringLiteral("roundtrip"),
+             QStringLiteral("httpOnly"), QStringLiteral("path"), QStringLiteral("maxAge"),
+             QStringLiteral("expires"), QStringLiteral("multiple"),
+             QStringLiteral("sameSiteLax"), QStringLiteral("sameSiteStrict"),
+             QStringLiteral("sameSiteNoneRejected"), QStringLiteral("secureRejected"),
+             QStringLiteral("include"), QStringLiteral("sameOrigin"),
+             QStringLiteral("omit"), QStringLiteral("deleted")});
+        const bool applicationOriginSemantics =
+            applicationMatrix.value(QStringLiteral("visibleOrigin")).toBool(false)
+            && applicationMatrix.contains(QStringLiteral("secureContext"))
+            && !applicationMatrix.value(QStringLiteral("secureContext")).toBool(true)
+            && applicationMatrix.value(QStringLiteral("crossServiceBlocked")).toBool(false);
+        const bool applicationHeaders =
+            applicationMatrix.value(QStringLiteral("responseHeaders")).toBool(false)
+            && applicationMatrix.value(QStringLiteral("csp")).toBool(false)
+            && applicationMatrix.value(QStringLiteral("corsSameOrigin")).toBool(false);
+        const bool gatewayMetadataHidden =
+            applicationMatrix.value(QStringLiteral("gatewayMetadataHidden")).toBool(false)
+            && !applicationMatrix.value(QStringLiteral("gatewayTokenPageVisible")).toBool(true);
+        const bool applicationXhr = applicationMatrix.value(
+            QStringLiteral("xhrStatus")).toBool(false);
+        const bool applicationBinary = applicationMatrix.value(
+            QStringLiteral("binaryTransfer")).toBool(false);
+        const bool oversizedBodyRejected = applicationMatrix.value(
+            QStringLiteral("oversizedBodyRejected")).toBool(false);
+        const bool applicationMatrixClean = applicationMatrix.value(
+            QStringLiteral("errors")).toArray().isEmpty();
+        const bool completeApplicationSemantics = applicationMethods && applicationStatuses
+            && applicationRedirects && applicationCookieMatrix && applicationOriginSemantics
+            && applicationHeaders && applicationXhr && applicationMatrixClean
+            && applicationBinary && oversizedBodyRejected && gatewayMetadataHidden;
         const bool crossNetwork = first.value(QStringLiteral("crossNetwork")).toString()
                 == QStringLiteral("blocked")
             && first.value(QStringLiteral("crossService")).toString() == QStringLiteral("blocked")
             && first.value(QStringLiteral("crossVectors")).toString() == QStringLiteral("scheduled");
-        const bool serviceWorker = first.value(QStringLiteral("serviceWorker")).toString()
-            == QStringLiteral("ok");
-        const bool aliasOk = aliasLoad.loaded && aliasLoad.address == aliasAddress && html;
+        const QString serviceWorkerStatus = first.value(QStringLiteral("serviceWorker")).toString();
+        const bool serviceWorker = serviceWorkerStatus == QStringLiteral("ok")
+            || serviceWorkerStatus == QStringLiteral("unsupported");
+        const bool aliasOk = (aliasLoad.loaded || aliasSnapshotLoaded) && html;
         const bool httpSyntaxOk = explicitHttpsLoad.loaded && explicitHttpLoad.loaded
             && explicitHttpsLoad.address == aliasAddress && explicitHttpLoad.address == aliasAddress
             && explicitHttps.value(QStringLiteral("heading")).toString()
@@ -505,8 +781,10 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
         const bool noDns = runtime.value(QStringLiteral("dnsRequests")).toInt(-1) == 0;
 
         passed = aliasOk && httpSyntaxOk && canonicalOk && secondOk && html && css && javascript
-            && resources && origins && storage && crossNetwork && navigation
-            && serviceWorker && errorPage && noDns;
+            && resources && origins && storage && networkCacheIsolation && crossNetwork && navigation
+            && serviceWorker && errorPage && noDns && credentialsOmit
+            && unauthenticatedGatewayBlocked && profileCookieIsolation
+            && gatewayFailureRecovery && completeApplicationSemantics;
         result = {
             {QStringLiteral("ok"), passed},
             {QStringLiteral("aliasNavigation"), aliasOk},
@@ -520,17 +798,47 @@ int runGrangerNetworkBrowserSmoke(QApplication &app,
             {QStringLiteral("navigationHistoryReloadForms"), navigation},
             {QStringLiteral("originIsolation"), origins},
             {QStringLiteral("storageIsolation"), storage},
+            {QStringLiteral("networkCacheIsolation"), networkCacheIsolation},
+            {QStringLiteral("multiTabCookieSharing"), multiTabCookieSharing},
+            {QStringLiteral("isolatedProfileCookies"), isolatedProfileCookies},
+            {QStringLiteral("containerProfileCookies"), containerProfileCookies},
+            {QStringLiteral("profileCookieIsolation"), profileCookieIsolation},
             {QStringLiteral("cookiesSupported"), cookiesSupported},
             {QStringLiteral("cookieIsolation"), cookieIsolation},
+            {QStringLiteral("applicationCredentialsOmitRespected"), credentialsOmit},
+            {QStringLiteral("applicationHttpCookiesSupported"), applicationCookies},
+            {QStringLiteral("applicationNativeStatusSupported"), applicationStatus},
+            {QStringLiteral("applicationReleaseReady"),
+             passed && credentialsOmit && applicationCookies && applicationStatus
+                 && completeApplicationSemantics},
+            {QStringLiteral("applicationMethods"), applicationMethods},
+            {QStringLiteral("applicationStatuses"), applicationStatuses},
+            {QStringLiteral("applicationRedirects"), applicationRedirects},
+            {QStringLiteral("applicationCookieMatrix"), applicationCookieMatrix},
+            {QStringLiteral("applicationOriginSemantics"), applicationOriginSemantics},
+            {QStringLiteral("applicationResponseHeaders"), applicationHeaders},
+            {QStringLiteral("applicationXhr"), applicationXhr},
+            {QStringLiteral("applicationBinaryTransfer"), applicationBinary},
+            {QStringLiteral("oversizedBodyRejected"), oversizedBodyRejected},
+            {QStringLiteral("applicationMatrixClean"), applicationMatrixClean},
+            {QStringLiteral("gatewayMetadataHidden"), gatewayMetadataHidden},
+            {QStringLiteral("unauthenticatedGatewayBlocked"), unauthenticatedGatewayBlocked},
+            {QStringLiteral("gatewayFailureRecovery"), gatewayFailureRecovery},
+            {QStringLiteral("gatewayPortCollisionFailedClosed"), collisionFailedClosed},
+            {QStringLiteral("gatewayRestartedOnSamePort"), gatewayRestarted},
+            {QStringLiteral("applicationMatrix"), applicationMatrix},
             {QStringLiteral("cacheApiSupported"), cacheSupported},
             {QStringLiteral("crossNetworkFailClosed"), crossNetwork},
             {QStringLiteral("errorPage"), errorPage},
             {QStringLiteral("serviceWorker"), serviceWorker},
+            {QStringLiteral("serviceWorkerStatus"), serviceWorkerStatus},
             {QStringLiteral("dnsRequests"), runtime.value(QStringLiteral("dnsRequests"))},
             {QStringLiteral("first"), first},
             {QStringLiteral("second"), second},
             {QStringLiteral("stages"), QJsonObject{
                 {QStringLiteral("historyAfterRelative"), historyAfterRelative},
+                {QStringLiteral("historyAfterBack"), historyAfterBack},
+                {QStringLiteral("historyAfterForward"), historyAfterForward},
                 {QStringLiteral("alias"), QJsonObject{{QStringLiteral("loaded"), aliasLoad.loaded},
                                                        {QStringLiteral("address"), aliasLoad.address}}},
                 {QStringLiteral("relative"), QJsonObject{{QStringLiteral("loaded"), relativeLoad.loaded},
@@ -1104,8 +1412,7 @@ int runGrangerNetworkWanSmoke(QApplication &app,
               }).then(async response => {
                 const messages = await (await fetch('/messages')).text();
                 document.body.dataset.wanPost =
-                  response.status + ':' + (response.headers.get('x-granger-status') || '') + ':'
-                    + (messages.includes(%1) ? 'present' : 'missing');
+                  response.status + ':' + (messages.includes(%1) ? 'present' : 'missing');
               }).catch(error => {
                 document.body.dataset.wanPost = 'failed:' + String(error).slice(0, 160);
               });
@@ -1167,7 +1474,7 @@ int runGrangerNetworkWanSmoke(QApplication &app,
         const bool canonical = GrangerNetworkUrl::isCanonicalHost(canonicalAddress)
             && pageLoad.address == canonicalAddress;
         const bool assets = script && background == QStringLiteral("rgb(16, 18, 22)");
-        const bool post = postStatus == QStringLiteral("200:201:present");
+        const bool post = postStatus == QStringLiteral("201:present");
         const bool gateway = runtime.value(QStringLiteral("gatewayMode")).toString()
                 == QStringLiteral("wan")
             && runtime.value(QStringLiteral("wanConfigActive")).toBool(false)
@@ -1459,7 +1766,6 @@ int runGrangerHostingSegmentSmoke(const QString &outputPath,
                       .then(async response=>{
                         const messages=await(await fetch('/messages')).text();
                         document.body.dataset.hostingPost=response.status+':'
-                          +(response.headers.get('x-granger-status')||'')+':'
                           +(messages.includes(%1)?'present':'missing');
                       }).catch(error=>{document.body.dataset.hostingPost='failed:'+String(error).slice(0,160);});
                 })())JS").arg(QStringLiteral("'%1'").arg(applicationMessage));
@@ -1477,7 +1783,7 @@ int runGrangerHostingSegmentSmoke(const QString &outputPath,
                     delay.exec();
                 } while (postWait.elapsed() < 120000);
             }
-            replacementPost = postStatus == QStringLiteral("200:201:present");
+            replacementPost = postStatus == QStringLiteral("201:present");
             trace.end(replacementPost, QStringLiteral("POST_FAILED"));
 
             trace.begin(QStringLiteral("delete-application"));
@@ -2003,6 +2309,7 @@ int runGrangerHostingSmoke(QApplication &app,
         LoadResult localLoad;
         QString localHeading;
         QString localPostStatus;
+        QString localApplicationSemanticsStatus;
         int localGetAttempts = 0;
         if (localOnline) {
             trace.begin(QStringLiteral("new-application-GET"));
@@ -2025,18 +2332,88 @@ int runGrangerHostingSmoke(QApplication &app,
             const QString postScript = QStringLiteral(R"JS(
                 (() => {
                   document.body.dataset.hostingPost = 'pending';
-                  fetch('/message', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'text/plain'},
-                    body: %1
-                  }).then(async response => {
+                  document.body.dataset.hostingApplication = 'pending';
+                  (async () => {
+                    const expectStatus = (response, status) => {
+                      if (response.status !== status) {
+                        throw new Error('status-' + status);
+                      }
+                      return response;
+                    };
+                    const response = await fetch('/message', {
+                      method: 'POST',
+                      headers: {'Content-Type': 'text/plain'},
+                      body: %1
+                    });
                     const messages = await (await fetch('/messages')).text();
                     document.body.dataset.hostingPost =
                       response.status + ':'
-                        + (response.headers.get('x-granger-status') || '') + ':'
                         + (messages.includes(%1) ? 'present' : 'missing');
-                  }).catch(error => {
+
+                    const bodies = [
+                      ['application/json', JSON.stringify({kind:'json',value:'granger'})],
+                      ['application/x-www-form-urlencoded', 'kind=form&value=granger'],
+                      ['text/plain;charset=utf-8', 'Granger application text']
+                    ];
+                    for (const [contentType, body] of bodies) {
+                      const echoed = expectStatus(await fetch('/echo', {
+                        method:'POST', headers:{'Content-Type':contentType}, body
+                      }), 202);
+                      if (await echoed.text() !== body) throw new Error('body-' + contentType);
+                    }
+
+                    const form = new FormData();
+                    form.append('title', 'Granger multipart');
+                    form.append('upload', new Blob([new Uint8Array([0, 1, 255, 71])]), 'sample.bin');
+                    const multipart = expectStatus(await fetch('/echo', {method:'POST', body:form}), 202);
+                    if ((await multipart.arrayBuffer()).byteLength < 32) throw new Error('multipart');
+
+                    const binaryBody = new Uint8Array([0, 1, 255, 71, 82]);
+                    const binaryEcho = expectStatus(await fetch('/echo', {
+                      method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:binaryBody
+                    }), 202);
+                    const binaryResult = new Uint8Array(await binaryEcho.arrayBuffer());
+                    if (binaryResult.length !== binaryBody.length
+                        || binaryResult.some((value, index) => value !== binaryBody[index])) {
+                      throw new Error('binary');
+                    }
+
+                    for (const method of ['PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+                      const body = method + '-GRANGER';
+                      const methodResponse = expectStatus(await fetch('/echo', {
+                        method, headers:{'Content-Type':'text/plain'}, body
+                      }), 202);
+                      if (await methodResponse.text() !== body) throw new Error(method);
+                    }
+
+                    await fetch('/cookie', {credentials:'same-origin'});
+                    const cookie = await (await fetch('/cookie', {credentials:'same-origin'})).text();
+                    if (!cookie.includes('session=granger')) throw new Error('cookie');
+                    expectStatus(await fetch('/status'), 409);
+                    const binary = new Uint8Array(await (await fetch('/binary')).arrayBuffer());
+                    if (binary.length !== 17 || binary[0] !== 0 || binary[1] !== 255) {
+                      throw new Error('binary-response');
+                    }
+
+                    const marker = 'GRANGER-DYNAMIC-' + Date.now();
+                    const created = expectStatus(await fetch('/threads', {
+                      method:'POST', headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({title:marker})
+                    }), 201);
+                    const threadId = (await created.json()).id;
+                    expectStatus(await fetch('/threads/' + threadId + '/replies', {
+                      method:'POST', headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({message:'reply-' + marker})
+                    }), 201);
+                    const thread = await (await fetch('/threads/' + threadId)).json();
+                    if (thread.thread[1] !== marker || thread.replies[0][0] !== 'reply-' + marker) {
+                      throw new Error('sqlite');
+                    }
+                    document.body.dataset.hostingApplication = 'pass';
+                  })().catch(error => {
                     document.body.dataset.hostingPost =
+                      'failed:' + String(error).slice(0, 160);
+                    document.body.dataset.hostingApplication =
                       'failed:' + String(error).slice(0, 160);
                   });
                 })()
@@ -2048,9 +2425,14 @@ int runGrangerHostingSmoke(QApplication &app,
                 localPostStatus = evaluateJavaScript(
                     tab ? tab->page() : nullptr,
                     QStringLiteral("document.body?.dataset.hostingPost || ''"),
+                        10000).toString();
+                localApplicationSemanticsStatus = evaluateJavaScript(
+                    tab ? tab->page() : nullptr,
+                    QStringLiteral("document.body?.dataset.hostingApplication || ''"),
                     10000).toString();
-                if (localPostStatus != QStringLiteral("pending")
-                    && !localPostStatus.isEmpty()) {
+                if (localPostStatus != QStringLiteral("pending") && !localPostStatus.isEmpty()
+                    && localApplicationSemanticsStatus != QStringLiteral("pending")
+                    && !localApplicationSemanticsStatus.isEmpty()) {
                     break;
                 }
                 QEventLoop delay;
@@ -2060,8 +2442,9 @@ int runGrangerHostingSmoke(QApplication &app,
         }
         const bool localGet = localLoad.loaded
             && localHeading == QStringLiteral("Granger test forum");
-        const bool localPost = localPostStatus == QStringLiteral("200:201:present");
-        if (localOnline) trace.end(localPost, QStringLiteral("POST_FAILED"));
+        const bool localPost = localPostStatus == QStringLiteral("201:present");
+        const bool localApplicationSemantics = localApplicationSemanticsStatus == QStringLiteral("pass");
+        if (localOnline) trace.end(localPost && localApplicationSemantics, QStringLiteral("POST_FAILED"));
         trace.begin(QStringLiteral("delete-application"));
         QString localRemoveError;
         const bool localRemoved = !localCreatedOk
@@ -2069,7 +2452,8 @@ int runGrangerHostingSmoke(QApplication &app,
         trace.end(localRemoved, QStringLiteral("APPLICATION_DELETE_FAILED"));
         trace.begin(QStringLiteral("negative-create-cleanup"));
         const bool localApplication = localCreateCompleted && localCreatedOk
-            && localIdentityBound && localOnline && localGet && localPost && localRemoved;
+            && localIdentityBound && localOnline && localGet && localPost
+            && localApplicationSemantics && localRemoved;
 
         const int servicesBeforeFailureChecks = window.grangerHostingDiagnosticsForDiagnostics()
             .value(QStringLiteral("services")).toInt(-1);
@@ -2173,6 +2557,9 @@ int runGrangerHostingSmoke(QApplication &app,
             {QStringLiteral("localApplicationGetAttempts"), localGetAttempts},
             {QStringLiteral("localApplicationPost"), localPost},
             {QStringLiteral("localApplicationPostStatus"), localPostStatus},
+            {QStringLiteral("localApplicationSemantics"), localApplicationSemantics},
+            {QStringLiteral("localApplicationSemanticsStatus"),
+             localApplicationSemanticsStatus},
             {QStringLiteral("localApplicationRemoved"), localRemoved},
             {QStringLiteral("localApplicationRemoveError"), localRemoveError},
             {QStringLiteral("networkUnavailableRejected"), unavailableRejected},

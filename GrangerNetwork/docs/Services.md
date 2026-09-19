@@ -18,8 +18,9 @@ documented in [Hosting.md](Hosting.md).
 Open `Settings -> Granger Network -> Sites & Hosting`, choose `Static website`
 or `Local application`, validate the source, then select `Publish service`.
 The displayed canonical address is an identity-derived service name, not a DNS
-registration. `Open` navigates through the browser custom scheme and WAN
-gateway; it never opens the source folder or localhost.
+registration. `Open` navigates to the service's normal `.granger` HTTP origin,
+which Chromium maps only to the authenticated browser-owned loopback gateway;
+it never opens the source folder or backend localhost address.
 
 ## Initialize a service
 
@@ -80,16 +81,25 @@ never sends the alias to DNS.
 
 ## Application behavior
 
-The current application protocol supports bounded `GET`, `HEAD`, and `POST`
-requests, response status/headers/body, multiple sequential requests, and
-concurrent streams. The test forum exercises HTML, CSS, JavaScript, POST, and
-readback. Responses are buffered with a 2 MiB limit; streaming downloads,
-WebSocket, CONNECT, arbitrary TCP forwarding, and UDP are not implemented.
+The current application protocol supports bounded `GET`, `HEAD`, `POST`, `PUT`,
+`PATCH`, `DELETE`, and `OPTIONS` requests, response status/headers/body,
+multiple sequential requests, and concurrent streams. JSON, form, multipart,
+text, binary, cookie headers, and application security headers are
+preserved within the approved header policy. Requests and responses are
+buffered with a 2 MiB limit; streaming downloads, WebSocket, SSE, CONNECT,
+arbitrary TCP forwarding, and UDP are not implemented.
+
+The browser-owned HTTP gateway preserves native status, redirects, response
+headers, and Chromium cookie/credentials semantics. It does not implement a
+manual cookie store. See
+[ApplicationHostingBoundary.md](ApplicationHostingBoundary.md).
 
 The browser-managed loopback bridge strips client/network forwarding headers.
-It supplies a fresh opaque `X-Granger-Session` value for each end-to-end
-service session. The value is not the client IP and cannot be supplied by the
-remote site request.
+It supplies the canonical `.granger` name as `Host` and does not supply client,
+relay, node, circuit, DHT, or Granger session identity headers. Applications
+use cookies or application accounts for session state. A backend may store
+SQLite, uploads, or other mutable state in its own data directory; that state
+is never placed in the browser release directory or service descriptor.
 
 ## Lifecycle
 

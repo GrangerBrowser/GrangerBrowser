@@ -41,6 +41,16 @@ class PageHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(PAGE)
 
+    def do_POST(self) -> None:
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.send_response(201)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Set-Cookie", "first=one; Path=/; HttpOnly")
+        self.send_header("Set-Cookie", "second=two; Path=/; SameSite=Strict")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
@@ -167,6 +177,13 @@ class RemoteEndToEndTests(unittest.TestCase):
                     ) as gethostbyname_ex,
                 ):
                     response = client.fetch("test.granger")
+                    posted = client.fetch(
+                        "test.granger",
+                        "/echo",
+                        method="POST",
+                        headers={"content-type": "application/octet-stream"},
+                        body=b"encrypted-request-body",
+                    )
                 self.assertEqual(getaddrinfo.call_count, 0)
                 self.assertEqual(gethostbyname.call_count, 0)
                 self.assertEqual(gethostbyname_ex.call_count, 0)
@@ -177,6 +194,12 @@ class RemoteEndToEndTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.body, PAGE)
         self.assertEqual(response.canonical_service, descriptor.canonical_name)
+        self.assertEqual(posted.status, 201)
+        self.assertEqual(posted.body, b"encrypted-request-body")
+        self.assertEqual(
+            [value for name, value in posted.header_fields if name == "set-cookie"],
+            ["first=one; Path=/; HttpOnly", "second=two; Path=/; SameSite=Strict"],
+        )
         self.assertGreaterEqual(len(client_sockets.connections), 1)
         self.assertTrue(
             all(connection == endpoint.socket_address for connection in client_sockets.connections)
@@ -193,7 +216,10 @@ class RemoteEndToEndTests(unittest.TestCase):
             all(ipaddress.ip_address(connection[0]).is_loopback for connection in client_sockets.connections)
         )
         captured = bytes(relay_wire)
-        for marker in (PAGE, b"GET /", b"Host:", b"Remote private page"):
+        for marker in (
+            PAGE, b"GET /", b"POST /echo", b"Host:", b"Remote private page",
+            b"encrypted-request-body",
+        ):
             self.assertNotIn(marker, captured)
         self.assertGreater(len(captured), 0)
 

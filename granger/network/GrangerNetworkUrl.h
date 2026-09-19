@@ -26,6 +26,7 @@ public:
     static bool isGrangerHost(const QString &host);
     static bool isCanonicalHost(const QString &host);
     static bool isCustomUrl(const QUrl &url);
+    static bool isHttpOriginUrl(const QUrl &url);
     static bool isHttpNamespaceUrl(const QUrl &url);
     static bool targetsNamespace(const QUrl &url);
     static QUrl fromUserInput(const QString &input);

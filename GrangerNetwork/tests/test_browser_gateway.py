@@ -29,7 +29,7 @@ from granger_network.wan_config import load_or_create_identity
 def request_document(**changes: object) -> bytes:
     document: dict[str, object] = {
         "body": "",
-        "headers": {"accept": "text/css", "cookie": "must-not-pass"},
+        "headers": {"accept": "text/css", "cookie": "session=allowed"},
         "method": "GET",
         "name": "test.granger",
         "path": "/style.css?theme=dark",
@@ -85,12 +85,14 @@ class BrowserGatewayTests(unittest.TestCase):
         request = parse_request(request_document())
         self.assertEqual(request["name"], "test.granger")
         self.assertEqual(request["path"], "/style.css?theme=dark")
-        self.assertEqual(request["headers"], {"accept": "text/css"})
+        self.assertEqual(
+            request["headers"], {"accept": "text/css", "cookie": "session=allowed"}
+        )
 
         for changes in (
             {"name": "example.com"},
             {"name": "nested.test.granger"},
-            {"method": "PUT"},
+            {"method": "TRACE"},
             {"method": "POST", "body": "***"},
             {"method": "GET", "body": base64.b64encode(b"unexpected").decode("ascii")},
             {"path": "//example.com/escape"},
@@ -116,11 +118,39 @@ class BrowserGatewayTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["dnsRequests"], 0)
         self.assertEqual(base64.b64decode(result["body"]), response.body)
+        self.assertEqual(
+            result["headers"],
+            [["content-type", "text/css"], ["cache-control", "no-store"]],
+        )
         fetch.assert_called_once_with(
             "test.granger",
             "/style.css?theme=dark",
             method="GET",
-            headers={"accept": "text/css"},
+            headers={"accept": "text/css", "cookie": "session=allowed"},
+        )
+
+    def test_gateway_preserves_repeated_response_header_fields(self) -> None:
+        response = GrangerResponse(
+            200,
+            "OK",
+            {"set-cookie": "second=two; Path=/"},
+            b"",
+            f"{'d' * 52}.granger",
+            (
+                ("set-cookie", "first=one; Path=/; HttpOnly"),
+                ("set-cookie", "second=two; Path=/"),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            resolver = LocalResolver(Path(temporary))
+            with patch("granger_network.browser_gateway.GrangerClient.fetch", return_value=response):
+                result = handle_request(resolver, 2.0, request_document())
+        self.assertEqual(
+            result["headers"],
+            [
+                ["set-cookie", "first=one; Path=/; HttpOnly"],
+                ["set-cookie", "second=two; Path=/"],
+            ],
         )
 
     def test_post_body_is_forwarded_only_to_a_body_capable_gateway(self) -> None:
@@ -149,7 +179,7 @@ class BrowserGatewayTests(unittest.TestCase):
                 method="POST",
                 path="/message",
                 body=base64.b64encode(body).decode("ascii"),
-                headers={"content-type": "text/plain", "cookie": "must-not-pass"},
+                headers={"content-type": "text/plain", "cookie": "session=allowed"},
             ),
         )
         self.assertTrue(result["ok"])
@@ -160,7 +190,7 @@ class BrowserGatewayTests(unittest.TestCase):
                     "test.granger",
                     "/message",
                     "POST",
-                    {"content-type": "text/plain"},
+                    {"content-type": "text/plain", "cookie": "session=allowed"},
                     body,
                 )
             ],

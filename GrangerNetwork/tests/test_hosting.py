@@ -856,7 +856,7 @@ class HostedServiceStorageTests(unittest.TestCase):
         self.assertEqual(response.status, 201)
         self.assertEqual(RecordingHandler.bodies, [b"hello"])
         received = RecordingHandler.requests[-1]
-        self.assertEqual(received.get("x-granger-session"), "gs_local_session_identity")
+        self.assertNotIn("x-granger-session", received)
         self.assertNotIn("x-forwarded-for", received)
         self.assertNotIn("forwarded", received)
         self.assertNotIn("x-real-ip", received)

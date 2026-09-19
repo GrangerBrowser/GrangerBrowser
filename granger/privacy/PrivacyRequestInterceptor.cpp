@@ -2,6 +2,7 @@
 
 #include "granger/privacy/PrivacyPolicyManager.h"
 #include "granger/browser/BrowserProfile.h"
+#include "granger/network/GrangerHttpGateway.h"
 
 #include <QWebEngineProfile>
 #include <QWebEngineUrlRequestInfo>
@@ -30,7 +31,13 @@ void PrivacyRequestInterceptor::interceptRequest(QWebEngineUrlRequestInfo &info)
     if (decision.redirect.isValid() && decision.redirect != info.requestUrl()) {
         info.redirect(decision.redirect);
     }
-    if (decision.block) info.block(true);
+    if (decision.block) {
+        info.block(true);
+    } else if (!decision.redirect.isValid()) {
+        if (GrangerHttpGateway *gateway = GrangerHttpGateway::instance()) {
+            gateway->authorizeRequest(info);
+        }
+    }
 }
 
 }

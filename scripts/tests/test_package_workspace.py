@@ -68,8 +68,9 @@ class PackageWorkspaceTests(unittest.TestCase):
         self.assertIn('WAN_BUNDLE_REQUIRED', result.stderr)
         self.assertFalse((PROJECT / 'build/package-work/regression').exists())
 
-    def test_build_rejects_missing_bundle_before_compilation(self):
-        result = self.run_script("& ./scripts/build-release.ps1 -WanBundleDirectory ''")
+    def test_local_build_rejects_missing_bundle_before_compilation(self):
+        # The public wrapper checks source cleanliness before delegating to this preflight.
+        result = self.run_script("& ./scripts/build-local-release.ps1 -WanBundleDirectory ''")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('WAN_BUNDLE_REQUIRED', result.stderr)
 

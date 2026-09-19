@@ -1110,9 +1110,19 @@ def run_acceptance(
         for bootstrap_name in ("bootstrap-b", "bootstrap-c"):
             terminate_child(node_children[bootstrap_name])
 
+        # Middle and entry failure recovery were exercised above. Keep the
+        # peer-cache scenario focused on bootstrap loss instead of making a
+        # fresh process rediscover test-owned relay deaths that are not part of
+        # the persisted peer-cache format.
+        cached_route_exclusions = [
+            "--exclude-node",
+            failed_middle_id,
+            "--exclude-node",
+            failed_entry_id,
+        ]
         cached_client, cached_report_path, cached_output_path = start_fetch_client(
             "client-cache",
-            route_exclusion_arguments,
+            cached_route_exclusions,
         )
         cached_exit = wait_exit(cached_client, 90.0)
         if cached_exit != 0:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -386,7 +387,16 @@ class WanConfigRecoveryTests(unittest.TestCase):
         from granger_network.wan_config import _ProvisionLock
         lock = self.root / "provision.lock"
         command = "from pathlib import Path; import sys,time; from granger_network.wan_config import _ProvisionLock; lock=_ProvisionLock(Path(sys.argv[1])); lock.__enter__(); print('LOCKED', flush=True); time.sleep(30)"
-        process = subprocess.Popen([sys.executable, "-c", command, str(lock)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        environment = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        environment["PYTHONPATH"] = source_root + (
+            os.pathsep + environment["PYTHONPATH"]
+            if environment.get("PYTHONPATH") else ""
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", command, str(lock)], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=environment,
+        )
         try:
             self.assertEqual(process.stdout.readline().strip(), b"LOCKED")
             process.kill()

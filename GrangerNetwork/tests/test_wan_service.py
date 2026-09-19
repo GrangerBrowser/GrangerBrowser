@@ -39,9 +39,31 @@ MESSAGE = b"GRANGER_TEST_MESSAGE_123"
 
 class ForumHandler(BaseHTTPRequestHandler):
     messages: list[bytes] = []
+    requests: list[dict[str, str]] = []
     lock = threading.Lock()
 
+    def _record(self) -> None:
+        with self.lock:
+            self.requests.append({name.lower(): value for name, value in self.headers.items()})
+
+    def _respond(
+        self, status: int, body: bytes, content_type: str = "text/plain",
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def do_HEAD(self) -> None:
+        self.do_GET()
+
     def do_GET(self) -> None:
+        self._record()
         content_type = "text/plain"
         if self.path == "/":
             body = HTML
@@ -55,29 +77,50 @@ class ForumHandler(BaseHTTPRequestHandler):
         elif self.path == "/messages":
             with self.lock:
                 body = b"\n".join(self.messages)
+        elif self.path == "/cookie":
+            body = self.headers.get("Cookie", "cookie-created").encode("utf-8")
+            self._respond(
+                200, body, headers={"Set-Cookie": "session=wan; Path=/; HttpOnly; SameSite=Strict"}
+            )
+            return
+        elif self.path == "/status":
+            self._respond(409, b"conflict")
+            return
+        elif self.path == "/binary":
+            self._respond(200, b"\x00\xffWAN\x00", "application/octet-stream")
+            return
         else:
             self.send_error(404)
             return
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._respond(200, body, content_type)
 
     def do_POST(self) -> None:
-        if self.path != "/message":
+        if self.path not in {"/message", "/echo"}:
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
+        self._record()
+        if self.path == "/echo":
+            self._respond(202, body, self.headers.get("Content-Type", "application/octet-stream"))
+            return
         with self.lock:
             self.messages.append(body)
-        response = b"stored"
-        self.send_response(201)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(response)))
-        self.end_headers()
-        self.wfile.write(response)
+        self._respond(201, b"stored")
+
+    def _application_method(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self._record()
+        headers = None
+        if self.command == "OPTIONS":
+            headers = {"Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"}
+        self._respond(202, body, self.headers.get("Content-Type", "application/octet-stream"), headers)
+
+    do_DELETE = _application_method
+    do_OPTIONS = _application_method
+    do_PATCH = _application_method
+    do_PUT = _application_method
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -436,6 +479,7 @@ class WanOperationTimeoutTests(unittest.TestCase):
 class WanServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         ForumHandler.messages = []
+        ForumHandler.requests = []
         self.backend = ThreadingHTTPServer(("127.0.0.1", 0), ForumHandler)
         self.backend_thread = threading.Thread(target=self.backend.serve_forever, daemon=True)
         self.backend_thread.start()
@@ -982,7 +1026,8 @@ class WanServiceTests(unittest.TestCase):
             lifetime=900,
         )
         bridge = LoopbackHttpBridge(
-            LoopbackHttpTarget("127.0.0.1", int(self.backend.server_address[1]))
+            LoopbackHttpTarget("127.0.0.1", int(self.backend.server_address[1])),
+            virtual_host=service.canonical_name,
         )
         host = WanServiceHost(
             service_identity,
@@ -1046,6 +1091,25 @@ class WanServiceTests(unittest.TestCase):
                     )
                     self.assertEqual(posted.status, 201)
                     self.assertEqual(session.fetch("/messages").body, MESSAGE)
+                    self.assertEqual(session.fetch("/", method="HEAD").body, b"")
+                    for method in ("PUT", "PATCH", "DELETE", "OPTIONS"):
+                        application_body = f"{method}-BODY".encode("ascii")
+                        application_response = session.fetch(
+                            "/echo",
+                            method=method,
+                            headers={"content-type": "application/octet-stream"},
+                            body=application_body,
+                        )
+                        self.assertEqual(application_response.status, 202)
+                        self.assertEqual(application_response.body, application_body)
+                    cookie = session.fetch("/cookie")
+                    self.assertIn("session=wan", cookie.headers["set-cookie"])
+                    self.assertEqual(
+                        session.fetch("/cookie", headers={"cookie": "session=wan"}).body,
+                        b"session=wan",
+                    )
+                    self.assertEqual(session.fetch("/status").status, 409)
+                    self.assertEqual(session.fetch("/binary").body, b"\x00\xffWAN\x00")
                     results: list[bytes] = []
                     failures: list[BaseException] = []
 
@@ -1067,6 +1131,9 @@ class WanServiceTests(unittest.TestCase):
                 self.assertEqual(getaddrinfo.call_count, 0)
                 self.assertEqual(gethostbyname.call_count, 0)
                 self.assertEqual(gethostbyname_ex.call_count, 0)
+                self.assertTrue(ForumHandler.requests)
+                self.assertTrue(all(item.get("host") == service.canonical_name for item in ForumHandler.requests))
+                self.assertTrue(all("x-granger-session" not in item for item in ForumHandler.requests))
         finally:
             host.stop()
 

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import struct
 import threading
-import secrets
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from .binary import BinaryReader, BinaryWriter
 from .cells import CellMultiplexer, MuxStream
@@ -17,7 +16,15 @@ MAX_APPLICATION_MESSAGE = 2 * MAX_HTTP_BODY + 16 * 1024
 MAX_APPLICATION_HEADERS = 32
 MAX_HEADER_NAME = 64
 MAX_HEADER_VALUE = 4096
-_METHOD_TO_ID = {"GET": 1, "HEAD": 2, "POST": 3}
+_METHOD_TO_ID = {
+    "GET": 1,
+    "HEAD": 2,
+    "POST": 3,
+    "PUT": 4,
+    "PATCH": 5,
+    "DELETE": 6,
+    "OPTIONS": 7,
+}
 _ID_TO_METHOD = {value: key for key, value in _METHOD_TO_ID.items()}
 
 
@@ -51,6 +58,25 @@ def _validate_headers(headers: Mapping[str, str]) -> dict[str, str]:
             raise ProtocolError("application header is duplicated")
         result[normalized] = value
     return result
+
+
+def _validate_response_header_fields(
+    fields: Iterable[tuple[str, str]],
+) -> tuple[tuple[str, str], ...]:
+    try:
+        materialized = tuple(fields)
+    except TypeError as error:
+        raise ProtocolError("application response headers are invalid") from error
+    if len(materialized) > MAX_APPLICATION_HEADERS:
+        raise ProtocolError("application header count is invalid")
+    result: list[tuple[str, str]] = []
+    for field in materialized:
+        if not isinstance(field, tuple) or len(field) != 2:
+            raise ProtocolError("application response header is invalid")
+        name, value = field
+        normalized = _validate_headers({name: value})
+        result.append(next(iter(normalized.items())))
+    return tuple(result)
 
 
 def encode_application_request(request: ApplicationRequest) -> bytes:
@@ -131,15 +157,15 @@ def encode_application_response(response: HttpResult) -> bytes:
         or len(response.body) > MAX_HTTP_BODY
     ):
         raise ProtocolError("application response fields are invalid")
-    headers = _validate_headers(response.headers)
+    header_fields = _validate_response_header_fields(response.header_fields)
     writer = (
         BinaryWriter(MAX_APPLICATION_MESSAGE)
         .u8(APPLICATION_VERSION)
         .u16(response.status)
         .text_u16(response.reason, 256)
-        .u8(len(headers))
+        .u8(len(header_fields))
     )
-    for name, value in sorted(headers.items()):
+    for name, value in header_fields:
         writer.text_u16(name, MAX_HEADER_NAME).text_u16(value, MAX_HEADER_VALUE)
     writer.bytes_u32(response.body, MAX_HTTP_BODY)
     return writer.build()
@@ -155,15 +181,21 @@ def decode_application_response(content: bytes) -> HttpResult:
     if count > MAX_APPLICATION_HEADERS:
         raise ProtocolError("application response header count is invalid")
     headers: dict[str, str] = {}
+    header_fields: list[tuple[str, str]] = []
     for _ in range(count):
         name = reader.text_u16(MAX_HEADER_NAME)
         value = reader.text_u16(MAX_HEADER_VALUE)
-        if name in headers:
-            raise ProtocolError("application response header is duplicated")
+        header_fields.append((name, value))
         headers[name] = value
     body = reader.bytes_u32(MAX_HTTP_BODY)
     reader.finish()
-    result = HttpResult(status, reason, _validate_headers(headers), body)
+    result = HttpResult(
+        status,
+        reason,
+        _validate_headers(headers),
+        body,
+        _validate_response_header_fields(header_fields),
+    )
     encode_application_response(result)
     return result
 
@@ -230,7 +262,6 @@ class WanApplicationServer:
         self.multiplexer = multiplexer
         self.bridge = bridge
         self.timeout = timeout
-        self._session_identity = "gs_" + secrets.token_urlsafe(18)
         self._slots = threading.BoundedSemaphore(max_concurrent_streams)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -276,7 +307,6 @@ class WanApplicationServer:
                 request.path,
                 request.headers,
                 request.body,
-                session_identity=self._session_identity,
             )
             _send_message(stream, encode_application_response(response))
         except (GrangerNetworkError, OSError, TimeoutError) as error:

@@ -89,6 +89,7 @@
 #include "granger/containers/ContainerManager.h"
 #include "granger/i18n/Localization.h"
 #include "granger/network/PrivacyNetworkManager.h"
+#include "granger/network/GrangerHttpGateway.h"
 #include "granger/network/GrangerNetworkRuntime.h"
 #include "granger/network/GrangerNetworkBrowserSmokeTests.h"
 #include "granger/network/GrangerNetworkUrl.h"
@@ -377,13 +378,6 @@ void applyWebEngineProxy(const QString &proxyText)
     if (scheme == QStringLiteral("socks5h")) {
         scheme = QStringLiteral("socks5");
     }
-
-    QNetworkProxy applicationProxy(socksProxy ? QNetworkProxy::Socks5Proxy : QNetworkProxy::HttpProxy,
-                                   proxy.host(),
-                                   quint16(proxy.port(socksProxy ? 9050 : 8080)),
-                                   proxy.userName(),
-                                   proxy.password());
-    QNetworkProxy::setApplicationProxy(applicationProxy);
 
     QString proxyServer = QStringLiteral("%1://%2").arg(scheme, proxy.host());
     if (proxy.port() > 0) {
@@ -4994,9 +4988,9 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
         {QStringLiteral("bracketed IPv6"), QStringLiteral("[2001:db8::1]:8443/a"), granger::AddressInputKind::Host, QStringLiteral("https://[2001:db8::1]:8443/a")},
         {QStringLiteral("localhost"), QStringLiteral("localhost:3000"), granger::AddressInputKind::Host, QStringLiteral("https://localhost:3000")},
         {QStringLiteral("onion"), QStringLiteral("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/"), granger::AddressInputKind::Onion, QStringLiteral("http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/")},
-        {QStringLiteral("Granger alias"), QStringLiteral("test.granger"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("granger-network://test.granger/")},
-        {QStringLiteral("Granger HTTPS interception"), QStringLiteral("https://test.granger/docs?q=1"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("granger-network://test.granger/docs?q=1")},
-        {QStringLiteral("Granger canonical"), QStringLiteral("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.granger"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("granger-network://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.granger/")},
+        {QStringLiteral("Granger alias"), QStringLiteral("test.granger"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("http://test.granger/")},
+        {QStringLiteral("Granger HTTPS interception"), QStringLiteral("https://test.granger/docs?q=1"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("http://test.granger/docs?q=1")},
+        {QStringLiteral("Granger canonical"), QStringLiteral("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.granger"), granger::AddressInputKind::GrangerNetwork, QStringLiteral("http://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst.granger/")},
         {QStringLiteral("plain text"), QStringLiteral("privacy browser"), granger::AddressInputKind::Search, QString()},
         {QStringLiteral("email is search text"), QStringLiteral("email@example.com"), granger::AddressInputKind::Search, QString()},
         {QStringLiteral("literal plus is search text"), QStringLiteral("hello+world"), granger::AddressInputKind::Search, QString()},
@@ -5031,29 +5025,37 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
            granger::SearchManager::inputKindName(invalidGranger.kind),
            QStringLiteral("granger-network blocked"));
 
-    const QUrl grangerOrigin(QStringLiteral("granger-network://test.granger/"));
-    const QUrl secondOrigin(QStringLiteral("granger-network://second.granger/asset.js"));
+    const QUrl grangerOrigin(QStringLiteral("http://test.granger/"));
+    const QUrl secondOrigin(QStringLiteral("http://second.granger/asset.js"));
     const auto sameOriginPolicy = granger::GrangerNetworkUrl::evaluateRequest(
-        QUrl(QStringLiteral("granger-network://test.granger/style.css")), grangerOrigin,
+        QUrl(QStringLiteral("http://test.granger/style.css")), grangerOrigin,
         grangerOrigin, false, QByteArrayLiteral("GET"));
     record(QStringLiteral("same-origin Granger resource is allowed"),
            sameOriginPolicy.action == granger::GrangerNetworkRequestAction::Allow);
     const auto sameOriginPostPolicy = granger::GrangerNetworkUrl::evaluateRequest(
-        QUrl(QStringLiteral("granger-network://test.granger/message")), grangerOrigin,
+        QUrl(QStringLiteral("http://test.granger/message")), grangerOrigin,
         grangerOrigin, false, QByteArrayLiteral("POST"));
     record(QStringLiteral("same-origin Granger POST is allowed"),
            sameOriginPostPolicy.action == granger::GrangerNetworkRequestAction::Allow);
+    for (const QByteArray &method : {QByteArrayLiteral("PUT"), QByteArrayLiteral("PATCH"),
+                                     QByteArrayLiteral("DELETE"), QByteArrayLiteral("OPTIONS")}) {
+        const auto policy = granger::GrangerNetworkUrl::evaluateRequest(
+            QUrl(QStringLiteral("http://test.granger/application")), grangerOrigin,
+            grangerOrigin, false, method);
+        record(QStringLiteral("same-origin Granger %1 is allowed").arg(QString::fromLatin1(method)),
+               policy.action == granger::GrangerNetworkRequestAction::Allow);
+    }
     const auto crossOriginPolicy = granger::GrangerNetworkUrl::evaluateRequest(
         secondOrigin, grangerOrigin, grangerOrigin, false, QByteArrayLiteral("GET"));
     record(QStringLiteral("cross-service Granger resource is blocked"),
            crossOriginPolicy.action == granger::GrangerNetworkRequestAction::Block);
     const auto crossOriginPostPolicy = granger::GrangerNetworkUrl::evaluateRequest(
-        QUrl(QStringLiteral("granger-network://second.granger/message")), grangerOrigin,
+        QUrl(QStringLiteral("http://second.granger/message")), grangerOrigin,
         grangerOrigin, false, QByteArrayLiteral("POST"));
     record(QStringLiteral("cross-service Granger POST is blocked"),
            crossOriginPostPolicy.action == granger::GrangerNetworkRequestAction::Block);
     const auto externalPostPolicy = granger::GrangerNetworkUrl::evaluateRequest(
-        QUrl(QStringLiteral("granger-network://test.granger/message")),
+        QUrl(QStringLiteral("http://test.granger/message")),
         QUrl(QStringLiteral("https://example.com/")), QUrl(QStringLiteral("https://example.com/")),
         true, QByteArrayLiteral("POST"));
     record(QStringLiteral("external top-level Granger POST is blocked"),
@@ -5069,7 +5071,7 @@ int runProductTestSuite(QApplication &app, const QString &outputPath)
     record(QStringLiteral("HTTP Granger resource is intercepted before DNS"),
            httpNamespacePolicy.action == granger::GrangerNetworkRequestAction::Redirect
                && httpNamespacePolicy.redirect.toString(QUrl::FullyEncoded)
-                   == QStringLiteral("granger-network://test.granger/app.js"));
+                   == QStringLiteral("http://test.granger/app.js"));
 
     for (const QString &route : granger::SearchManager::supportedInternalRoutes()) {
         const granger::AddressResolution result = search.resolveInput(route, QStringLiteral("google"));
@@ -6291,6 +6293,17 @@ int main(int argc, char *argv[])
                                   + granger::Localization::text(QStringLiteral("app.start_permissions")));
         return 2;
     }
+    granger::GrangerHttpGateway grangerHttpGateway;
+    granger::GrangerHttpGateway::installInstance(&grangerHttpGateway);
+    QString grangerGatewayError;
+    if (!grangerHttpGateway.listen(&grangerGatewayError)) {
+        QMessageBox::critical(nullptr,
+                              granger::Localization::text(QStringLiteral("app.start_error_title")),
+                              QStringLiteral("Unable to start the private Granger HTTP gateway: %1")
+                                  .arg(grangerGatewayError));
+        return 11;
+    }
+    app.setProperty("granger.httpGatewayPort", int(grangerHttpGateway.port()));
     granger::PrivacyNetworkManager privacyNetwork(&app);
     granger::PrivacyNetworkManager::installInstance(&privacyNetwork);
     app.setProperty("granger.usePrivacyGateway", usePrivacyGateway);
@@ -6308,15 +6321,20 @@ int main(int argc, char *argv[])
         startupProcessProxy = privacyNetwork.gatewayProxyUrl();
         app.setProperty("granger.startupProcessProxy", startupProcessProxy);
         applyWebEngineProxy(startupProcessProxy);
-        if (usePrivacyGateway) {
-            appendChromiumFlag(QByteArrayLiteral("--proxy-bypass-list=<-loopback>"));
-        }
-        appendChromiumFlag(QByteArrayLiteral(
-            "--host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1\""));
         app.setProperty("granger.privacyGatewayProxy", startupProcessProxy);
         QObject::connect(&app, &QCoreApplication::aboutToQuit,
                          &privacyNetwork, &granger::PrivacyNetworkManager::stop);
     }
+    if (!startupProcessProxy.isEmpty()) {
+        appendChromiumFlag(
+            QByteArrayLiteral("--proxy-bypass-list=\"<-loopback>;*.granger\""));
+    }
+    appendChromiumFlag(
+        QByteArrayLiteral("--host-resolver-rules=\"MAP *.granger 127.0.0.1:")
+        + QByteArray::number(grangerHttpGateway.port())
+        + QByteArrayLiteral(", MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1\""));
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     &grangerHttpGateway, &granger::GrangerHttpGateway::stop);
     qInstallMessageHandler(startupMessageHandler);
     QStringList cleanupErrors;
     if (!granger::ContainerManager::applyPendingCleanup(&cleanupErrors)) {

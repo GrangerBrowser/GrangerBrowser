@@ -13,9 +13,9 @@ and does not claim anonymity against colluding relays or a global observer.
 ```text
 Granger Browser
   |
-  | granger-network:// canonical custom scheme
+  | http://service.granger normal Chromium origin
   v
-Qt scheme handler
+Internal resolver -> authenticated 127.0.0.1 HTTP gateway
   |
   | bounded stdio protocol v2
   v
@@ -74,8 +74,12 @@ explicitly selected for a test.
 7. **Service session**: introduction returns a service-signed, nonce-bound
    rendezvous grant. Client and host then perform a separate wire-3 handshake
    through the rendezvous.
-8. **Application bridge**: GET, HEAD and POST messages carry bounded paths,
-   selected headers and at most 2 MiB bodies to a numeric loopback HTTP target.
+8. **Application bridge**: GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS
+   messages carry bounded paths, selected headers and at most 2 MiB bodies to a
+   numeric loopback HTTP target. Cookie fields and application security headers
+   use an explicit transport allowlist; native browser cookie handling remains
+   a separate Qt adapter requirement. Endpoint and overlay metadata are never
+   forwarded.
    Static hosting uses a GET/HEAD snapshot bridge with canonical root
    containment, a relative-path integrity manifest, deterministic content hash,
    standard MIME fallback, and configurable per-file bounds.

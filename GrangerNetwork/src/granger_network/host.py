@@ -192,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         bridge = LoopbackHttpBridge(
             LoopbackHttpTarget.parse(options.upstream),
             timeout=options.timeout,
+            virtual_host=descriptor.canonical_name,
         )
         if descriptor.is_remote:
             rendezvous = load_rendezvous(options.state_dir, descriptor)

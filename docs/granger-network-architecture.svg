@@ -63,7 +63,7 @@
   <text x="853" y="190" class="tiny">Verified I2P only</text>
   <rect x="1056" y="153" width="236" height="43" class="box-blue"/>
   <text x="1072" y="172" class="label">.granger</text>
-  <text x="1072" y="190" class="tiny">Custom scheme / overlay only</text>
+  <text x="1072" y="190" class="tiny">Authenticated HTTP gateway</text>
   <path d="M545 168 H600" class="line"/>
 
   <rect x="1370" y="135" width="365" height="66" class="box-red"/>
@@ -99,8 +99,8 @@
   <text x="78" y="515" class="body">Qt WebEngine UI and navigation policy</text>
 
   <rect x="60" y="555" width="350" height="92" class="box-blue"/>
-  <text x="78" y="581" class="label">Granger custom scheme gateway</text>
-  <text x="78" y="604" class="body">GET / HEAD / POST · bounded request/response</text>
+  <text x="78" y="581" class="label">Authenticated .granger HTTP gateway</text>
+  <text x="78" y="604" class="body">HTTP application methods · bounded request/response</text>
   <text x="78" y="625" class="small">App-local IPC worker; system DNS APIs denied</text>
   <path d="M235 529 V555" class="line"/>
 

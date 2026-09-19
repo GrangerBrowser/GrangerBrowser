@@ -29,6 +29,11 @@ class GrangerResponse:
     headers: dict[str, str]
     body: bytes
     canonical_service: str
+    header_fields: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.header_fields:
+            object.__setattr__(self, "header_fields", tuple(self.headers.items()))
 
 
 class GrangerClient:
@@ -51,6 +56,7 @@ class GrangerClient:
         *,
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
+        body: bytes = b"",
     ) -> GrangerResponse:
         descriptor = self.resolver.resolve(name)
         return self.fetch_descriptor(
@@ -58,6 +64,7 @@ class GrangerClient:
             path,
             method=method,
             headers=headers,
+            body=body,
         )
 
     def fetch_descriptor(
@@ -67,6 +74,7 @@ class GrangerClient:
         *,
         method: str = "GET",
         headers: Mapping[str, str] | None = None,
+        body: bytes = b"",
     ) -> GrangerResponse:
         descriptor.verify()
         session = None
@@ -96,14 +104,21 @@ class GrangerClient:
                 session_id=session_id,
                 protocol_version=protocol_version,
             )
-            channel.send_json(
-                {
-                    "headers": dict(headers or {"accept": "text/html,application/xhtml+xml"}),
-                    "method": method,
-                    "path": path,
-                    "type": "request",
-                }
-            )
+            if not isinstance(body, bytes) or len(body) > channel.max_message_size:
+                raise ProtocolError("service request body is invalid")
+            request = {
+                "headers": dict(headers or {"accept": "text/html,application/xhtml+xml"}),
+                "method": method,
+                "path": path,
+                "type": "request",
+            }
+            if body:
+                if protocol_version != VERSION_3:
+                    raise ProtocolError("request bodies require protocol version 3")
+                request["bodyLength"] = len(body)
+            channel.send_json(request)
+            if body:
+                channel.send_bytes(body)
             response = channel.receive_json()
             if response.get("type") == "error":
                 raise ProtocolError(f"service rejected the request: {response.get('code', 'UNKNOWN')}")
@@ -112,7 +127,8 @@ class GrangerClient:
                 if protocol_version == VERSION_3
                 else {"body", "headers", "reason", "status", "type"}
             )
-            if set(response) != expected_fields:
+            allowed_fields = expected_fields | ({"headerFields"} if protocol_version == VERSION_3 else set())
+            if set(response) not in (expected_fields, allowed_fields):
                 raise ProtocolError("service returned an unexpected response object")
             if response["type"] != "response" or not isinstance(response["headers"], dict):
                 raise ProtocolError("service returned an invalid response")
@@ -129,6 +145,26 @@ class GrangerClient:
                 for name, value in response["headers"].items()
             ):
                 raise ProtocolError("service returned invalid response headers")
+            header_fields = tuple(response["headers"].items())
+            if "headerFields" in response:
+                raw_fields = response["headerFields"]
+                if (
+                    not isinstance(raw_fields, list)
+                    or len(raw_fields) > 32
+                    or not all(
+                        isinstance(field, list)
+                        and len(field) == 2
+                        and isinstance(field[0], str)
+                        and isinstance(field[1], str)
+                        and "\r" not in field[0]
+                        and "\n" not in field[0]
+                        and "\r" not in field[1]
+                        and "\n" not in field[1]
+                        for field in raw_fields
+                    )
+                ):
+                    raise ProtocolError("service returned invalid response header fields")
+                header_fields = tuple((field[0], field[1]) for field in raw_fields)
             if protocol_version == VERSION_3:
                 body_length = response["bodyLength"]
                 if (
@@ -153,6 +189,7 @@ class GrangerClient:
                 headers=response["headers"],
                 body=body,
                 canonical_service=descriptor.canonical_name,
+                header_fields=header_fields,
             )
         finally:
             if channel is not None:

@@ -4,6 +4,7 @@
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QMap>
+#include <QMultiMap>
 #include <QObject>
 #include <QPointer>
 
@@ -22,7 +23,7 @@ struct GrangerNetworkReply {
     QString reason;
     QString canonicalService;
     QString errorCode;
-    QMap<QByteArray, QByteArray> headers;
+    QMultiMap<QByteArray, QByteArray> headers;
     QByteArray body;
 };
 

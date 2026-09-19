@@ -9,6 +9,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QIODevice>
@@ -38,6 +39,21 @@ constexpr int kMaximumResponseLine = 4 * 1024 * 1024;
 constexpr int kCompatibilityRequestTimeoutMs = 15000;
 constexpr int kWanRequestTimeoutMs = 6 * 60 * 1000;
 
+bool validApplicationResponseHeader(const QByteArray &name, const QByteArray &value)
+{
+    if (name.isEmpty() || name.size() > 64 || value.size() > 4096
+        || value.contains('\r') || value.contains('\n')) {
+        return false;
+    }
+    for (const char character : name) {
+        const uchar byte = uchar(character);
+        if (!((byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') || byte == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 QString safeErrorMessage(const QString &code)
 {
     if (code == QStringLiteral("SERVICE_NOT_FOUND")) return QStringLiteral("Service not found");
@@ -53,10 +69,13 @@ QString safeErrorMessage(const QString &code)
     return QStringLiteral("Network unavailable");
 }
 
-QMultiMap<QByteArray, QByteArray> hardenedResponseHeaders(bool html)
+QMultiMap<QByteArray, QByteArray> hardenedResponseHeaders(
+    bool html, const QMultiMap<QByteArray, QByteArray> &applicationHeaders = {})
 {
     QMultiMap<QByteArray, QByteArray> headers;
-    headers.insert(QByteArrayLiteral("Cache-Control"), QByteArrayLiteral("no-store"));
+    if (!applicationHeaders.contains(QByteArrayLiteral("cache-control"))) {
+        headers.insert(QByteArrayLiteral("Cache-Control"), QByteArrayLiteral("no-store"));
+    }
     headers.insert(QByteArrayLiteral("Referrer-Policy"), QByteArrayLiteral("no-referrer"));
     headers.insert(QByteArrayLiteral("X-Content-Type-Options"), QByteArrayLiteral("nosniff"));
     if (html) {
@@ -66,9 +85,10 @@ QMultiMap<QByteArray, QByteArray> hardenedResponseHeaders(bool html)
                               "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
                               "form-action 'self'; frame-ancestors 'none'; object-src 'none'; "
                               "base-uri 'self'"));
-        headers.insert(
-            QByteArrayLiteral("Permissions-Policy"),
-            QByteArrayLiteral("camera=(), microphone=(), geolocation=(), usb=(), serial=()"));
+    }
+    if (html) {
+        headers.insert(QByteArrayLiteral("Permissions-Policy"),
+                       QByteArrayLiteral("camera=(), microphone=(), geolocation=(), usb=(), serial=()"));
     }
     return headers;
 }
@@ -105,14 +125,19 @@ public:
         if (!job || !m_runtime) return;
         const QUrl url = job->requestUrl();
         const QByteArray method = job->requestMethod().toUpper();
+        const bool bodyCapable = method == QByteArrayLiteral("POST")
+            || method == QByteArrayLiteral("PUT")
+            || method == QByteArrayLiteral("PATCH")
+            || method == QByteArrayLiteral("DELETE")
+            || method == QByteArrayLiteral("OPTIONS");
         if (!GrangerNetworkUrl::isCustomUrl(url)
             || (method != QByteArrayLiteral("GET") && method != QByteArrayLiteral("HEAD")
-                && method != QByteArrayLiteral("POST"))) {
+                && !bodyCapable)) {
             job->fail(QWebEngineUrlRequestJob::RequestDenied);
             return;
         }
 
-        if (method == QByteArrayLiteral("POST")) {
+        if (bodyCapable) {
             QIODevice *bodyDevice = job->requestBody();
             if (bodyDevice) {
                 if ((!bodyDevice->isOpen() && !bodyDevice->open(QIODevice::ReadOnly))
@@ -180,10 +205,24 @@ private:
         }
         for (const QByteArray &name : {QByteArrayLiteral("accept"),
                                       QByteArrayLiteral("accept-language"),
+                                      QByteArrayLiteral("authorization"),
+                                      QByteArrayLiteral("cache-control"),
+                                      QByteArrayLiteral("content-encoding"),
+                                      QByteArrayLiteral("content-language"),
                                       QByteArrayLiteral("content-type"),
-                                      QByteArrayLiteral("user-agent")}) {
+                                      QByteArrayLiteral("cookie"),
+                                      QByteArrayLiteral("if-match"),
+                                      QByteArrayLiteral("if-modified-since"),
+                                      QByteArrayLiteral("if-none-match"),
+                                      QByteArrayLiteral("if-unmodified-since"),
+                                      QByteArrayLiteral("origin"),
+                                      QByteArrayLiteral("range"),
+                                      QByteArrayLiteral("referer"),
+                                      QByteArrayLiteral("user-agent"),
+                                      QByteArrayLiteral("x-csrf-token"),
+                                      QByteArrayLiteral("x-requested-with")}) {
             const QByteArray value = requestHeaders.value(name);
-            if (!value.isEmpty() && value.size() <= 1024
+            if (!value.isEmpty() && value.size() <= 4096
                 && !value.contains('\r') && !value.contains('\n')) {
                 forwardedHeaders.insert(name, value);
             }
@@ -217,27 +256,42 @@ private:
                     contentType = QByteArrayLiteral("application/octet-stream");
                 }
                 QByteArray body = method == QByteArrayLiteral("HEAD") ? QByteArray() : reply.body;
-                auto *buffer = new QBuffer(guardedJob);
-                buffer->setData(body);
-                buffer->open(QIODevice::ReadOnly);
                 QMultiMap<QByteArray, QByteArray> responseHeaders = hardenedResponseHeaders(
-                    contentType.toLower().startsWith(QByteArrayLiteral("text/html")));
-                if (reply.status >= 100 && reply.status <= 599) {
-                    responseHeaders.insert(QByteArrayLiteral("X-Granger-Status"),
-                                           QByteArray::number(reply.status));
-                }
-                for (const QByteArray &name : {QByteArrayLiteral("cache-control"),
-                                              QByteArrayLiteral("content-language"),
-                                              QByteArrayLiteral("etag"),
-                                              QByteArrayLiteral("last-modified")}) {
+                    contentType.toLower().startsWith(QByteArrayLiteral("text/html")), reply.headers);
+                for (const QByteArray &name : {
+                         QByteArrayLiteral("accept-ranges"),
+                         QByteArrayLiteral("access-control-allow-credentials"),
+                         QByteArrayLiteral("access-control-allow-headers"),
+                         QByteArrayLiteral("access-control-allow-methods"),
+                         QByteArrayLiteral("access-control-allow-origin"),
+                         QByteArrayLiteral("access-control-expose-headers"),
+                         QByteArrayLiteral("access-control-max-age"),
+                         QByteArrayLiteral("cache-control"),
+                         QByteArrayLiteral("content-disposition"),
+                         QByteArrayLiteral("content-encoding"),
+                         QByteArrayLiteral("content-language"),
+                         QByteArrayLiteral("content-range"),
+                         QByteArrayLiteral("content-security-policy"),
+                         QByteArrayLiteral("etag"),
+                         QByteArrayLiteral("expires"),
+                         QByteArrayLiteral("last-modified"),
+                         QByteArrayLiteral("location"),
+                         QByteArrayLiteral("pragma"),
+                         QByteArrayLiteral("retry-after"),
+                         QByteArrayLiteral("set-cookie"),
+                         QByteArrayLiteral("vary"),
+                         QByteArrayLiteral("x-frame-options")}) {
                     const QByteArray value = reply.headers.value(name);
-                    if (!value.isEmpty() && value.size() <= 1024
+                    if (!value.isEmpty() && value.size() <= 4096
                         && !value.contains('\r') && !value.contains('\n')) {
                         responseHeaders.insert(name, value);
                     }
                 }
+                auto *replyBuffer = new QBuffer(guardedJob);
+                replyBuffer->setData(body);
+                replyBuffer->open(QIODevice::ReadOnly);
                 guardedJob->setAdditionalResponseHeaders(responseHeaders);
-                guardedJob->reply(contentType, buffer);
+                guardedJob->reply(contentType, replyBuffer);
             });
     }
 
@@ -608,10 +662,48 @@ void GrangerNetworkRuntime::processDocument(const QJsonObject &document)
         complete(requestId, reply);
         return;
     }
-    const QJsonObject headers = document.value(QStringLiteral("headers")).toObject();
-    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
-        if (!it.value().isString()) continue;
-        reply.headers.insert(it.key().toLatin1().toLower(), it.value().toString().toLatin1());
+    const QJsonValue headersValue = document.value(QStringLiteral("headers"));
+    bool headersValid = true;
+    if (headersValue.isArray()) {
+        const QJsonArray fields = headersValue.toArray();
+        headersValid = fields.size() <= 32;
+        for (const QJsonValue &fieldValue : fields) {
+            const QJsonArray field = fieldValue.toArray();
+            if (!fieldValue.isArray() || field.size() != 2
+                || !field.at(0).isString() || !field.at(1).isString()) {
+                headersValid = false;
+                break;
+            }
+            const QByteArray name = field.at(0).toString().toLatin1().toLower();
+            const QByteArray value = field.at(1).toString().toLatin1();
+            if (!validApplicationResponseHeader(name, value)) {
+                headersValid = false;
+                break;
+            }
+            reply.headers.insert(name, value);
+        }
+    } else if (headersValue.isObject()) {
+        const QJsonObject headers = headersValue.toObject();
+        headersValid = headers.size() <= 32;
+        for (auto it = headers.constBegin(); headersValid && it != headers.constEnd(); ++it) {
+            if (!it.value().isString()) {
+                headersValid = false;
+                break;
+            }
+            const QByteArray name = it.key().toLatin1().toLower();
+            const QByteArray value = it.value().toString().toLatin1();
+            if (!validApplicationResponseHeader(name, value)) {
+                headersValid = false;
+                break;
+            }
+            reply.headers.insert(name, value);
+        }
+    } else {
+        headersValid = false;
+    }
+    if (!headersValid) {
+        reply = GrangerNetworkReply{};
+        reply.errorCode = QStringLiteral("CONNECTION_FAILED");
     }
     complete(requestId, reply);
 }

@@ -266,10 +266,13 @@ descriptor. Relay nodes therefore forward fixed cells and encrypted service
 frames but do not receive application plaintext.
 
 The end-to-end channel carries a second cell multiplexer. Each application
-request gets a distinct stream. Version-1 application messages support `GET`,
-`HEAD`, and `POST`, up to 32 bounded headers, percent-encoded ASCII paths, and a
-2 MiB body limit. Responses are also bounded to 2 MiB. The service bridge may
-connect only to a numeric loopback HTTP target.
+request gets a distinct stream. Version-1 application messages retain stable
+method IDs for `GET`, `HEAD`, and `POST` and define additional IDs for `PUT`,
+`PATCH`, `DELETE`, and `OPTIONS`. Messages carry up to 32 bounded headers,
+percent-encoded ASCII paths, and a 2 MiB body limit. Responses are also bounded
+to 2 MiB. Response fields retain their wire order and may repeat, which is
+required for multiple `Set-Cookie` fields. Request fields remain a unique-name
+map. The service bridge may connect only to a numeric loopback HTTP target.
 
 ## Failure semantics
 

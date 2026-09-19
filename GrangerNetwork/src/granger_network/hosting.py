@@ -230,7 +230,11 @@ class HostingTraffic:
 
     def snapshot(self):
         with self._lock:
-            return dict(self._counts)
+            snapshot = dict(self._counts)
+        health = getattr(self.bridge, "health_snapshot", None)
+        if callable(health):
+            snapshot.update(health())
+        return snapshot
 
 
 def _validate_max_file_bytes(value: int) -> int:
@@ -1295,7 +1299,10 @@ def serve_hosted_service(
             max_file_bytes=config.max_file_bytes,
         )
     else:
-        bridge = LoopbackHttpBridge(probe_loopback_application(config.upstream))
+        bridge = LoopbackHttpBridge(
+            probe_loopback_application(config.upstream),
+            virtual_host=service.canonical_name,
+        )
     bridge = HostingTraffic(bridge)
     runtime = load_discovery_runtime(
         browser_config.bootstrap_path,

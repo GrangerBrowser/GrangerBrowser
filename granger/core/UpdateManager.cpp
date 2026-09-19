@@ -17,6 +17,28 @@
 #include <memory>
 
 namespace granger {
+namespace {
+
+QNetworkProxy privateRouteProxy()
+{
+    QCoreApplication *application = QCoreApplication::instance();
+    const QUrl route(application
+                         ? application->property("granger.startupProcessProxy").toString().trimmed()
+                         : QString());
+    const QString scheme = route.scheme().toLower();
+    const bool socks = scheme == QStringLiteral("socks5")
+        || scheme == QStringLiteral("socks5h");
+    const bool http = scheme == QStringLiteral("http")
+        || scheme == QStringLiteral("https");
+    if ((!socks && !http) || !QHostAddress(route.host()).isLoopback()
+        || route.port() <= 0 || route.port() > 65535) {
+        return QNetworkProxy();
+    }
+    return QNetworkProxy(socks ? QNetworkProxy::Socks5Proxy : QNetworkProxy::HttpProxy,
+                         route.host(), quint16(route.port()), route.userName(), route.password());
+}
+
+}
 
 UpdateManager::UpdateManager(QObject *parent) : QObject(parent)
 {
@@ -150,7 +172,7 @@ void UpdateManager::setPolicy(const QString &mode, bool explicitConsent)
 
 void UpdateManager::fetch(const QUrl &url, const QString &file, qint64 maximum, std::function<void()> completed)
 {
-    const QNetworkProxy proxy = QNetworkProxy::applicationProxy();
+    const QNetworkProxy proxy = privateRouteProxy();
     if ((proxy.type() != QNetworkProxy::Socks5Proxy && proxy.type() != QNetworkProxy::HttpProxy)
         || !QHostAddress(proxy.hostName()).isLoopback() || proxy.port() == 0) {
         fail(QStringLiteral("PRIVATE_ROUTE_REQUIRED")); return;

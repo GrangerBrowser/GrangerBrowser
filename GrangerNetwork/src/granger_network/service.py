@@ -33,7 +33,9 @@ def _serve_application_request(
             protocol_version=protocol_version,
         )
         request = channel.receive_json()
-        if set(request) != {"headers", "method", "path", "type"} or request["type"] != "request":
+        base_fields = {"headers", "method", "path", "type"}
+        body_fields = base_fields | {"bodyLength"}
+        if set(request) not in (base_fields, body_fields) or request["type"] != "request":
             raise ProtocolError("unexpected application request")
         if not isinstance(request["method"], str) or not isinstance(request["path"], str):
             raise ProtocolError("request method and path must be text")
@@ -42,17 +44,35 @@ def _serve_application_request(
             for name, value in request["headers"].items()
         ):
             raise ProtocolError("request headers must be a string map")
-        result = bridge.fetch(request["method"], request["path"], request["headers"])
+        body = b""
+        if "bodyLength" in request:
+            body_length = request["bodyLength"]
+            if (
+                protocol_version != VERSION_3
+                or isinstance(body_length, bool)
+                or not isinstance(body_length, int)
+                or not 0 <= body_length <= channel.max_message_size
+            ):
+                raise ProtocolError("application request body length is invalid")
+            body = channel.receive_bytes()
+            if len(body) != body_length:
+                raise ProtocolError("application request body length does not match its metadata")
+        result = (
+            bridge.fetch(request["method"], request["path"], request["headers"], body)
+            if body
+            else bridge.fetch(request["method"], request["path"], request["headers"])
+        )
         if protocol_version == VERSION_3:
-            channel.send_json(
-                {
-                    "bodyLength": len(result.body),
-                    "headers": result.headers,
-                    "reason": result.reason,
-                    "status": result.status,
-                    "type": "response",
-                }
-            )
+            response = {
+                "bodyLength": len(result.body),
+                "headers": result.headers,
+                "reason": result.reason,
+                "status": result.status,
+                "type": "response",
+            }
+            if len(result.header_fields) != len(result.headers):
+                response["headerFields"] = [list(field) for field in result.header_fields]
+            channel.send_json(response)
             channel.send_bytes(result.body)
         else:
             channel.send_json(
