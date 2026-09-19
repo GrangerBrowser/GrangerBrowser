@@ -54,6 +54,14 @@ struct GatewayAttempt {
     QString error;
 };
 
+struct ExternalI2pProbe {
+    GatewayAttempt humanReadable;
+    GatewayAttempt b32;
+    QString humanReadableHost;
+    QString b32Host;
+    QJsonArray attempts;
+};
+
 qsizetype socksReplySize(const QByteArray &reply)
 {
     if (reply.size() < 4) return -1;
@@ -126,7 +134,12 @@ GatewayAttempt connectThroughSocks(const QString &endpoint,
     }
     result.replyCode = int(quint8(reply.at(1)));
     result.connected = result.replyCode == 0;
-    if (!result.connected || !requestHttp) return result;
+    if (!result.connected) {
+        result.error = QStringLiteral("SOCKS CONNECT rejected with reply %1")
+                           .arg(result.replyCode);
+        return result;
+    }
+    if (!requestHttp) return result;
 
     const QByteArray httpRequest = QByteArrayLiteral("GET / HTTP/1.0\r\nHost: ")
         + encodedHost + QByteArrayLiteral("\r\nConnection: close\r\n\r\n");
@@ -141,6 +154,70 @@ GatewayAttempt connectThroughSocks(const QString &endpoint,
             socket.waitForReadyRead(250);
         }
         result.echo += socket.readAll();
+    }
+    return result;
+}
+
+bool hasHttpResponse(const GatewayAttempt &attempt)
+{
+    return attempt.connected && attempt.echo.startsWith(QByteArrayLiteral("HTTP/"));
+}
+
+QString addressBookB32Host(const QByteArray &addressBook, const QString &name)
+{
+    const QByteArray prefix = name.toLatin1() + ',';
+    for (QByteArray line : addressBook.split('\n')) {
+        line = line.trimmed();
+        if (!line.startsWith(prefix)) continue;
+        const QByteArray hash = line.mid(prefix.size()).trimmed().toLower();
+        const bool valid = hash.size() == 52
+                           && std::all_of(hash.cbegin(), hash.cend(), [](char value) {
+                                  return (value >= 'a' && value <= 'z')
+                                         || (value >= '2' && value <= '7');
+                              });
+        if (valid) return QString::fromLatin1(hash) + QStringLiteral(".b32.i2p");
+    }
+    return {};
+}
+
+ExternalI2pProbe probeExternalI2p(const QString &endpoint,
+                                  const QByteArray &addressBook)
+{
+    ExternalI2pProbe result;
+    const QStringList candidates{
+        QStringLiteral("i2p-projekt.i2p"),
+        QStringLiteral("i2pd.i2p"),
+        QStringLiteral("notbob.i2p"),
+        QStringLiteral("stats.i2p"),
+        QStringLiteral("zzz.i2p"),
+        QStringLiteral("identiguy.i2p")
+    };
+    for (const QString &name : candidates) {
+        const QString b32Host = addressBookB32Host(addressBook, name);
+        if (b32Host.isEmpty()) continue;
+
+        GatewayAttempt humanReadable = connectThroughSocks(endpoint, name, 30000, true);
+        GatewayAttempt b32;
+        if (hasHttpResponse(humanReadable)) {
+            b32 = connectThroughSocks(endpoint, b32Host, 30000, true);
+        }
+        result.attempts.append(QJsonObject{
+            {QStringLiteral("humanReadableHost"), name},
+            {QStringLiteral("humanReadableConnected"), humanReadable.connected},
+            {QStringLiteral("humanReadableHttpResponse"), hasHttpResponse(humanReadable)},
+            {QStringLiteral("humanReadableReplyCode"), humanReadable.replyCode},
+            {QStringLiteral("humanReadableError"), humanReadable.error},
+            {QStringLiteral("b32Host"), b32Host},
+            {QStringLiteral("b32Connected"), b32.connected},
+            {QStringLiteral("b32HttpResponse"), hasHttpResponse(b32)},
+            {QStringLiteral("b32ReplyCode"), b32.replyCode},
+            {QStringLiteral("b32Error"), b32.error}
+        });
+        result.humanReadable = humanReadable;
+        result.b32 = b32;
+        result.humanReadableHost = name;
+        result.b32Host = b32Host;
+        if (hasHttpResponse(humanReadable) && hasHttpResponse(b32)) break;
     }
     return result;
 }
@@ -880,14 +957,11 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
     GatewayAttempt externalB32;
     GatewayAttempt humanName;
     GatewayAttempt unknownName;
+    ExternalI2pProbe externalProbe;
     if (firstVerified) {
-        externalB32 = connectThroughSocks(
-            firstStatus.socksEndpoint,
-            QStringLiteral("tmipbl5d7ctnz3cib4yd2yivlrssrtpmuuzyqdpqkelzmnqllhda.b32.i2p"),
-            30000, true);
-        humanName = connectThroughSocks(firstStatus.socksEndpoint,
-                                        QStringLiteral("i2pforum.i2p"),
-                                        30000, true);
+        externalProbe = probeExternalI2p(firstStatus.socksEndpoint, bootstrapContents);
+        externalB32 = externalProbe.b32;
+        humanName = externalProbe.humanReadable;
         unknownName = connectThroughSocks(firstStatus.socksEndpoint,
                                           QStringLiteral("granger-addressbook-negative-test.invalid.i2p"),
                                           15000);
@@ -967,11 +1041,14 @@ int runI2pRuntimeSmokeTests(const QString &outputPath, int timeoutMs)
         {QStringLiteral("secondAddressBookReady"), secondStatus.addressBookReady},
         {QStringLiteral("externalB32Connected"), externalB32.connected},
         {QStringLiteral("externalB32HttpResponse"), externalB32.echo.startsWith(QByteArrayLiteral("HTTP/"))},
+        {QStringLiteral("externalB32Destination"), externalProbe.b32Host},
         {QStringLiteral("externalB32Error"), externalB32.error},
         {QStringLiteral("humanReadableConnected"), humanName.connected},
         {QStringLiteral("humanReadableHttpResponse"), humanName.echo.startsWith(QByteArrayLiteral("HTTP/"))},
+        {QStringLiteral("humanReadableDestination"), externalProbe.humanReadableHost},
         {QStringLiteral("humanReadableError"), humanName.error},
         {QStringLiteral("humanReadableReplyCode"), humanName.replyCode},
+        {QStringLiteral("externalProbeAttempts"), externalProbe.attempts},
         {QStringLiteral("unknownNameBlocked"), unknownNameBlocked},
         {QStringLiteral("unknownNameReplyCode"), unknownName.replyCode},
         {QStringLiteral("reportedCompleteBeforeVerification"), fakeCompleteState},
