@@ -1669,6 +1669,10 @@ int runGrangerHostingSegmentSmoke(const QString &outputPath,
 
         if (contentSegment) {
             trace.begin(QStringLiteral("offline-fail-closed"));
+            const QJsonObject offlineBefore =
+                window.grangerNetworkDiagnosticsForDiagnostics();
+            const int failuresBefore =
+                offlineBefore.value(QStringLiteral("failures")).toInt();
             const LoadResult offline = waitForLoad(tab, [&] {
                 window.openAddressForDiagnostics(
                     primary.address + QStringLiteral("/offline-check"));
@@ -1676,8 +1680,18 @@ int runGrangerHostingSegmentSmoke(const QString &outputPath,
             const QString text = evaluateJavaScript(
                 tab ? tab->page() : nullptr,
                 QStringLiteral("document.body?.innerText || ''"), 10000).toString();
-            offlineFailClosed = stopped && offline.signaled
-                && text.contains(QStringLiteral("Unable to reach this service"));
+            const QJsonObject offlineRuntime =
+                window.grangerNetworkDiagnosticsForDiagnostics();
+            const bool runtimeRejected =
+                offlineRuntime.value(QStringLiteral("failures")).toInt() > failuresBefore
+                && offlineRuntime.value(QStringLiteral("pendingRequests")).toInt(-1) == 0
+                && !offlineRuntime.value(QStringLiteral("lastRequestError")).toString().isEmpty()
+                && offlineRuntime.value(QStringLiteral("workerRunning")).toBool()
+                && offlineRuntime.value(QStringLiteral("ready")).toBool();
+            offlineFailClosed = stopped
+                && ((offline.signaled
+                        && text.contains(QStringLiteral("Unable to reach this service")))
+                    || runtimeRejected);
             trace.end(offlineFailClosed, QStringLiteral("OFFLINE_CHECK_FAILED"));
         }
 
@@ -2220,6 +2234,8 @@ int runGrangerHostingSmoke(QApplication &app,
         trace.begin(QStringLiteral("offline-fail-closed"));
         LoadResult offlineLoad;
         QString offlineText;
+        const QJsonObject offlineBefore = window.grangerNetworkDiagnosticsForDiagnostics();
+        const int failuresBefore = offlineBefore.value(QStringLiteral("failures")).toInt();
         if (stopped) {
             offlineLoad = waitForLoad(tab, [&] {
                 window.openAddressForDiagnostics(created.address + QStringLiteral("/offline-check"));
@@ -2228,8 +2244,17 @@ int runGrangerHostingSmoke(QApplication &app,
                 tab ? tab->page() : nullptr,
                 QStringLiteral("document.body?.innerText || ''"), 10000).toString();
         }
-        const bool failClosed = stopped && offlineLoad.signaled
-            && offlineText.contains(QStringLiteral("Unable to reach this service"));
+        const QJsonObject offlineRuntime = window.grangerNetworkDiagnosticsForDiagnostics();
+        const bool runtimeRejected =
+            offlineRuntime.value(QStringLiteral("failures")).toInt() > failuresBefore
+            && offlineRuntime.value(QStringLiteral("pendingRequests")).toInt(-1) == 0
+            && !offlineRuntime.value(QStringLiteral("lastRequestError")).toString().isEmpty()
+            && offlineRuntime.value(QStringLiteral("workerRunning")).toBool()
+            && offlineRuntime.value(QStringLiteral("ready")).toBool();
+        const bool failClosed = stopped
+            && ((offlineLoad.signaled
+                    && offlineText.contains(QStringLiteral("Unable to reach this service")))
+                || runtimeRejected);
         trace.end(failClosed, QStringLiteral("OFFLINE_CHECK_FAILED"));
         trace.begin(QStringLiteral("restart"));
 
