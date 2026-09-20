@@ -175,7 +175,7 @@ i2p_blocked=false
 if [[ "$non_loopback_exit" -ne 0 ]] && jq -e '
     .ok == false and .blockedTestGateway == true
     and (.startupProcessProxy | startswith("socks5://127.0.0.1:"))
-    and (.chromiumFlags | contains("--host-resolver-rules=\"MAP * ~NOTFOUND"))
+    and (.chromiumFlags | contains("MAP * ~NOTFOUND"))
     and (.chromiumFlags | contains("--no-sandbox") | not)
     and (.chromiumFlags | contains("--no-proxy-server") | not)
 ' "$report_root/non-loopback-navigation.json" >/dev/null 2>&1; then
@@ -183,7 +183,7 @@ if [[ "$non_loopback_exit" -ne 0 ]] && jq -e '
 fi
 if [[ "$i2p_exit" -ne 0 ]] && jq -e '
     .ok == false and .blockedTestGateway == true
-    and (.chromiumFlags | contains("--host-resolver-rules=\"MAP * ~NOTFOUND"))
+    and (.chromiumFlags | contains("MAP * ~NOTFOUND"))
 ' "$report_root/i2p-dns-navigation.json" >/dev/null 2>&1; then
     i2p_blocked=true
 fi

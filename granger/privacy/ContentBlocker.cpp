@@ -5,6 +5,7 @@
 #include "granger/privacy/PrivacyTypes.h"
 #include "granger/settings/SettingsManager.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QCryptographicHash>
 #include <QDataStream>
@@ -124,6 +125,46 @@ QUrl diagnosticFilterUpdateRoot()
     if (!path.endsWith(QLatin1Char('/'))) path += QLatin1Char('/');
     testRoot.setPath(path);
     return testRoot;
+}
+
+struct FilterUpdateRoute {
+    QNetworkProxy proxy;
+    QString policy;
+    bool loopbackOnly = true;
+};
+
+FilterUpdateRoute filterUpdateRoute()
+{
+    if (diagnosticFilterUpdateRoot().isValid()) {
+        return {QNetworkProxy(QNetworkProxy::NoProxy),
+                QStringLiteral("diagnostic-loopback"), true};
+    }
+
+    const QCoreApplication *application = QCoreApplication::instance();
+    const QUrl route(application
+                         ? application->property("granger.startupProcessProxy")
+                               .toString().trimmed()
+                         : QString());
+    const QString scheme = route.scheme().toLower();
+    const bool socks = scheme == QStringLiteral("socks5")
+        || scheme == QStringLiteral("socks5h");
+    const bool http = scheme == QStringLiteral("http")
+        || scheme == QStringLiteral("https");
+    QHostAddress address;
+    const bool loopback = route.host().compare(QStringLiteral("localhost"),
+                                                Qt::CaseInsensitive) == 0
+        || (address.setAddress(route.host()) && address.isLoopback());
+    if ((socks || http) && loopback && route.port() > 0 && route.port() <= 65535) {
+        return {QNetworkProxy(socks ? QNetworkProxy::Socks5Proxy
+                                    : QNetworkProxy::HttpProxy,
+                              route.host(), quint16(route.port()),
+                              route.userName(), route.password()),
+                QStringLiteral("privacy-gateway"), true};
+    }
+
+    return {QNetworkProxy(QNetworkProxy::Socks5Proxy,
+                          QStringLiteral("127.0.0.1"), 1),
+            QStringLiteral("blocked"), true};
 }
 
 QVector<MaintainedFilterDefinition> maintainedFilterDefinitions()
@@ -1794,9 +1835,7 @@ public:
     explicit FilterUpdateManager(ContentBlocker *owner)
         : m_owner(owner), m_network(owner)
     {
-        if (diagnosticFilterUpdateRoot().isValid()) {
-            m_network.setProxy(QNetworkProxy::NoProxy);
-        }
+        configureNetworkRoute();
         loadMetadata();
     }
 
@@ -1807,6 +1846,8 @@ public:
     }
     QString lastReload() const { return m_lastReload.toString(Qt::ISODateWithMs); }
     bool inProgress() const { return m_pendingReplies > 0; }
+    QString networkRoutePolicy() const { return m_networkRoutePolicy; }
+    bool networkRouteLoopbackOnly() const { return m_networkRouteLoopbackOnly; }
 
     bool automaticUpdateDue() const
     {
@@ -1828,6 +1869,7 @@ public:
             completion(false, QStringLiteral("filter update is already in progress"), false);
             return;
         }
+        configureNetworkRoute();
         const QVector<MaintainedFilterDefinition> definitions = maintainedFilterDefinitions();
         m_pendingReplies = definitions.size();
         m_successCount = 0;
@@ -1879,6 +1921,14 @@ public:
     }
 
 private:
+    void configureNetworkRoute()
+    {
+        const FilterUpdateRoute route = filterUpdateRoute();
+        m_network.setProxy(route.proxy);
+        m_networkRoutePolicy = route.policy;
+        m_networkRouteLoopbackOnly = route.loopbackOnly;
+    }
+
     void loadMetadata()
     {
         QFile file(filterMetadataPath());
@@ -1985,6 +2035,8 @@ private:
     QJsonObject m_metadata;
     Completion m_completion;
     QStringList m_failures;
+    QString m_networkRoutePolicy;
+    bool m_networkRouteLoopbackOnly = false;
     int m_pendingReplies = 0;
     int m_successCount = 0;
     int m_changedCount = 0;
@@ -2558,6 +2610,9 @@ QJsonObject ContentBlocker::diagnostics() const
     result.insert(QStringLiteral("lastLocalReload"), d->updates.lastReload());
     result.insert(QStringLiteral("updatePolicy"), QStringLiteral("manual-and-controlled-4-day"));
     result.insert(QStringLiteral("updateInProgress"), d->updates.inProgress());
+    result.insert(QStringLiteral("updateNetworkRoute"), d->updates.networkRoutePolicy());
+    result.insert(QStringLiteral("updateRouteLoopbackOnly"),
+                  d->updates.networkRouteLoopbackOnly());
     result.insert(QStringLiteral("maintainedLists"), d->updates.diagnostics());
     result.insert(QStringLiteral("generation"), QString::number(d->generation.load()));
     result.insert(QStringLiteral("compiledCache"), QJsonObject{

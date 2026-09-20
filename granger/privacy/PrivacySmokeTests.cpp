@@ -2275,7 +2275,6 @@ int runContentBlockingPersistenceSmoke(QApplication &app, const QString &outputP
 
 int runContentFilterUpdateSmoke(QApplication &app, const QString &outputPath)
 {
-    Q_UNUSED(app)
     Results results;
 
     const auto resourceBytes = [](const QString &path) {
@@ -2434,10 +2433,24 @@ int runContentFilterUpdateSmoke(QApplication &app, const QString &outputPath)
                    QStringList(requestedPaths.values()).join(QStringLiteral(", ")),
                    QStringList(expectedPaths.values()).join(QStringLiteral(", ")));
 
+    const FilterUpdateOutcome blockedRoute = waitForFilterUpdate(manager, 30000);
+    const QJsonObject afterBlockedRoute = manager.contentBlockingDiagnostics();
+    const QUrl startupProxy(app.property("granger.startupProcessProxy").toString());
+    QHostAddress startupProxyAddress;
+    const bool startupProxyLoopback = startupProxyAddress.setAddress(startupProxy.host())
+        && startupProxyAddress.isLoopback() && startupProxy.port() > 0;
+    results.record(QStringLiteral("maintained filter updates use the app-local privacy gateway"),
+                   blockedRoute.finished && !blockedRoute.success && startupProxyLoopback
+                       && afterBlockedRoute.value(QStringLiteral("updateNetworkRoute")).toString()
+                           == QStringLiteral("privacy-gateway")
+                       && afterBlockedRoute.value(QStringLiteral("updateRouteLoopbackOnly")).toBool(),
+                   compact(afterBlockedRoute));
+
     QJsonObject details;
     details.insert(QStringLiteral("before"), before);
     details.insert(QStringLiteral("afterLive"), afterLive);
     details.insert(QStringLiteral("afterMalformed"), afterMalformed);
+    details.insert(QStringLiteral("afterBlockedRoute"), afterBlockedRoute);
     details.insert(QStringLiteral("liveMessage"), live.message);
     details.insert(QStringLiteral("rollbackMessage"), malformed.message);
     details.insert(QStringLiteral("validFixtureRequests"),
